@@ -223,15 +223,15 @@ router.get('/search-serial', protect, async (req, res) => {
 router.get('/stats', protect, async (req, res) => {
   try {
     const filter = {};
-    if (req.activeStore) {
+    if (req.activeStore && mongoose.isValidObjectId(req.activeStore)) {
       filter.store = new mongoose.Types.ObjectId(req.activeStore);
     } else if (req.user.role !== 'Super Admin' && req.user.assignedStore) {
       filter.store = req.user.assignedStore;
     }
 
     const requestFilter = { status: 'Pending' };
-    if (req.activeStore) {
-      requestFilter.store = req.activeStore;
+    if (req.activeStore && mongoose.isValidObjectId(req.activeStore)) {
+      requestFilter.store = new mongoose.Types.ObjectId(req.activeStore);
     } else if (req.user.role !== 'Super Admin' && req.user.assignedStore) {
       requestFilter.store = req.user.assignedStore;
     }

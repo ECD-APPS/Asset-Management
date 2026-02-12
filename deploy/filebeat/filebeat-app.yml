@@ -1,0 +1,29 @@
+filebeat.inputs:
+  - type: filestream
+    id: app-requests
+    enabled: true
+    paths:
+      - /var/log/pm2/expo-stores.out.log
+      - /var/log/pm2/expo-stores.err.log
+    fields:
+      tier: app
+      service: expo-stores-api
+    fields_under_root: true
+
+  - type: filestream
+    id: app-audit
+    enabled: true
+    paths:
+      - /opt/expo-stores/server/logs/app-audit.log
+    parsers:
+      - ndjson:
+          overwrite_keys: true
+          add_error_key: true
+    fields:
+      tier: app
+      service: expo-stores-api
+      log_type: audit
+    fields_under_root: true
+
+output.logstash:
+  hosts: ["SIEM_IP:5044"]

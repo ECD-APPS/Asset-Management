@@ -1,0 +1,13 @@
+filebeat.inputs:
+  - type: filestream
+    id: mongodb-logs
+    enabled: true
+    paths:
+      - /var/log/mongodb/mongod.log
+    fields:
+      tier: db
+      service: mongodb
+    fields_under_root: true
+
+output.logstash:
+  hosts: ["SIEM_IP:5044"]

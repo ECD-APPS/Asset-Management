@@ -14,6 +14,14 @@ export const AuthProvider = ({ children }) => {
   const [activeStore, setActiveStore] = useState(null);
 
   useEffect(() => {
+    // Ensure CSRF token cookie is present
+    (async () => {
+      try {
+        await api.get('/auth/csrf-token');
+      } catch (e) {
+        // noop
+      }
+    })();
     const storedUser = localStorage.getItem('user');
     const storedActiveStore = localStorage.getItem('activeStore');
     
@@ -48,6 +56,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
+    // Clear cookie session on server
+    api.post('/auth/logout').catch(() => {});
     localStorage.removeItem('user');
     localStorage.removeItem('activeStore');
     setUser(null);

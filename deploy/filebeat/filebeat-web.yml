@@ -1,0 +1,25 @@
+filebeat.inputs:
+  - type: filestream
+    id: nginx-access
+    enabled: true
+    paths:
+      - /var/log/nginx/access.log
+    fields:
+      tier: web
+      service: nginx
+      log_type: access
+    fields_under_root: true
+
+  - type: filestream
+    id: nginx-error
+    enabled: true
+    paths:
+      - /var/log/nginx/error.log
+    fields:
+      tier: web
+      service: nginx
+      log_type: error
+    fields_under_root: true
+
+output.logstash:
+  hosts: ["SIEM_IP:5044"]

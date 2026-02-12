@@ -6,6 +6,12 @@ const path = require('path');
 const seedCategories = require('./utils/seedCategories'); // Import seeder
 const seedStoresAndUsers = require('./utils/seedStoresAndUsers');
 const compression = require('compression');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const mongoSanitize = require('express-mongo-sanitize');
+const cookieParser = require('cookie-parser');
+const csrf = require('csurf');
+const auditLogger = require('./utils/logger');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -31,6 +37,27 @@ dotenv.config();
 
 const app = express();
 
+// Security & hardening
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+// Rate limit (general)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(limiter);
+// Prevent NoSQL injection
+app.use(mongoSanitize());
+
+// Cookies and CSRF
+const isProd = process.env.NODE_ENV === 'production';
+app.use(cookieParser(process.env.COOKIE_SECRET || 'dev-cookie-secret'));
+
 app.use(compression({
   level: 6,
   threshold: 0,
@@ -41,9 +68,69 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
-app.use(cors());
+// CORS restricted to frontend origin when provided
+const allowedOrigin = process.env.CORS_ORIGIN;
+app.use(cors(allowedOrigin ? { origin: allowedOrigin, credentials: true } : {}));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Health endpoints
+app.get('/healthz', async (req, res) => {
+  const state = mongoose.connection.readyState; // 1=connected
+  const ok = state === 1;
+  res.status(ok ? 200 : 503).json({
+    status: ok ? 'ok' : 'degraded',
+    db_connected: ok,
+    uptime_s: Math.round(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+app.get('/readyz', async (req, res) => {
+  const state = mongoose.connection.readyState; // 1=connected
+  res.status(state === 1 ? 200 : 503).json({ ready: state === 1 });
+});
+
+// CSRF protection (cookie-based, token sent via cookie and header)
+const csrfProtection = csrf({
+  cookie: {
+    key: 'XSRF-TOKEN',
+    httpOnly: false,
+    sameSite: 'strict',
+    secure: isProd,
+    path: '/',
+  }
+});
+app.use(csrfProtection);
+app.use((req, res, next) => {
+  try {
+    const token = req.csrfToken();
+    res.cookie('XSRF-TOKEN', token, {
+      httpOnly: false,
+      sameSite: 'strict',
+      secure: isProd,
+      path: '/',
+    });
+  } catch (e) {}
+  next();
+});
+
+// Audit logging
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const durationMs = Date.now() - start;
+    auditLogger.info({
+      msg: 'request',
+      method: req.method,
+      url: req.originalUrl,
+      status: res.statusCode,
+      duration_ms: durationMs,
+      user_id: req.user?._id || null,
+      ip: req.ip
+    });
+  });
+  next();
+});
 
 // Routes Middleware
 app.use('/api/auth', authRoutes);
