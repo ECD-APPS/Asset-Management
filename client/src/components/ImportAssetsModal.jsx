@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Upload, FileSpreadsheet, Download } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import api from '../api/axios';
@@ -8,8 +8,22 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [allowDuplicates, setAllowDuplicates] = useState(false);
+  const [stores, setStores] = useState([]);
+  const [locationId, setLocationId] = useState('');
 
   if (!isOpen) return null;
+
+  useEffect(() => {
+    const loadStores = async () => {
+      try {
+        const res = await api.get('/stores');
+        setStores(res.data || []);
+      } catch (err) {
+        // silent
+      }
+    };
+    loadStores();
+  }, []);
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
@@ -41,6 +55,10 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
     formData.append('file', file);
     formData.append('allowDuplicates', allowDuplicates);
     if (source) formData.append('source', source);
+    if (locationId) {
+      const loc = stores.find(s => s._id === locationId);
+      if (loc) formData.append('location', loc.name);
+    }
 
     setLoading(true);
     try {
@@ -81,10 +99,24 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
               <li>Upload an Excel file (.xlsx, .xls)</li>
               <li>Ensure columns match the template</li>
               <li>Duplicates will be skipped unless checked</li>
+              <li>Optional: Select Location to apply to all rows</li>
             </ul>
           </div>
 
           <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Location (Optional)</label>
+              <select
+                value={locationId}
+                onChange={(e) => setLocationId(e.target.value)}
+                className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+              >
+                <option value="">All Locations (from Excel)</option>
+                {stores.filter(s => s.parentStore).map(s => (
+                  <option key={s._id} value={s._id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
             <div className="flex justify-between items-center">
               <label className="block text-sm font-medium text-gray-700">Select File</label>
               <button

@@ -157,8 +157,11 @@ router.get('/', protect, async (req, res) => {
                ...(filter.$or || []), // Preserve existing $or (e.g. search query)
                {
                  $or: [
-                   { store: { $in: specificIds } },
-                   { store: { $in: allowedIds }, location: selectedStore ? selectedStore.name : '___' }
+                  { store: { $in: specificIds } },
+                  { 
+                    store: { $in: allowedIds }, 
+                    location: selectedStore ? new RegExp(`^${selectedStore.name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}$`, 'i') : '___' 
+                  }
                  ]
                }
             ];
@@ -178,12 +181,12 @@ router.get('/', protect, async (req, res) => {
          const selectedStore = await Store.findById(storeId);
          
          // Same hybrid logic for Super Admin
-         filter.$or = [
+        filter.$or = [
             ...(filter.$or || []),
             {
               $or: [
                 { store: { $in: ids } },
-                { location: selectedStore ? selectedStore.name : '___' }
+                { location: selectedStore ? new RegExp(`^${selectedStore.name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}$`, 'i') : '___' }
               ]
             }
          ];
@@ -202,7 +205,10 @@ router.get('/', protect, async (req, res) => {
     if (qrCode) filter.qr_code = new RegExp(qrCode, 'i');
     if (source) filter.source = source;
     if (condition) filter.condition = condition;
-    if (location) filter.location = location;
+    if (location) {
+      const escaped = location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.location = new RegExp(`^${escaped}$`, 'i');
+    }
     
     if (dateFrom || dateTo) {
       filter.createdAt = {};
@@ -681,6 +687,50 @@ router.post('/bulk', protect, admin, async (req, res) => {
   }
 });
 
+// @desc    Bulk update assets
+// @route   POST /api/assets/bulk-update
+// @access  Private/Admin
+router.post('/bulk-update', protect, admin, async (req, res) => {
+  try {
+    const { ids, updates } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No asset IDs provided' });
+    }
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ message: 'No updates provided' });
+    }
+
+    const data = {};
+    if (updates.status) data.status = updates.status;
+    if (updates.condition) data.condition = updates.condition;
+    if (updates.manufacturer) data.manufacturer = capitalizeWords(updates.manufacturer);
+    if (updates.location) data.location = capitalizeWords(updates.location);
+    if (updates.category) data.category = capitalizeWords(updates.category);
+    if (updates.product_type) data.product_type = capitalizeWords(updates.product_type);
+    if (updates.product_name) data.product_name = capitalizeWords(updates.product_name);
+
+    const result = await Asset.updateMany({ _id: { $in: ids } }, { $set: data });
+
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Bulk Edit Assets',
+      details: `Updated ${result.modifiedCount || 0} assets`,
+      store: req.activeStore
+    });
+
+    const updated = await Asset.find({ _id: { $in: ids } })
+      .populate('store', 'name')
+      .lean();
+
+    res.json({ message: `Updated ${result.modifiedCount || 0} assets`, items: updated });
+  } catch (error) {
+    console.error('Bulk update error:', error);
+    res.status(500).json({ message: 'Error updating assets', error: error.message });
+  }
+});
+
 // @desc    Bulk upload assets via Excel
 // @route   POST /api/assets/import
 // @access  Private (Admin or Technician)
@@ -707,7 +757,7 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
     const assetsToInsert = [];
     const duplicates = [];
     const allowDuplicates = String(req.body.allowDuplicates || '').toLowerCase() === 'true';
-    const { category: reqCategory, product_type: reqProductType, product_name: reqProductName, source: reqSource } = req.body;
+    const { category: reqCategory, product_type: reqProductType, product_name: reqProductName, source: reqSource, location: reqLocation } = req.body;
     
     const stores = await Store.find();
     const storeMap = {};
@@ -788,7 +838,7 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
       const storeName = String(storeNameRaw || '').trim();
       
       // Location (Physical Location within the store)
-      const location = norm['location'] || norm['physical location'] || norm['room'] || norm['area'] || '';
+      const location = reqLocation || norm['location'] || norm['physical location'] || norm['room'] || norm['area'] || '';
       
       const statusRaw = norm['status'];
       const statusNorm = String(statusRaw || '').trim().toLowerCase();

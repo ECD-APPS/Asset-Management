@@ -20,6 +20,11 @@ const Assets = () => {
   const [importInfo, setImportInfo] = useState(null);
   const [forceLoading, setForceLoading] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
+  const [bulkLocationId, setBulkLocationId] = useState('');
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [showBulkEditModal, setShowBulkEditModal] = useState(false);
+  const [bulkForm, setBulkForm] = useState({ status: '', condition: '', manufacturer: '', locationId: '' });
+  const [bulkLoading, setBulkLoading] = useState(false);
   
   // Assign State
   const [assigningAsset, setAssigningAsset] = useState(null);
@@ -217,6 +222,10 @@ const Assets = () => {
     if (selectedCategory) formData.append('category', selectedCategory);
     if (selectedType) formData.append('product_type', selectedType);
     if (selectedProduct) formData.append('product_name', selectedProduct);
+    if (bulkLocationId) {
+      const loc = stores.find(s => s._id === bulkLocationId);
+      if (loc) formData.append('location', loc.name);
+    }
 
     try {
       const res = await api.post('/assets/import', formData);
@@ -556,6 +565,40 @@ const Assets = () => {
     }
   };
 
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+  const toggleSelectAll = () => {
+    setSelectedIds(prev => prev.length === assets.length ? [] : assets.map(a => a._id));
+  };
+  const handleBulkEditSubmit = async () => {
+    if (selectedIds.length === 0) return;
+    try {
+      setBulkLoading(true);
+      const updates = {};
+      if (bulkForm.status) updates.status = bulkForm.status;
+      if (bulkForm.condition) updates.condition = bulkForm.condition;
+      if (bulkForm.manufacturer) updates.manufacturer = bulkForm.manufacturer;
+      if (bulkForm.locationId) {
+        const loc = stores.find(s => s._id === bulkForm.locationId);
+        if (loc) updates.location = loc.name;
+      }
+      const res = await api.post('/assets/bulk-update', { ids: selectedIds, updates });
+      const updated = res.data?.items || [];
+      const updatedMap = new Map(updated.map(u => [u._id, u]));
+      setAssets(prev => prev.map(a => updatedMap.has(a._id) ? { ...a, ...updatedMap.get(a._id) } : a));
+      setShowBulkEditModal(false);
+      setSelectedIds([]);
+      fetchAssets(undefined, { silent: true });
+      alert(res.data?.message || 'Bulk update completed');
+    } catch (error) {
+      console.error('Bulk update error:', error);
+      alert(error.response?.data?.message || 'Bulk update failed');
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (window.confirm('Are you sure you want to delete this asset?')) {
       try {
@@ -655,6 +698,13 @@ const Assets = () => {
              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded flex items-center gap-2"
            >
              Import
+           </button>
+           <button
+             onClick={() => setShowBulkEditModal(true)}
+             disabled={selectedIds.length === 0}
+             className={`px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded font-medium ${selectedIds.length === 0 ? 'bg-purple-400 text-white cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700 text-white'}`}
+           >
+             Bulk Edit ({selectedIds.length})
            </button>
            <button onClick={handleExport} className="bg-amber-600 hover:bg-amber-700 text-black px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded">Export</button>
            <button onClick={handleDownloadTemplate} className="bg-gray-900 hover:bg-gray-800 text-white px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded">Template</button>
@@ -884,6 +934,9 @@ const Assets = () => {
         <table className="min-w-full">
           <thead>
             <tr className="bg-gray-50 border-b">
+              <th className="px-3 py-2 md:px-4 md:py-3 text-center">
+                <input type="checkbox" checked={selectedIds.length === assets.length && assets.length > 0} onChange={toggleSelectAll} />
+              </th>
               <th className="px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Unique ID</th>
               <th className="px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
               <th className="px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider hidden sm:table-cell">Category</th>
@@ -904,6 +957,9 @@ const Assets = () => {
           <tbody className="bg-white divide-y divide-gray-200">
             {assets.map((asset) => (
               <tr key={asset._id} className={asset.isDuplicate ? 'bg-yellow-100' : ''}>
+                <td className="px-3 py-2 md:px-4 md:py-4 text-center">
+                  <input type="checkbox" checked={selectedIds.includes(asset._id)} onChange={() => toggleSelect(asset._id)} />
+                </td>
                 <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap font-mono text-xs text-gray-600 text-center hidden lg:table-cell">{asset.uniqueId || '-'}</td>
                 <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm">{asset.name}</td>
                 <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm hidden sm:table-cell">{asset.category || '-'}</td>
@@ -1738,6 +1794,20 @@ const Assets = () => {
               </div>
               
               <div>
+                <label className="block text-sm font-medium text-gray-700">Location (Optional)</label>
+                <select
+                  value={bulkLocationId}
+                  onChange={(e) => setBulkLocationId(e.target.value)}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="">Use Excel Location column</option>
+                  {stores.filter(s => s.parentStore).map(s => (
+                    <option key={s._id} value={s._id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
                 <label className="block text-sm font-medium text-gray-700">Category</label>
                 <select
                   value={selectedCategory}
@@ -1832,6 +1902,88 @@ const Assets = () => {
                   Upload
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Edit Modal */}
+      {showBulkEditModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex justify-center items-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+            <h2 className="text-xl font-bold mb-4">Bulk Edit Assets</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Status (Optional)</label>
+                <select
+                  value={bulkForm.status}
+                  onChange={(e) => setBulkForm({ ...bulkForm, status: e.target.value })}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="">No change</option>
+                  <option value="New">Spare (New)</option>
+                  <option value="Used">Spare (Used)</option>
+                  <option value="Testing">Testing</option>
+                  <option value="Faulty">Faulty</option>
+                  <option value="Under Repair">Under Repair</option>
+                  <option value="Disposed">Disposed</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Condition (Optional)</label>
+                <select
+                  value={bulkForm.condition}
+                  onChange={(e) => setBulkForm({ ...bulkForm, condition: e.target.value })}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="">No change</option>
+                  <option value="New / Excellent">New / Excellent</option>
+                  <option value="Good / Fair">Good / Fair</option>
+                  <option value="Used / Substandard">Used / Substandard</option>
+                  <option value="Repaired / Reconditioned">Repaired / Reconditioned</option>
+                  <option value="Faulty / Defective">Faulty / Defective</option>
+                  <option value="Poor / Near Failure">Poor / Near Failure</option>
+                  <option value="Failed / Unserviceable">Failed / Unserviceable</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Manufacturer (Optional)</label>
+                <input
+                  type="text"
+                  value={bulkForm.manufacturer}
+                  onChange={(e) => setBulkForm({ ...bulkForm, manufacturer: e.target.value })}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                  placeholder="e.g., SIEMENS"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Location (Optional)</label>
+                <select
+                  value={bulkForm.locationId}
+                  onChange={(e) => setBulkForm({ ...bulkForm, locationId: e.target.value })}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="">No change</option>
+                  {stores.filter(s => s.parentStore).map(s => (
+                    <option key={s._id} value={s._id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end space-x-3">
+              <button
+                onClick={() => setShowBulkEditModal(false)}
+                className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkEditSubmit}
+                disabled={bulkLoading}
+                className={`text-white px-4 py-2 rounded ${bulkLoading ? 'bg-purple-400 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}
+              >
+                {bulkLoading ? 'Updating…' : `Apply to ${selectedIds.length} asset(s)`}
+              </button>
             </div>
           </div>
         </div>

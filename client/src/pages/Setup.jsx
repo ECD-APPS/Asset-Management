@@ -8,6 +8,7 @@ const Setup = () => {
   const { user } = useAuth();
   const [storage, setStorage] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
+  const [globalResetLoading, setGlobalResetLoading] = useState(false);
   const [deletionRequests, setDeletionRequests] = useState([]);
   const isMainAdmin = user?.role === 'Super Admin';
 
@@ -260,22 +261,27 @@ const Setup = () => {
                 />
                 <button
                   onClick={async () => {
-                    if (!resetPassword) return;
+                    if (!resetPassword || globalResetLoading) return;
                     const ok = window.confirm('WARNING: This will erase all stores, assets, requests, and logs. Users, Products and Categories will remain. This action cannot be undone. Continue?');
                     if (!ok) return;
                     try {
-                      await api.post('/system/reset', { password: resetPassword, storeId: 'all' });
+                      setGlobalResetLoading(true);
+                      const pwd = String(resetPassword).trim();
+                      const res = await api.post('/system/reset', { password: pwd, storeId: 'all' });
                       setResetPassword('');
-                      alert('System reset successful.');
+                      alert(res.data?.message || 'System reset successful.');
                       window.location.reload();
                     } catch (e) {
                       console.error(e);
                       alert('Reset failed: ' + (e.response?.data?.message || e.message));
+                    } finally {
+                      setGlobalResetLoading(false);
                     }
                   }}
-                  className="bg-red-600 text-white px-6 py-2 rounded-lg hover:bg-red-700 transition-colors font-medium shadow-sm"
+                  disabled={globalResetLoading || !resetPassword}
+                  className={`px-6 py-2 rounded-lg transition-colors font-medium shadow-sm text-white ${globalResetLoading ? 'bg-red-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
                 >
-                  Reset Full System
+                  {globalResetLoading ? 'Resetting…' : 'Reset Full System'}
                 </button>
               </div>
             </div>

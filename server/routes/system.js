@@ -16,6 +16,9 @@ const Permit = require('../models/Permit');
 const AssetCategory = require('../models/AssetCategory');
 const bcrypt = require('bcryptjs');
 
+// Simple in-process lock to prevent concurrent resets
+let RESET_LOCK = false;
+
 // Helper to get directory size
 const getDirSize = (dirPath) => {
   let size = 0;
@@ -112,6 +115,11 @@ router.post('/reset', protect, superAdmin, async (req, res) => {
   }
 
   try {
+    if (RESET_LOCK) {
+      return res.status(429).json({ message: 'Another reset is in progress. Please wait and try again.' });
+    }
+    RESET_LOCK = true;
+
     // Verify admin password
     const user = await User.findById(req.user._id);
     if (!user) {
@@ -154,16 +162,15 @@ router.post('/reset', protect, superAdmin, async (req, res) => {
     // Clear collections
     // NOTE: We intentionally preserve 'User' (Admins/Technicians), 'Store' (Definitions), and 'AssetCategory' (Configuration)
     // as per requirements to only delete "operational/transactional" data.
-    await Promise.all([
-      Asset.deleteMany(filter),
-      // Store.deleteMany({}), // Preserved as per multi-store requirement
-      Request.deleteMany(filter),
-      ActivityLog.deleteMany(filter), // Logs are now store-scoped if possible
-      PurchaseOrder.deleteMany(filter),
-      Vendor.deleteMany(filter),
-      Pass.deleteMany(filter),
-      Permit.deleteMany(filter)
-    ]);
+    // Delete sequentially to reduce transient failures
+    const deleted = {};
+    deleted.assets = await Asset.deleteMany(filter);
+    deleted.requests = await Request.deleteMany(filter);
+    deleted.activityLogs = await ActivityLog.deleteMany(filter);
+    deleted.purchaseOrders = await PurchaseOrder.deleteMany(filter);
+    deleted.vendors = await Vendor.deleteMany(filter);
+    deleted.passes = await Pass.deleteMany(filter);
+    deleted.permits = await Permit.deleteMany(filter);
 
     // Reset deletionRequested flag if a specific store was reset
     if (storeId && storeId !== 'all') {
@@ -188,7 +195,11 @@ router.post('/reset', protect, superAdmin, async (req, res) => {
           const files = fs.readdirSync(uploadsPath);
           files.forEach(file => {
             if (file !== '.gitkeep') {
-              fs.unlinkSync(path.join(uploadsPath, file));
+              try {
+                fs.unlinkSync(path.join(uploadsPath, file));
+              } catch (e) {
+                // Ignore file deletion errors to avoid aborting reset
+              }
             }
           });
         }
@@ -205,10 +216,25 @@ router.post('/reset', protect, superAdmin, async (req, res) => {
       store: storeId && storeId !== 'all' ? storeId : null
     });
 
-    res.json({ message: 'System reset successful' });
+    res.json({ 
+      message: 'System reset successful',
+      stats: {
+        scope: resetScope,
+        usersDeleted: includeUsers ? 'Yes' : 'No',
+        assetsDeleted: deleted.assets?.deletedCount ?? 0,
+        requestsDeleted: deleted.requests?.deletedCount ?? 0,
+        logsDeleted: deleted.activityLogs?.deletedCount ?? 0,
+        purchaseOrdersDeleted: deleted.purchaseOrders?.deletedCount ?? 0,
+        vendorsDeleted: deleted.vendors?.deletedCount ?? 0,
+        passesDeleted: deleted.passes?.deletedCount ?? 0,
+        permitsDeleted: deleted.permits?.deletedCount ?? 0
+      }
+    });
   } catch (error) {
     console.error('Error resetting system:', error);
     res.status(500).json({ message: error.message });
+  } finally {
+    RESET_LOCK = false;
   }
 });
 
