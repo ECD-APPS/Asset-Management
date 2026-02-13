@@ -731,6 +731,35 @@ router.post('/bulk-update', protect, admin, async (req, res) => {
   }
 });
 
+// @desc    Bulk delete assets
+// @route   POST /api/assets/bulk-delete
+// @access  Private/Admin
+router.post('/bulk-delete', protect, admin, async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No asset IDs provided' });
+    }
+    const toDelete = await Asset.find({ _id: { $in: ids } }).lean();
+    const result = await Asset.deleteMany({ _id: { $in: ids } });
+
+    // Log activity summary
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Bulk Delete Assets',
+      details: `Deleted ${result.deletedCount || 0} assets`,
+      store: req.activeStore
+    });
+
+    res.json({ message: `Deleted ${result.deletedCount || 0} assets`, deletedIds: ids, preview: toDelete.slice(0, 5) });
+  } catch (error) {
+    console.error('Bulk delete error:', error);
+    res.status(500).json({ message: 'Error deleting assets', error: error.message });
+  }
+});
+
 // @desc    Bulk upload assets via Excel
 // @route   POST /api/assets/import
 // @access  Private (Admin or Technician)

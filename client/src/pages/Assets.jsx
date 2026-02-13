@@ -598,6 +598,24 @@ const Assets = () => {
       setBulkLoading(false);
     }
   };
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Delete ${selectedIds.length} selected asset(s)? This cannot be undone.`)) return;
+    try {
+      setBulkLoading(true);
+      const res = await api.post('/assets/bulk-delete', { ids: selectedIds });
+      const deletedIds = res.data?.deletedIds || selectedIds;
+      setAssets(prev => prev.filter(a => !deletedIds.includes(a._id)));
+      setSelectedIds([]);
+      fetchAssets(undefined, { silent: true });
+      alert(res.data?.message || 'Bulk delete completed');
+    } catch (error) {
+      console.error('Bulk delete error:', error);
+      alert(error.response?.data?.message || 'Bulk delete failed');
+    } finally {
+      setBulkLoading(false);
+    }
+  };
 
   const handleDelete = async (id) => {
     if (window.confirm('Are you sure you want to delete this asset?')) {
@@ -705,6 +723,13 @@ const Assets = () => {
              className={`px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded font-medium ${selectedIds.length === 0 ? 'bg-purple-400 text-white cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700 text-white'}`}
            >
              Bulk Edit ({selectedIds.length})
+           </button>
+           <button
+             onClick={handleBulkDelete}
+             disabled={selectedIds.length === 0 || bulkLoading}
+             className={`px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded font-medium ${selectedIds.length === 0 || bulkLoading ? 'bg-red-400 text-white cursor-not-allowed' : 'bg-red-600 hover:bg-red-700 text-white'}`}
+           >
+             {bulkLoading ? 'Deleting…' : `Delete Selected (${selectedIds.length})`}
            </button>
            <button onClick={handleExport} className="bg-amber-600 hover:bg-amber-700 text-black px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded">Export</button>
            <button onClick={handleDownloadTemplate} className="bg-gray-900 hover:bg-gray-800 text-white px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base rounded">Template</button>

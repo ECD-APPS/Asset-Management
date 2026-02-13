@@ -68,9 +68,9 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
-// CORS restricted to frontend origin when provided
+// CORS: allow configured origin, otherwise allow any for dev (with credentials)
 const allowedOrigin = process.env.CORS_ORIGIN;
-app.use(cors(allowedOrigin ? { origin: allowedOrigin, credentials: true } : {}));
+app.use(cors(allowedOrigin ? { origin: allowedOrigin, credentials: true } : { origin: true, credentials: true }));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
