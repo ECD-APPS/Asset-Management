@@ -111,4 +111,51 @@ router.get('/csrf-token', (req, res) => {
   res.json({ csrfToken: req.csrfToken() });
 });
 
+// @desc    Emergency Super Admin Reset (Dev Only)
+// @route   GET /api/auth/emergency-reset-superadmin
+// @access  Public (Protected by secret)
+router.get('/emergency-reset-superadmin', async (req, res) => {
+  const { secret } = req.query;
+  
+  if (secret !== 'emergency_unlock') {
+    return res.status(403).json({ message: 'Forbidden: Invalid secret key.' });
+  }
+
+  try {
+    const email = 'superadmin@expo.com';
+    const password = '123456';
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    let user = await User.findOne({ email });
+
+    if (user) {
+      user.password = hashedPassword;
+      user.role = 'Super Admin';
+      await user.save();
+      return res.send(`
+        <h1>Success</h1>
+        <p>Super Admin password reset to: <strong>123456</strong></p>
+        <p><a href="/">Go to Login</a></p>
+      `);
+    } else {
+      await User.create({
+        name: 'Super Admin',
+        email,
+        password: hashedPassword,
+        role: 'Super Admin',
+        assignedStore: null
+      });
+      return res.send(`
+        <h1>Success</h1>
+        <p>Super Admin account CREATED with password: <strong>123456</strong></p>
+        <p><a href="/">Go to Login</a></p>
+      `);
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Error resetting password: ' + error.message);
+  }
+});
+
 module.exports = router;
