@@ -261,7 +261,11 @@ const Setup = () => {
                 />
                 <button
                   onClick={async () => {
-                    if (!resetPassword || globalResetLoading) return;
+                    if (globalResetLoading) return;
+                    if (!resetPassword) {
+                      alert('Please enter the Super Admin password to confirm this action.');
+                      return;
+                    }
                     const ok = window.confirm('WARNING: This will erase all stores, assets, requests, and logs. Users, Products and Categories will remain. This action cannot be undone. Continue?');
                     if (!ok) return;
                     try {
@@ -278,7 +282,6 @@ const Setup = () => {
                       setGlobalResetLoading(false);
                     }
                   }}
-                  disabled={globalResetLoading || !resetPassword}
                   className={`px-6 py-2 rounded-lg transition-colors font-medium shadow-sm text-white ${globalResetLoading ? 'bg-red-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
                 >
                   {globalResetLoading ? 'Resetting…' : 'Reset Full System'}
