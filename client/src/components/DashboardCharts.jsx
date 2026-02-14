@@ -91,6 +91,7 @@ const DashboardCharts = ({ stats }) => {
   // Actually for donut it's better to keep indices aligned with labels.
 
   const modelData = (models || []).slice(0, 10);
+  const hasModelData = modelData.length > 0;
   
   // ApexCharts Options for Bar
   const barOptions = {
@@ -112,13 +113,13 @@ const DashboardCharts = ({ stats }) => {
       textAnchor: 'start',
       style: { colors: ['#fff'] },
       formatter: function (val) {
-        return val
+        return val || 0;
       },
       offsetX: 0,
     },
     colors: ['#3b82f6'],
     xaxis: {
-      categories: modelData.map(m => m.name),
+      categories: hasModelData ? modelData.map(m => m.name) : [],
     },
     grid: {
       borderColor: '#f3f4f6',
@@ -136,7 +137,7 @@ const DashboardCharts = ({ stats }) => {
 
   const barSeries = [{
     name: 'Assets',
-    data: modelData.map(m => m.value)
+    data: hasModelData ? modelData.map(m => m.value) : []
   }];
 
   // Growth Chart Options
@@ -218,7 +219,13 @@ const DashboardCharts = ({ stats }) => {
         </div>
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
           <h3 className="text-gray-800 font-bold mb-4">Top 10 Asset Models</h3>
-          <Chart options={barOptions} series={barSeries} type="bar" height={300} />
+          {hasModelData ? (
+            <Chart options={barOptions} series={barSeries} type="bar" height={300} />
+          ) : (
+            <div className="h-[300px] flex items-center justify-center text-gray-400 text-sm italic border-2 border-dashed border-gray-100 rounded-lg">
+              No asset model data available
+            </div>
+          )}
         </div>
       </div>
 

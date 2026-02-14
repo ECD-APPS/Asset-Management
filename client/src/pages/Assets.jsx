@@ -155,12 +155,16 @@ const Assets = () => {
     }
   };
 
+  // Helper to safely get types
   const getTypes = (catName) => {
+    if (!catName) return [];
     const cat = fullCategories.find(c => c.name === catName);
     return cat ? cat.types : [];
   };
 
+  // Helper to safely get products (flattened)
   const getProducts = (catName, typeName) => {
+    if (!catName || !typeName) return [];
     const types = getTypes(catName);
     const type = types.find(t => t.name === typeName);
     if (!type || !type.products) return [];
@@ -1665,51 +1669,57 @@ const Assets = () => {
                  </div>
                  <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase">Product</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={selectedProduct}
-                        onChange={(e) => handleProductSearch(e.target.value)}
-                        onFocus={() => setShowSuggestions(true)}
-                        onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                        placeholder="Type product name..."
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm"
-                      />
-                      {showSuggestions && productSuggestions.length > 0 && (
-                        <div className="absolute z-10 w-full bg-white border border-gray-300 mt-1 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {productSuggestions.map((s, idx) => (
-                            <div 
-                              key={idx}
-                              className="p-2 hover:bg-indigo-50 cursor-pointer text-sm"
-                              onClick={() => selectSuggestion(s)}
-                            >
-                              <div className="font-medium">{s.product}</div>
-                              <div className="text-xs text-gray-500">{s.category} &gt; {s.type}</div>
-                            </div>
+                    <div className="flex flex-col gap-1">
+                      {selectedType ? (
+                        <select
+                          value={selectedProduct}
+                          onChange={(e) => {
+                             const val = e.target.value;
+                             setSelectedProduct(val);
+                             if (val) {
+                                setAddForm(prev => ({ ...prev, name: val, model_number: val }));
+                             }
+                          }}
+                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm"
+                        >
+                          <option value="">Select Product</option>
+                          {getProducts(selectedCategory, selectedType).map(p => (
+                            <option key={p._id || p.name} value={p.name}>
+                              {p.level > 0 ? '\u00A0'.repeat(p.level * 4) + '└ ' : ''}{p.name}
+                            </option>
                           ))}
+                        </select>
+                      ) : (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={selectedProduct}
+                            onChange={(e) => handleProductSearch(e.target.value)}
+                            onFocus={() => setShowSuggestions(true)}
+                            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                            placeholder="Type to search or select hierarchy..."
+                            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm"
+                          />
+                          {showSuggestions && productSuggestions.length > 0 && (
+                            <div className="absolute z-10 w-full bg-white border border-gray-300 mt-1 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                              {productSuggestions.map((s, idx) => (
+                                <div 
+                                  key={idx}
+                                  className="p-2 hover:bg-indigo-50 cursor-pointer text-sm"
+                                  onClick={() => selectSuggestion(s)}
+                                >
+                                  <div className="font-medium">{s.product}</div>
+                                  <div className="text-xs text-gray-500">{s.category} &gt; {s.type}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
+                      <div className="text-[10px] text-gray-400 text-right">
+                        {selectedType ? 'Select from list or change Type' : 'Search or select Category first'}
+                      </div>
                     </div>
-                    {/* Fallback Select for hierarchy navigation if needed, or just rely on search */}
-                    {selectedType && (
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          if (e.target.value) {
-                             setSelectedProduct(e.target.value);
-                             setAddForm(prev => ({ ...prev, name: e.target.value, model_number: e.target.value }));
-                          }
-                        }}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-1 text-xs text-gray-500"
-                      >
-                        <option value="">(Or select from {selectedType})</option>
-                        {getProducts(selectedCategory, selectedType).map(p => (
-                          <option key={p._id || p.name} value={p.name}>
-                            {p.level > 0 ? '\u00A0'.repeat(p.level * 4) + '└ ' : ''}{p.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
                  </div>
               </div>
 
