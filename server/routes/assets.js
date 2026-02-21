@@ -678,6 +678,7 @@ router.get('/template', async (req, res) => {
       'Product Type',
       'Product Name',
       'Model Number',
+      'Quantity',
       'Serial Number',
       'MAC Address',
       'Manufacturer',
@@ -704,6 +705,7 @@ router.get('/template', async (req, res) => {
       'LOCKS',
       'MAGNETIC LOCKS',
       'MEC-1200',
+      '1',
       '1584632152',
       '',
       'SIEMENS',
@@ -737,12 +739,13 @@ router.get('/template', async (req, res) => {
 // @route   POST /api/assets
 // @access  Private (Admin or Technician)
 router.post('/', protect, async (req, res) => {
-  const { name, model_number, serial_number, mac_address, manufacturer, store, location, status, condition, ticket_number, product_name, rfid, qr_code } = req.body;
+  const { name, model_number, serial_number, mac_address, manufacturer, store, location, status, condition, ticket_number, product_name, rfid, qr_code, quantity } = req.body;
   try {
     const normName = capitalizeWords(name);
     const normProduct = capitalizeWords(product_name || '');
     const normManufacturer = capitalizeWords(manufacturer || '');
     const normLocation = capitalizeWords(location || '');
+    const qty = Number.parseInt(quantity, 10) > 0 ? Number.parseInt(quantity, 10) : 1;
     // Check for duplicate serial number within the same store
     const duplicateQuery = { serial_number };
     if (req.activeStore) {
@@ -781,7 +784,8 @@ router.post('/', protect, async (req, res) => {
       store: req.activeStore || store,
       status: status || 'New',
       condition: condition || 'New / Excellent',
-      location: normLocation || ''
+      location: normLocation || '',
+      quantity: qty
     });
 
     // Log Activity
@@ -790,7 +794,7 @@ router.post('/', protect, async (req, res) => {
       email: req.user.email,
       role: req.user.role,
       action: 'Create Asset',
-      details: `Created asset ${name} (SN: ${serial_number})`,
+      details: `Created asset ${name} (SN: ${serial_number}) qty=${qty}`,
       store: req.activeStore || store
     });
 
@@ -1046,11 +1050,9 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
       return res.status(400).json({ message: 'Invalid Excel file: no data rows found' });
     }
 
-    const assetsToInsert = [];
     const duplicates = [];
-    const allowDuplicates = req.body.allowDuplicates === undefined
-      ? true
-      : String(req.body.allowDuplicates).toLowerCase() === 'true';
+    const createdCount = { v: 0 };
+    const updatedCount = { v: 0 };
     const {
       product_name: reqProductName,
       source: reqSource,
@@ -1096,6 +1098,14 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
       return s === '' || s.toUpperCase() === 'N/A' || s === '-';
     };
 
+    // Helper: normalized text cell (trim, collapse N/A)
+    const normalizeText = (v) => {
+      const s = String(v ?? '').trim();
+      if (!s) return '';
+      if (/^(?:N\/A|NA|-|—)$/i.test(s)) return '';
+      return s;
+    };
+
     for (const item of data) {
       const norm = {};
       Object.keys(item).forEach(k => { norm[String(k).trim().toLowerCase()] = item[k]; });
@@ -1122,6 +1132,9 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
       const name = productName || '-';
       
       const model = norm['model number'] || norm['model'] || '-';
+      const qtyRaw = norm['quantity'] || norm['qty'] || '1';
+      let quantity = parseInt(String(qtyRaw).trim(), 10);
+      if (!Number.isFinite(quantity) || quantity <= 0) quantity = 1;
       const serial = norm['serial number'] || norm['serial'] || '-';
       const mac = norm['mac address'] || norm['mac'] || '-';
       const manufacturer = norm['manufacturer'] || '-';
@@ -1129,11 +1142,15 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
       const rfid = norm['rfid'] || '-';
       const qrCode = norm['qr code'] || norm['qr'] || '-';
       
-      const storeNameRaw = norm['store location'] || norm['storename'] || norm['store'] || '-';
-      const storeName = String(storeNameRaw || '').trim();
+      const storeNameRaw = norm['store location'] || norm['storename'] || norm['store'] || '';
+      const storeName = normalizeText(storeNameRaw);
       
-      const locationRaw = reqLocation || norm['location'] || norm['physical location'] || norm['room'] || norm['area'] || '-';
-      const location = locationRaw || '-';
+      // Robust location normalization: trim, drop placeholders, fallback to store name if empty
+      const locationRawCombined = reqLocation || norm['location'] || norm['physical location'] || norm['room'] || norm['area'] || '';
+      let location = normalizeText(locationRawCombined);
+      if (!location && storeName) {
+        location = storeName;
+      }
       
       const statusRaw = norm['status'];
       const statusNorm = String(statusRaw || '').trim().toLowerCase();
@@ -1178,8 +1195,8 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
         storeId = req.activeStore;
       }
       
-      // Uppercase enforcement: if any field with letters contains lowercase, mark row invalid
-      const hasLower = (s) => /[a-z]/.test(String(s || ''));
+      // Uppercase enforcement: trim first before check
+      const hasLower = (s) => /[a-z]/.test(String(s || '').trim());
       const uppercaseViolations = [];
       if (hasLower(categoryFromRow)) uppercaseViolations.push('Category');
       if (hasLower(typeFromRow)) uppercaseViolations.push('Product Type');
@@ -1201,34 +1218,11 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
         continue;
       }
       
-      // Hierarchy creation removed from import
+      // Upsert by Serial (Store-scoped)
       {
         const serialStr = String(serial).trim();
         const uniqueId = await generateUniqueId(name);
         
-        if (serialStr && !allowDuplicates) {
-          if (fileSeenSerials.has(serialStr)) {
-            duplicates.push({ 
-              serial: serialStr, 
-              reason: 'Duplicate in upload file',
-              asset: { 
-                name, 
-                model_number: model, 
-                serial_number: serialStr, 
-                serial_last_4: serialStr.slice(-4), 
-                mac_address: mac, 
-                manufacturer, 
-                uniqueId, 
-                store: storeId, 
-                status, 
-                product_name: productName 
-              }
-            });
-            continue;
-          }
-          fileSeenSerials.add(serialStr);
-        }
-
         let deliveredAtDate;
         if (deliveredAtRaw) {
           deliveredAtDate = new Date(deliveredAtRaw);
@@ -1238,7 +1232,7 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
           deliveredAtDate = new Date();
         }
 
-        assetsToInsert.push({
+        const assetData = {
           name: String(name || '').toUpperCase(),
           model_number: model,
           serial_number: serialStr,
@@ -1254,93 +1248,71 @@ router.post('/import', protect, upload.single('file'), async (req, res) => {
           condition,
           product_name: productName,
           source: reqSource,
-          location: String(location || '').toUpperCase(),
+          location: String(location || '').trim() ? String(location).toUpperCase() : (storeName ? storeName.toUpperCase() : 'UNKNOWN'),
           vendor_name: vendorNameFromRow || reqVendorName || '',
           delivered_by_name: deliveredByFromRow || reqDeliveredByName || '',
-          delivered_at: deliveredAtDate
-        });
-      }
-    }
+          delivered_at: deliveredAtDate,
+          quantity
+        };
 
-    // Check existing serials in DB (Scoped to Store)
-    let toInsert = assetsToInsert;
-    if (!allowDuplicates && assetsToInsert.length > 0) {
-      // Only check serials that are NOT N/A
-      const serialsToCheck = assetsToInsert
-        .map(a => a.serial_number)
-        .filter(s => s);
-      
-      if (serialsToCheck.length > 0) {
-        // Find assets with these serials
-        const existing = await Asset.find({ serial_number: { $in: serialsToCheck } })
-          .select('serial_number store')
-          .lean();
-          
-        // Create a Set of "serial_storeId" strings for fast lookup
-        // If an existing asset has no store, we treat it as global (collision for everyone) or maybe ignore?
-        // Let's assume store is required.
-        const existingSet = new Set();
-        existing.forEach(e => {
-          if (e.store) existingSet.add(`${e.serial_number}_${e.store.toString()}`);
-        });
-        
-        toInsert = assetsToInsert.filter(a => {
-          // Always allow N/A serials to proceed
-          if (isNA(a.serial_number)) return true;
-          
-          // Check if this specific asset (serial + target store) exists
-          // a.store is the ID we resolved earlier
-          const key = `${a.serial_number}_${a.store}`;
-          const isDup = existingSet.has(key);
-          
-          if (isDup) {
-            duplicates.push({ 
-              serial: a.serial_number, 
-              reason: 'Duplicate in database (same store)',
-              asset: a 
-            });
-          }
-          return !isDup;
-        });
-      }
-    }
-
-    if (toInsert.length > 0) {
-      try {
-        const created = [];
-        const warnings = [];
-        for (const a of toInsert) {
-          try {
-            if (a.serial_number) {
-              const exists = await Asset.findOne({ serial_number: a.serial_number, store: a.store }).lean();
-              if (exists) warnings.push({ serial: a.serial_number, message: 'Duplicate accepted (Admin)' });
+        try {
+          // If serial present, try upsert; otherwise create new
+          if (serialStr) {
+            const existing = await Asset.findOne({ serial_number: serialStr, store: storeId });
+            if (existing) {
+              // Update only with provided fields
+              await Asset.updateOne(
+                { _id: existing._id },
+                { $set: {
+                  name: assetData.name,
+                  model_number: assetData.model_number,
+                  mac_address: assetData.mac_address,
+                  manufacturer: assetData.manufacturer,
+                  ticket_number: assetData.ticket_number,
+                  rfid: assetData.rfid,
+                  qr_code: assetData.qr_code,
+                  status: assetData.status,
+                  condition: assetData.condition,
+                  product_name: assetData.product_name,
+                  location: assetData.location,
+                  vendor_name: assetData.vendor_name,
+                  delivered_by_name: assetData.delivered_by_name,
+                  delivered_at: assetData.delivered_at,
+                  quantity: assetData.quantity,
+                  serial_last_4: assetData.serial_last_4
+                } }
+              );
+              updatedCount.v++;
+            } else {
+              await Asset.create(assetData);
+              createdCount.v++;
             }
-            const item = await Asset.create(a);
-            created.push(item);
-          } catch {}
+          } else {
+            await Asset.create(assetData);
+            createdCount.v++;
+          }
+        } catch (e) {
+          duplicates.push({ serial: serialStr || '', reason: e.message || 'Upsert error' });
         }
-        await ActivityLog.create({
-          user: req.user.name,
-          email: req.user.email,
-          role: req.user.role,
-          action: 'Bulk Import',
-          details: `Imported ${created.length} assets${warnings.length ? ` with ${warnings.length} duplicate warnings` : ''}`,
-          store: req.activeStore || (toInsert.length > 0 ? toInsert[0].store : undefined),
-          source: reqSource
-        });
-      } catch (e) {
-        console.error('Bulk insert error:', e?.message || e);
       }
-      const suffix = invalidRows.length
-        ? `, ${invalidRows.length} row(s) skipped due to invalid formatting/capitalization`
-        : '';
-      res.json({ message: `${toInsert.length} assets processed${suffix}`, skipped_duplicates: duplicates, invalid_rows: invalidRows });
-    } else {
-      const msg = invalidRows.length
-        ? `No valid assets found to import. ${invalidRows.length} row(s) skipped due to invalid formatting/capitalization`
-        : 'No valid assets found to import';
-      res.status(400).json({ message: msg, skipped_duplicates: duplicates, invalid_rows: invalidRows });
     }
+
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Bulk Upsert Assets',
+      details: `Upsert completed. Created ${createdCount.v}, Updated ${updatedCount.v}`,
+      store: req.activeStore
+    });
+    const suffix = invalidRows.length
+      ? `, ${invalidRows.length} row(s) skipped due to invalid formatting/capitalization`
+      : '';
+    res.json({
+      message: `Processed ${createdCount.v + updatedCount.v} assets (created ${createdCount.v}, updated ${updatedCount.v})${suffix}`,
+      skipped_duplicates: duplicates,
+      invalid_rows: invalidRows
+    });
 
   } catch (error) {
     console.error('Import processing error:', error);

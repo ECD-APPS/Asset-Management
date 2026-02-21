@@ -134,6 +134,12 @@ const assetSchema = new mongoose.Schema({
   delivered_at: {
     type: Date
   }
+  ,
+  quantity: {
+    type: Number,
+    default: 1,
+    min: 1
+  }
 }, { timestamps: true });
 
 // Compound Indexes for Common Filters

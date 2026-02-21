@@ -101,6 +101,7 @@ const Assets = () => {
     name: '',
     model_number: '',
     serial_number: '',
+    quantity: 1,
     mac_address: '',
     manufacturer: '',
     ticket_number: '',
@@ -448,6 +449,7 @@ const Assets = () => {
         name: '',
         model_number: '',
         serial_number: '',
+        quantity: 1,
         mac_address: '',
         manufacturer: '',
         ticket_number: '',
@@ -728,7 +730,7 @@ const Assets = () => {
             </div>
           )}
           <div className="mt-2 text-sm text-gray-600">
-            Excel headers supported: Category, Product Type, Product Name, Model, Serial, MAC, Manufacturer, Ticket, RFID, QR Code, Store, Location, Status, Condition
+            Excel headers supported: Category, Product Type, Product Name, Model, Quantity, Serial, MAC, Manufacturer, Ticket, RFID, QR Code, Store, Location, Status, Condition
           </div>
         </div>
       )}
@@ -1558,6 +1560,17 @@ const Assets = () => {
                   type="text"
                   name="serial_number"
                   value={addForm.serial_number}
+                  onChange={handleAddChange}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Quantity</label>
+                <input
+                  type="number"
+                  name="quantity"
+                  min="1"
+                  value={addForm.quantity}
                   onChange={handleAddChange}
                   className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                 />

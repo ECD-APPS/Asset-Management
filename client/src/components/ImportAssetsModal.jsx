@@ -114,7 +114,7 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
             <ul className="list-disc pl-4 space-y-1">
               <li>Upload an Excel file (.xlsx, .xls)</li>
               <li>Ensure columns match the template</li>
-              <li>Duplicates will be skipped unless checked</li>
+              <li>Upsert by Serial: Existing assets (same Serial & Store) will be updated; new ones will be created</li>
               <li>Optional: Select Location to apply to all rows</li>
             </ul>
           </div>
