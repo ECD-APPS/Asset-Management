@@ -220,3 +220,97 @@ When running in production with `COOKIE_SECURE=true` and CSRF enabled, serve the
 Notes:
 - Express is already configured with `app.set('trust proxy', 1)` so Secure cookies work behind Nginx.
 - Ensure Docker publishes the app on `127.0.0.1:5000` or adjust the upstream in the file accordingly.
+
+---
+
+## Local 3‑Tier Setup (Frontend, API, Database)
+
+This sets up three separate local processes on Linux for development:
+- Frontend (Vite React) on port 5173
+- API (Express/Node) on port 5000
+- MongoDB on port 27017
+
+### 1) Install Prerequisites
+```bash
+sudo apt update
+sudo apt install -y git curl build-essential
+```
+
+MongoDB (choose one):
+- Option A: Host service (simple for dev)
+  ```bash
+  sudo apt install -y mongodb || true
+  sudo systemctl enable --now mongodb || true
+  ```
+- Option B: Docker container (isolation, recommended if you have Docker)
+  ```bash
+  docker run -d --name expo-mongo \
+    -p 27017:27017 \
+    -v expo_mongo_data:/data/db \
+    mongo:6 --bind_ip_all
+  ```
+
+Node.js 18+:
+```bash
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v && npm -v
+```
+
+### 2) Clone the Repository
+```bash
+git clone https://github.com/tariq50243052-tech/Expo-Asset.git
+cd Expo-Asset
+```
+
+### 3) Configure the API (Tier 2)
+Create and edit `server/.env`:
+```bash
+cp server/.env.example server/.env
+nano server/.env
+```
+Suggested dev values:
+```
+MONGO_URI=mongodb://127.0.0.1:27017/expo-stores
+PORT=5000
+NODE_ENV=development
+CORS_ORIGIN=http://localhost:5173
+COOKIE_SECRET=$(openssl rand -hex 32)   # replace with a generated value
+COOKIE_SECURE=false
+# Dev default for CSRF is disabled; to force enable, set:
+# ENABLE_CSRF=true
+```
+
+Install and run the API:
+```bash
+cd server
+npm install
+npm run dev
+```
+The API will listen on http://localhost:5000.
+
+### 4) Run the Frontend (Tier 1)
+In a second terminal:
+```bash
+cd client
+npm install
+# If your API is on another host/IP, set VITE_API_HOST before starting:
+# VITE_API_HOST=127.0.0.1 npm run dev
+npm run dev
+```
+The frontend will run on http://localhost:5173 and proxy API calls to http://localhost:5000.
+
+### 5) Verification
+- API health: `curl http://localhost:5000/healthz` → should show backend/db readiness
+- API version: `curl http://localhost:5000/version`
+- Browser: open http://localhost:5173 and sign in
+- System status badge: should turn green when API and DB are healthy
+
+### 6) LAN Variant (Optional)
+Running tiers on different machines in a local network:
+- On the API server: set `CORS_ORIGIN=http://<client-host>:5173` in `server/.env`
+- On the client machine: start Vite with the API host
+  ```bash
+  VITE_API_HOST=<api-host-or-ip> npm run dev
+  ```
+Ensure firewalls allow 5173 (client) and 5000 (API) across machines, and that MongoDB is reachable from the API host (if using a separate DB host).
