@@ -1,8 +1,9 @@
-name: Deploy to Linux Host
+name: deploy
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -16,33 +17,24 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          script_stop: true
-          envs: APP_DIR,REPO_URL
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
           script: |
             set -e
-            APP_DIR="${APP_DIR:-/opt/expo-stores}"
-            REPO_URL="${REPO_URL:-https://github.com/tariq50243052-tech/Expo-Stores.git}"
-
-            echo "Deploying to $APP_DIR"
+            APP_DIR=${APP_DIR:-/srv/expo-asset}
             if [ ! -d "$APP_DIR/.git" ]; then
               sudo mkdir -p "$APP_DIR"
               sudo chown "$USER":"$USER" "$APP_DIR"
-              git clone "$REPO_URL" "$APP_DIR"
+              git clone https://github.com/tariq50243052-tech/Expo-Asset.git "$APP_DIR"
             fi
-
             cd "$APP_DIR"
             git fetch --all
             git reset --hard origin/main
-
-            npm run install:all
-            npm run build:prod
-
-            # Restart service if present
-            if command -v systemctl >/dev/null 2>&1; then
-              sudo systemctl restart expo-stores || true
-              sudo systemctl enable expo-stores || true
+            cd server && npm ci --omit=dev && cd ..
+            cd client && npm ci && npm run build && cd ..
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 describe expo-asset >/dev/null 2>&1 && pm2 reload expo-asset || pm2 start server/server.js --name expo-asset
+              pm2 save || true
+            else
+              nohup node server/server.js >/var/log/expo-asset.log 2>&1 &
             fi
-
-            echo "Deployment completed."
