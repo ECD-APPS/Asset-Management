@@ -1,24 +1,112 @@
-# Expo Stores - Ubuntu Deployment Guide
+# Linux (Ubuntu) Deployment Guide
 
-This guide will help you deploy the Expo Stores application on your local Ubuntu machine.
+This guide helps you deploy the Expo Asset application on Ubuntu (22.04+). It includes a recommended Docker Compose setup and a manual Node.js + PM2 alternative.
 
 ## Prerequisites
 
-Ensure you have the following installed on your Ubuntu machine:
-1.  **Node.js** (v18 or higher recommended)
-2.  **Git**
-3.  **MongoDB** (Ensure it is running)
+- Ubuntu server with sudo access
+- A domain name (for HTTPS, recommended)
+- Git installed
 
-## Step 1: Clone the Repository
+---
+
+## Option A — Docker Compose (Recommended)
+
+### 1) Install Docker Engine + Compose plugin
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg lsb-release
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+### 2) Clone the repository
+```bash
+git clone https://github.com/tariq50243052-tech/Expo-Asset.git
+cd Expo-Asset
+```
+
+### 3) Configure environment (production)
+- Edit docker-compose.yml (service: web → environment) as needed:
+  - COOKIE_SECRET: set to a secure random string
+  - Optional SMTP_* variables if you plan to use email features
+- Defaults included:
+  - MONGO_URI=mongodb://mongo:27017/expo_stores
+  - COOKIE_SECURE=true
+  - ENABLE_CSRF=true
+
+Example addition:
+```yaml
+services:
+  web:
+    environment:
+      - COOKIE_SECRET=<generate_a_random_32_bytes_value>
+```
+
+### 4) Build and start
+```bash
+docker compose build
+docker compose up -d
+```
+
+Check status and logs:
+```bash
+docker compose ps
+docker compose logs -f web
+```
+
+The app serves on http://<server-ip>:5000 by default.
+
+### 5) Enable HTTPS with Nginx (for Secure cookies)
+When COOKIE_SECURE=true and CSRF is enabled, run behind HTTPS. A template is provided:
+
+```bash
+sudo apt install -y nginx
+sudo cp scripts/deploy/nginx-expo-asset.conf /etc/nginx/sites-available/expo-asset.conf
+sudo nano /etc/nginx/sites-available/expo-asset.conf   # set your domain and cert paths
+sudo ln -s /etc/nginx/sites-available/expo-asset.conf /etc/nginx/sites-enabled/expo-asset.conf
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+Issue certificates with Certbot (optional):
+```bash
+sudo snap install --classic certbot
+sudo ln -s /snap/bin/certbot /usr/bin/certbot
+sudo certbot --nginx -d your-domain.example.com
+```
+
+Notes:
+- Express is configured with trust proxy so Secure cookies work behind Nginx.
+- Ensure Nginx proxies to 127.0.0.1:5000 and sets X-Forwarded-Proto.
+
+---
+
+## Option B — Node.js + PM2 (Manual)
+
+### 1) Install Node.js 18+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v && npm -v
+```
+
+### 2) Clone the repository
 
 Open your terminal and clone the repository (replace with your actual repo URL):
 
 ```bash
-git clone https://github.com/tariq50243052-tech/Expo-Store.git
-cd Expo-Store
+git clone https://github.com/tariq50243052-tech/Expo-Asset.git
+cd Expo-Asset
 ```
 
-## Step 2: Configure Environment Variables
+### 3) Configure Environment Variables
 
 1.  Navigate to the `server` directory:
     ```bash
@@ -36,6 +124,8 @@ cd Expo-Store
         *   **No Password (Default):** `mongodb://127.0.0.1:27017/expo_stores`
         *   **With Password:** `mongodb://username:password@127.0.0.1:27017/expo_stores?authSource=admin`
     *   **JWT_SECRET**: Change this to a secure random string.
+    *   **COOKIE_SECRET**: Set to a secure random string (required for production).
+    *   **COOKIE_SECURE**: Set `true` if serving over HTTPS via Nginx.
     *   **PORT**: Default is 5000.
 
 4.  Go back to the root directory:
@@ -43,7 +133,7 @@ cd Expo-Store
     cd ..
     ```
 
-## Step 3: Run the Deployment Script
+### 4) Run the Deployment Script
 
 We have provided a script to automate the installation and build process.
 
@@ -61,7 +151,7 @@ This script will:
 *   Install client dependencies.
 *   Build the React client into static files (`client/dist`).
 
-## Step 4: Start the Application
+### 5) Start the Application
 
 ### Option A: Run manually (for testing)
 ```bash
