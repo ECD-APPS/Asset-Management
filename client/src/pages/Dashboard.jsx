@@ -21,6 +21,8 @@ const Dashboard = () => {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [systemOk, setSystemOk] = useState(true);
+  const [health, setHealth] = useState({ backend: false, db: false });
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -37,6 +39,27 @@ const Dashboard = () => {
     };
 
     fetchStats();
+  }, []);
+
+  useEffect(() => {
+    let timer;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/healthz', { credentials: 'include' });
+        if (!res.ok) throw new Error('healthz failed');
+        const data = await res.json();
+        const backend = true;
+        const db = !!data.db_connected;
+        setHealth({ backend, db });
+        setSystemOk(backend && db);
+      } catch {
+        setHealth({ backend: false, db: false });
+        setSystemOk(false);
+      }
+    };
+    checkHealth();
+    timer = setInterval(checkHealth, 15000);
+    return () => clearInterval(timer);
   }, []);
 
   if (loading) return (
@@ -73,12 +96,13 @@ const Dashboard = () => {
           <p className="text-gray-500 mt-1">Welcome back, {user?.name}</p>
         </div>
 
-        {/* System Health / Status Indicator (Powerful feature) */}
-        {!loading && !error && (
-           <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-gray-100">
-             <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></div>
-             <span className="text-sm font-medium text-gray-600">System Operational</span>
-           </div>
+        {!loading && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-gray-100">
+            <div className={`w-2.5 h-2.5 rounded-full ${systemOk ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+            <span className="text-sm font-medium text-gray-600">
+              {systemOk ? 'System Operational' : 'Connectivity Issue'}
+            </span>
+          </div>
         )}
       </div>
 
