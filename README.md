@@ -41,6 +41,14 @@ This starts:
 Default data:
 - On first run, the system seeds default stores and ensures a Super Admin exists.
 
+## Deployment Guides
+
+- Linux (Ubuntu) Deployment Guide: see [DEPLOY_GUIDE.md](./DEPLOY_GUIDE.md)
+  - [Docker Compose (Recommended)](./DEPLOY_GUIDE.md#option-a--docker-compose-recommended)
+  - [Node.js + PM2 (Manual)](./DEPLOY_GUIDE.md#option-b--nodejs--pm2-manual)
+  - [Local 3-Tier Setup](./DEPLOY_GUIDE.md#local-3-tier-setup-frontend-api-database)
+  - [Reverse Proxy with Nginx (HTTPS + Secure Cookies)](./DEPLOY_GUIDE.md#reverse-proxy-with-nginx-https--secure-cookies)
+
 ## Environment Variables (server/.env)
 
 Copy and adjust:

@@ -223,7 +223,7 @@ Notes:
 
 ---
 
-## Local 3‑Tier Setup (Frontend, API, Database)
+## Local 3-Tier Setup (Frontend, API, Database)
 
 This sets up three separate local processes on Linux for development:
 - Frontend (Vite React) on port 5173
