@@ -14,3 +14,7 @@ services:
         sync: false
       - key: SESSION_MAX_AGE_MS
         value: 2592000000
+      - key: ENABLE_CSRF
+        value: true
+      - key: COOKIE_SECURE
+        value: true

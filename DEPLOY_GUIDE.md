@@ -92,3 +92,41 @@ PM2 keeps your application running in the background.
 
 *   **MongoDB Connection Error**: Ensure MongoDB is running (`sudo systemctl status mongod`).
 *   **Port In Use**: If port 5000 is taken, change `PORT` in `server/.env`.
+
+---
+
+## Reverse Proxy with Nginx (HTTPS + Secure Cookies)
+
+When running in production with `COOKIE_SECURE=true` and CSRF enabled, serve the app over HTTPS. Below is a minimal Nginx config that forwards HTTPS traffic to the Node app on `127.0.0.1:5000` and sets the `X-Forwarded-Proto` header so Express recognizes TLS.
+
+1. Install Nginx and Certbot (Ubuntu):
+   ```bash
+   sudo apt update
+   sudo apt install -y nginx
+   sudo snap install --classic certbot
+   sudo ln -s /snap/bin/certbot /usr/bin/certbot
+   ```
+
+2. Copy the template and edit domain paths:
+   ```bash
+   sudo mkdir -p /etc/nginx/sites-available
+   sudo cp scripts/deploy/nginx-expo-asset.conf /etc/nginx/sites-available/expo-asset.conf
+   sudo nano /etc/nginx/sites-available/expo-asset.conf
+   ```
+   Replace `your-domain.example.com` with your domain and cert paths.
+
+3. Enable the site and test:
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/expo-asset.conf /etc/nginx/sites-enabled/expo-asset.conf
+   sudo nginx -t
+   sudo systemctl restart nginx
+   ```
+
+4. Obtain certificates (optional if you already have them):
+   ```bash
+   sudo certbot --nginx -d your-domain.example.com
+   ```
+
+Notes:
+- Express is already configured with `app.set('trust proxy', 1)` so Secure cookies work behind Nginx.
+- Ensure Docker publishes the app on `127.0.0.1:5000` or adjust the upstream in the file accordingly.

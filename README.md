@@ -112,6 +112,27 @@ docker compose ps
 docker compose logs -f web
 ```
 
+## Reverse Proxy (Nginx) for HTTPS
+
+For Secure cookies and production CSRF, run behind HTTPS. A ready template is provided:
+
+- scripts/deploy/nginx-expo-asset.conf
+
+Steps (Ubuntu):
+1. Install Nginx and Certbot.
+2. Copy the template to `/etc/nginx/sites-available/expo-asset.conf`, replace your domain and cert paths.
+3. Enable and restart Nginx:
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/expo-asset.conf /etc/nginx/sites-enabled/expo-asset.conf
+   sudo nginx -t && sudo systemctl restart nginx
+   ```
+4. Obtain TLS certs with Certbot:
+   ```bash
+   sudo certbot --nginx -d your-domain.example.com
+   ```
+
+Express already runs with `trust proxy` so Secure cookies work behind Nginx.
+
 ## Branding: Custom Application Logo
 
 - Super Admin page: http://<host>:5000/portal
