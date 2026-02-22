@@ -57,6 +57,7 @@ app.use(mongoSanitize());
 
 // Cookies and CSRF
 const isProd = process.env.NODE_ENV === 'production';
+const cookieSecure = String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
 app.use(cookieParser(process.env.COOKIE_SECRET || 'dev-cookie-secret'));
 
 app.use(compression({
@@ -91,29 +92,47 @@ app.get('/readyz', async (req, res) => {
   res.status(state === 1 ? 200 : 503).json({ ready: state === 1 });
 });
 
-// CSRF protection - DISABLED for local dev stability
-// const csrfProtection = csrf({
-//   cookie: {
-//     key: 'XSRF-TOKEN',
-//     httpOnly: false,
-//     sameSite: 'lax',
-//     secure: false, // Force false for local dev (http)
-//     path: '/',
-//   }
-// });
-// app.use(csrfProtection);
-app.use((req, res, next) => {
-  // Mock csrfToken function for templates/responses that expect it
-  req.csrfToken = () => 'dev-token-bypass';
-  // Also set the cookie so frontend doesn't complain if it looks for it
-  res.cookie('XSRF-TOKEN', 'dev-token-bypass', {
-    httpOnly: false,
-    sameSite: 'lax',
-    secure: false,
-    path: '/',
+// CSRF protection
+const enableCsrf = String(process.env.ENABLE_CSRF || (isProd ? 'true' : 'false')).toLowerCase() === 'true';
+if (enableCsrf) {
+  const csrfProtection = csrf({
+    cookie: {
+      key: 'csrfSecret',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: cookieSecure,
+      path: '/',
+    }
   });
-  next();
-});
+  app.use(csrfProtection);
+  // Expose token for client apps via non-HttpOnly cookie (read by Axios)
+  app.use((req, res, next) => {
+    try {
+      const token = req.csrfToken();
+      res.cookie('XSRF-TOKEN', token, {
+        httpOnly: false,
+        sameSite: 'lax',
+        secure: cookieSecure,
+        path: '/',
+      });
+    } catch (e) {
+      // If token generation fails for non-session endpoints, ignore
+    }
+    next();
+  });
+} else {
+  // Dev bypass (no CSRF checks)
+  app.use((req, res, next) => {
+    req.csrfToken = () => 'dev-token-bypass';
+    res.cookie('XSRF-TOKEN', 'dev-token-bypass', {
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: false,
+      path: '/',
+    });
+    next();
+  });
+}
 
 // Audit logging
 app.use((req, res, next) => {
