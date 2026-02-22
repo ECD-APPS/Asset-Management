@@ -1,17 +1,14 @@
 name: deploy
-
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v0.1.7
         with:
@@ -22,19 +19,22 @@ jobs:
           script: |
             set -e
             APP_DIR=${APP_DIR:-/srv/expo-asset}
+            REPO_URL=${REPO_URL:-https://github.com/tariq50243052-tech/Expo-Asset.git}
             if [ ! -d "$APP_DIR/.git" ]; then
               sudo mkdir -p "$APP_DIR"
               sudo chown "$USER":"$USER" "$APP_DIR"
-              git clone https://github.com/tariq50243052-tech/Expo-Asset.git "$APP_DIR"
+              git clone "$REPO_URL" "$APP_DIR"
             fi
             cd "$APP_DIR"
             git fetch --all
             git reset --hard origin/main
-            cd server && npm ci --omit=dev && cd ..
-            cd client && npm ci && npm run build && cd ..
-            if command -v pm2 >/dev/null 2>&1; then
-              pm2 describe expo-asset >/dev/null 2>&1 && pm2 reload expo-asset || pm2 start server/server.js --name expo-asset
-              pm2 save || true
-            else
-              nohup node server/server.js >/var/log/expo-asset.log 2>&1 &
+            if ! command -v docker >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update
+                sudo apt-get install -y docker.io docker-compose-plugin
+              fi
             fi
+            sudo usermod -aG docker "$USER" || true
+            docker compose -f docker-compose.yml build
+            docker compose -f docker-compose.yml up -d
+            docker system prune -f || true
