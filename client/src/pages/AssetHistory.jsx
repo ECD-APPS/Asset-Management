@@ -106,12 +106,28 @@ const AssetHistory = () => {
                   <div className="font-semibold">{asset.quantity ?? 1}</div>
                 </div>
                 <div>
+                  <div className="text-xs text-gray-500">PO Number</div>
+                  <div className="font-semibold">{asset.po_number || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500">Price</div>
+                  <div className="font-semibold">{typeof asset.price === 'number' ? `$${asset.price.toFixed(2)}` : '-'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500">Date of Purchase</div>
+                  <div className="font-semibold">{asset.createdAt ? new Date(asset.createdAt).toLocaleDateString() : '-'}</div>
+                </div>
+                <div>
                   <div className="text-xs text-gray-500">Vendor Name</div>
                   <div className="font-semibold">{asset.vendor_name || '-'}</div>
                 </div>
                 <div>
                   <div className="text-xs text-gray-500">Source</div>
                   <div className="font-semibold">{asset.source || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500">Ticket Number</div>
+                  <div className="font-semibold">{asset.ticket_number || '-'}</div>
                 </div>
                 <div>
                   <div className="text-xs text-gray-500">Delivered By</div>
@@ -133,6 +149,27 @@ const AssetHistory = () => {
                   <div className="text-xs text-gray-500">Assigned To</div>
                   <div className="font-semibold">{asset.assigned_to?.name || asset.assigned_to_external?.name || '-'}</div>
                 </div>
+                {asset.assigned_to_external && asset.assigned_to_external.name && (
+                  <>
+                    <div>
+                      <div className="text-xs text-gray-500">Assignee Phone</div>
+                      <div className="font-semibold">{asset.assigned_to_external.phone || '-'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Assignee Note</div>
+                      <div className="font-semibold">{asset.assigned_to_external.note || '-'}</div>
+                    </div>
+                  </>
+                )}
+                {asset.return_pending && asset.return_request && (
+                  <div className="col-span-2 md:col-span-4 bg-yellow-50 p-3 rounded border border-yellow-200">
+                     <div className="text-xs font-bold text-yellow-800 mb-1">Return Pending</div>
+                     <div className="text-sm">
+                       <span className="font-semibold">Condition:</span> {asset.return_request.condition || '-'} | <span className="font-semibold">Ticket:</span> {asset.return_request.ticket_number || '-'} | <span className="font-semibold">By:</span> {asset.return_request.requested_by?.name || '-'}
+                       <div className="mt-1"><span className="font-semibold">Notes:</span> {asset.return_request.notes || '-'}</div>
+                     </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

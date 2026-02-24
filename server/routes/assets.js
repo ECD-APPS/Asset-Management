@@ -419,6 +419,7 @@ router.get('/:id([0-9a-fA-F]{24})', protect, async (req, res) => {
         }
       })
       .populate('assigned_to', 'name email')
+      .populate('return_request.requested_by', 'name email')
       .lean();
     if (!asset) {
       return res.status(404).json({ message: 'Asset not found' });
