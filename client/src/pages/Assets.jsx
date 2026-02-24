@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw } from 'lucide-react';
+import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw, Scissors } from 'lucide-react';
 import api from '../api/axios';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../context/AuthContext';
@@ -55,6 +55,42 @@ const Assets = () => {
 
   const openConfirm = (title, message, onConfirm, type = 'danger', confirmText = 'Confirm') => {
     setConfirmModal({ isOpen: true, title, message, onConfirm, type, confirmText });
+  };
+
+  const [splitModal, setSplitModal] = useState({
+    isOpen: false,
+    asset: null,
+    quantity: 1,
+    status: 'Faulty',
+    condition: 'Faulty'
+  });
+
+  const handleSplitClick = (asset) => {
+    setSplitModal({
+      isOpen: true,
+      asset,
+      quantity: 1,
+      status: 'Faulty',
+      condition: 'Faulty'
+    });
+  };
+
+  const handleSplitSubmit = async () => {
+    try {
+      if (!splitModal.asset) return;
+      await api.post('/assets/split', {
+        assetId: splitModal.asset._id,
+        splitQuantity: splitModal.quantity,
+        newStatus: splitModal.status,
+        newCondition: splitModal.condition
+      });
+      alert('Asset split successfully');
+      setSplitModal(prev => ({ ...prev, isOpen: false }));
+      fetchAssets(undefined, { silent: true });
+    } catch (error) {
+      console.error('Error splitting asset:', error);
+      alert(error.response?.data?.message || 'Failed to split asset');
+    }
   };
 
   const handleConfirmImport = async () => {
@@ -267,8 +303,8 @@ const Assets = () => {
 
   // Sync category & status params from URL
   useEffect(() => {
-    if (productParam) setFilterProductName(productParam);
-    if (statusParam) setFilterStatus(statusParam);
+    setFilterProductName(productParam || '');
+    setFilterStatus(statusParam || '');
     if (actionParam === 'add') setShowAddModal(true);
   }, [productParam, statusParam, actionParam]);
 
@@ -1319,6 +1355,16 @@ const Assets = () => {
                       >
                         Edit
                       </button>
+                      {asset.quantity > 1 && (
+                        <button
+                          onClick={() => handleSplitClick(asset)}
+                          className="text-purple-600 hover:text-purple-900 font-medium text-sm md:text-base flex items-center gap-1"
+                          title="Split / Report Faulty"
+                        >
+                          <Scissors size={14} />
+                          Split
+                        </button>
+                      )}
                       {(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) ? (
                         <button 
                           onClick={() => handleUnassign(asset)}
@@ -1410,6 +1456,15 @@ const Assets = () => {
               >
                 <Edit size={16} /> Edit
               </button>
+              {asset.quantity > 1 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleSplitClick(asset); }}
+                  className="flex-none flex items-center justify-center bg-purple-50 text-purple-700 p-2 rounded-md hover:bg-purple-100 transition-colors border border-purple-200"
+                  aria-label="Split"
+                >
+                  <Scissors size={16} />
+                </button>
+              )}
               {(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) ? (
                 <button 
                   onClick={(e) => { e.stopPropagation(); handleUnassign(asset); }}
@@ -2119,6 +2174,81 @@ const Assets = () => {
                 }`}
               >
                 {confirmModal.confirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Split Asset Modal */}
+      {splitModal.isOpen && splitModal.asset && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex justify-center items-center z-[100]">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md mx-4">
+            <h2 className="text-xl font-bold mb-2">Split / Report Faulty</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              Splitting from: <strong>{splitModal.asset.name}</strong> (Qty: {splitModal.asset.quantity})
+            </p>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Quantity to Split</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={splitModal.asset.quantity - 1}
+                  value={splitModal.quantity}
+                  onChange={(e) => setSplitModal(prev => ({ ...prev, quantity: parseInt(e.target.value) || 1 }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                />
+                <p className="text-xs text-gray-500 mt-1">Remaining quantity will be: {splitModal.asset.quantity - splitModal.quantity}</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">New Status</label>
+                <select
+                  value={splitModal.status}
+                  onChange={(e) => setSplitModal(prev => ({ ...prev, status: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="Faulty">Faulty</option>
+                  <option value="Under Repair">Under Repair</option>
+                  <option value="Disposed">Disposed</option>
+                  <option value="Spare">Spare</option>
+                  <option value="In Use">In Use</option>
+                  <option value="Missing">Missing</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">New Condition</label>
+                <select
+                  value={splitModal.condition}
+                  onChange={(e) => setSplitModal(prev => ({ ...prev, condition: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="Faulty">Faulty</option>
+                  <option value="Used">Used</option>
+                  <option value="Repaired">Repaired</option>
+                  <option value="Under Repair">Under Repair</option>
+                  <option value="New">New</option>
+                  <option value="Disposed">Disposed</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end space-x-3 mt-6">
+              <button
+                onClick={() => setSplitModal(prev => ({ ...prev, isOpen: false }))}
+                className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSplitSubmit}
+                disabled={splitModal.quantity >= splitModal.asset.quantity || splitModal.quantity < 1}
+                className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 disabled:opacity-50"
+              >
+                Split Asset
               </button>
             </div>
           </div>

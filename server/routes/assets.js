@@ -1074,6 +1074,73 @@ router.post('/bulk-delete', protect, admin, async (req, res) => {
   }
 });
 
+// @desc    Split asset quantity (e.g., report faulty items from a batch)
+// @route   POST /api/assets/split
+// @access  Private (Admin/Technician)
+router.post('/split', protect, async (req, res) => {
+  const { assetId, splitQuantity, newStatus, newCondition } = req.body;
+  const qtyToSplit = parseInt(splitQuantity, 10);
+
+  if (!assetId || !qtyToSplit || qtyToSplit <= 0) {
+    return res.status(400).json({ message: 'Invalid parameters' });
+  }
+
+  try {
+    const asset = await Asset.findById(assetId);
+    if (!asset) {
+      return res.status(404).json({ message: 'Asset not found' });
+    }
+
+    // RBAC: Check store access
+    if (req.activeStore && asset.store && asset.store.toString() !== req.activeStore.toString()) {
+      return res.status(403).json({ message: 'Access denied to this store asset' });
+    }
+
+    if (asset.quantity <= qtyToSplit) {
+      return res.status(400).json({ message: 'Split quantity must be less than current asset quantity. Use Edit to change status of entire batch.' });
+    }
+
+    // 1. Decrement original asset quantity
+    asset.quantity -= qtyToSplit;
+    await asset.save();
+
+    // 2. Create new asset with split quantity and new status
+    const newAssetData = asset.toObject();
+    delete newAssetData._id;
+    delete newAssetData.createdAt;
+    delete newAssetData.updatedAt;
+    delete newAssetData.__v;
+    
+    // Generate new Unique ID for the new batch
+    newAssetData.uniqueId = await generateUniqueId(asset.name);
+    newAssetData.quantity = qtyToSplit;
+    newAssetData.status = newStatus || 'Faulty';
+    newAssetData.condition = newCondition || 'Faulty';
+    newAssetData.source = 'Split from ' + asset.uniqueId;
+    
+    // Clear assignment if splitting (usually split items go to store/faulty pile, not stay assigned to same person immediately)
+    newAssetData.assigned_to = null;
+    newAssetData.assigned_to_external = null;
+
+    const newAsset = await Asset.create(newAssetData);
+
+    // 3. Log Activity
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      store: asset.store,
+      action: 'Split Asset',
+      details: `Split ${qtyToSplit} items from ${asset.name} (${asset.uniqueId}) as ${newStatus}`
+    });
+
+    res.status(200).json({ original: asset, new: newAsset });
+  } catch (error) {
+    console.error('Error splitting asset:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @desc    Preview bulk upload assets via Excel (no database writes)
 // @route   POST /api/assets/import/preview
 // @access  Private (Admin or Technician)
