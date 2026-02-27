@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw, Scissors } from 'lucide-react';
+import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw, Scissors, Clock } from 'lucide-react';
 import api from '../api/axios';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../context/AuthContext';
@@ -42,6 +42,8 @@ const Assets = () => {
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
   const [bulkForm, setBulkForm] = useState({ status: '', condition: '', manufacturer: '', locationId: '' });
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [showRecentUploads, setShowRecentUploads] = useState(false);
+  const [prevVisibleColumns, setPrevVisibleColumns] = useState(null);
   
   // Custom Confirmation Modal State
   const [confirmModal, setConfirmModal] = useState({
@@ -276,6 +278,42 @@ const Assets = () => {
     price: true
   });
 
+  useEffect(() => {
+    if (showRecentUploads) {
+      setPrevVisibleColumns(visibleColumns);
+      setVisibleColumns({
+        uniqueId: false,
+        name: true,
+        model: true,
+        serial: true,
+        serialLast4: false,
+        ticket: true,
+        poNumber: false,
+        mac: true,
+        rfid: true,
+        qr: true,
+        manufacturer: true,
+        condition: true,
+        status: true,
+        prevStatus: false,
+        store: true,
+        location: true,
+        quantity: true,
+        vendor: true,
+        source: false,
+        deliveredBy: true,
+        deliveredAt: true,
+        assignedTo: false,
+        dateTime: false,
+        price: true,
+        action: true
+      });
+    } else if (prevVisibleColumns) {
+      setVisibleColumns(prevVisibleColumns);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRecentUploads]);
+
   const handleTopEdit = () => {
     if (selectedIds.length === 0) return;
     if (selectedIds.length === 1) {
@@ -331,6 +369,7 @@ const Assets = () => {
         params: {
           page,
           limit,
+          recent_upload: showRecentUploads,
           q: searchTerm || undefined,
           status: filterStatus || undefined,
           location: filterLocation || undefined,
@@ -799,7 +838,7 @@ const Assets = () => {
     }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchTerm, filterLocation, filterStatus, filterCondition, filterManufacturer, filterModelNumber, filterSerialNumber, filterMacAddress, filterProductName, filterTicket, filterRfid, filterQr, filterDateFrom, filterDateTo]);
+  }, [showRecentUploads, searchTerm, filterLocation, filterStatus, filterCondition, filterManufacturer, filterModelNumber, filterSerialNumber, filterMacAddress, filterProductName, filterTicket, filterRfid, filterQr, filterDateFrom, filterDateTo]);
 
   // Page/Limit change effect
   useEffect(() => {
@@ -1128,12 +1167,21 @@ const Assets = () => {
               )}
             </div>
             <button
+              onClick={() => setShowRecentUploads(prev => !prev)}
+              className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg border ${showRecentUploads ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'}`}
+              title="Show only the most recently uploaded assets"
+            >
+              <Clock className="w-4 h-4" />
+              Recent Uploads
+            </button>
+            <button
               onClick={() => {
                 setSearchTerm(''); setFilterLocation(''); setFilterStatus(''); setFilterCondition('');
                 setFilterManufacturer(''); setFilterProductName('');
                 setFilterModelNumber(''); setFilterSerialNumber(''); setFilterMacAddress('');
                 setFilterTicket(''); setFilterRfid(''); setFilterQr('');
                 setFilterDateFrom(''); setFilterDateTo('');
+                setShowRecentUploads(false);
               }}
               className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
             >

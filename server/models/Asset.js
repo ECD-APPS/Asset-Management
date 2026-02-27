@@ -140,6 +140,10 @@ const assetSchema = new mongoose.Schema({
     type: Date
   }
   ,
+  importBatchId: {
+    type: String,
+    index: true
+  },
   quantity: {
     type: Number,
     default: 1,

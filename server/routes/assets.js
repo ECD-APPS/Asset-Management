@@ -9,6 +9,8 @@ const ActivityLog = require('../models/ActivityLog');
 const Request = require('../models/Request');
 const { protect, admin, restrictViewer } = require('../middleware/authMiddleware');
 const xlsx = require('xlsx');
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' });
 
  
 
@@ -345,6 +347,30 @@ router.get('/', protect, async (req, res) => {
     }
 
     // category removed
+
+    if (req.query.recent_upload === 'true') {
+      const batchQuery = { importBatchId: { $exists: true } };
+      
+      if (storeId) {
+        const ids = await getStoreIds(storeId);
+        batchQuery.store = { $in: ids };
+      } else if (contextStoreId) {
+        const allowedIds = await getStoreIds(contextStoreId);
+        batchQuery.store = { $in: allowedIds };
+      }
+
+      const lastBatch = await Asset.findOne(batchQuery).sort({ createdAt: -1 }).select('importBatchId');
+      if (lastBatch && lastBatch.importBatchId) {
+        filter.importBatchId = lastBatch.importBatchId;
+      } else {
+        return res.json({
+          assets: [],
+          page: 1,
+          pages: 0,
+          total: 0
+        });
+      }
+    }
     if (manufacturer) filter.manufacturer = new RegExp(manufacturer, 'i');
     if (modelNumber) filter.model_number = new RegExp(modelNumber, 'i');
     if (serialNumber) filter.serial_number = new RegExp(serialNumber, 'i');
@@ -1188,6 +1214,7 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
     return res.status(400).json({ message: 'No file uploaded' });
   }
   try {
+    const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     if (!workbook || !Array.isArray(workbook.SheetNames) || workbook.SheetNames.length === 0) {
       return res.status(400).json({ message: 'Invalid Excel file: no sheets found' });
@@ -1337,6 +1364,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
   }
 
   try {
+    const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     if (!workbook || !Array.isArray(workbook.SheetNames) || workbook.SheetNames.length === 0) {
       return res.status(400).json({ message: 'Invalid Excel file: no sheets found' });
@@ -1631,6 +1659,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
         }
 
         const assetData = {
+          importBatchId,
           name: String(name || '').toUpperCase(),
           model_number: model,
           serial_number: serialStr,
@@ -1663,6 +1692,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
               await Asset.updateOne(
                 { _id: existing._id },
                 { $set: {
+                  importBatchId: assetData.importBatchId,
                   name: assetData.name,
                   model_number: assetData.model_number,
                   mac_address: assetData.mac_address,
