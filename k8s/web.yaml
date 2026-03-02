@@ -13,11 +13,9 @@ spec:
       labels:
         app: expo-web
     spec:
-      nodeSelector:
-        role: web
       containers:
       - name: web
-        image: registry.example.com/expo-stores/web:1.0.0
+        image: expo-asset-web:latest
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80

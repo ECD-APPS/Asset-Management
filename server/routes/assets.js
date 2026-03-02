@@ -10,7 +10,13 @@ const Request = require('../models/Request');
 const { protect, admin, restrictViewer } = require('../middleware/authMiddleware');
 const xlsx = require('xlsx');
 const multer = require('multer');
-const upload = multer({ dest: 'uploads/' });
+const fs = require('fs');
+const path = require('path');
+const uploadDir = path.join(__dirname, '../uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+const upload = multer({ dest: uploadDir });
 
  
 

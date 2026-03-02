@@ -39,11 +39,9 @@ spec:
       labels:
         app: expo-app
     spec:
-      nodeSelector:
-        role: app
       containers:
       - name: app
-        image: registry.example.com/expo-stores/app:1.0.0
+        image: expo-asset-app:latest
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 5000

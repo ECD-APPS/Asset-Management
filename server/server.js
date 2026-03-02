@@ -34,9 +34,18 @@ const Asset = require('./models/Asset');
 const Request = require('./models/Request');
 // Removed AssetCategory usage
 
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, '.env') });
+
 
 const app = express();
+
+// Ensure runtime directories exist on Linux containers and k3s volumes
+try {
+  const uploadsDir = path.join(__dirname, 'uploads');
+  const backupsDir = path.join(__dirname, 'backups');
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
+} catch {}
 
 // Security & hardening
 app.disable('x-powered-by');
@@ -248,15 +257,17 @@ app.get('*', (req, res) => {
 });
 
 let backupJobStarted = false;
+let mongod = null;
 
 // Connect to MongoDB
 const connectDB = async () => {
   try {
+    const timeout = process.env.NODE_ENV === 'production' ? 30000 : 5000;
     await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 30000, // Keep trying to send operations for 30s
-      socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+      serverSelectionTimeoutMS: timeout,
+      socketTimeoutMS: 45000,
     });
-    console.log('MongoDB Connected');
+    console.log('MongoDB Connected to:', process.env.MONGO_URI);
     
     if (String(process.env.SEED_DEFAULTS || '').toLowerCase() === 'true') {
       await seedStoresAndUsers();
@@ -283,6 +294,24 @@ const connectDB = async () => {
     }
   } catch (err) {
     console.error('MongoDB Connection Error:', err);
+    
+    // Fallback to in-memory MongoDB for development
+    if (process.env.NODE_ENV !== 'production' && !mongod) {
+      console.log('Attempting to start in-memory MongoDB...');
+      try {
+        const { MongoMemoryServer } = require('mongodb-memory-server');
+        mongod = await MongoMemoryServer.create();
+        const uri = mongod.getUri();
+        console.log('In-memory MongoDB started at:', uri);
+        process.env.MONGO_URI = uri;
+        
+        // Retry immediately with new URI
+        return connectDB();
+      } catch (memErr) {
+        console.error('Failed to start in-memory MongoDB:', memErr);
+      }
+    }
+
     // Retry connection after 5 seconds
     setTimeout(connectDB, 5000);
   }

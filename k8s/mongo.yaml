@@ -41,12 +41,6 @@ spec:
       labels:
         app: mongo
     spec:
-      nodeSelector:
-        role: db
-      tolerations:
-      - key: db-only
-        operator: Exists
-        effect: NoSchedule
       containers:
       - name: mongo
         image: mongo:6
