@@ -47,7 +47,19 @@ COOKIE_SECRET=replace_with_secure_random_value
 COOKIE_SECURE=false
 ENABLE_CSRF=true
 CORS_ORIGIN=http://10.96.133.181
+SEED_DEFAULTS=true
 ```
+
+### Default Login Accounts (deployment-safe)
+
+With `SEED_DEFAULTS=true`, backend startup ensures these users always exist with these credentials:
+
+- `superadmin@expo.com` / `superadmin123`
+- `scy@expo.com` / `admin123`
+- `it@expo.com` / `admin123`
+- `noc@expo.com` / `admin123`
+
+This is idempotent and safe across restarts, as long as MongoDB data persists.
 
 Run backend:
 
@@ -104,6 +116,29 @@ nc -zv 10.96.133.213 27017
 
 From browser:
 - open `http://10.96.133.181`
+
+Credential verification checklist:
+
+```bash
+# On App VM
+curl -sS http://127.0.0.1:5000/healthz
+```
+
+- Login test in browser for:
+  - `superadmin@expo.com` / `superadmin123`
+  - `scy@expo.com` / `admin123`
+  - `it@expo.com` / `admin123`
+  - `noc@expo.com` / `admin123`
+
+Restart persistence test:
+
+```bash
+# App VM
+pm2 restart expo-app
+curl -sS http://127.0.0.1:5000/healthz
+```
+
+Then re-test the same logins to confirm persisted availability.
 
 ## Troubleshooting
 

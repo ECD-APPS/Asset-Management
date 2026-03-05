@@ -31,38 +31,40 @@ const seedStoresAndUsers = async () => {
       storeMap[sData.name] = store;
     }
 
-    // 2. Create Super Admin
-    const superAdminEmail = 'superadmin@expo.com';
-    const superAdminExists = await User.findOne({ email: superAdminEmail });
-
-    if (!superAdminExists) {
+    const buildHash = async (plainText) => {
       const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash('superadmin123', salt);
+      return bcrypt.hash(plainText, salt);
+    };
 
-      await User.create({
+    // 2. Create/Normalize Super Admin
+    const superAdminEmail = 'superadmin@expo.com';
+    let superAdmin = await User.findOne({ email: superAdminEmail });
+    const superAdminHashedPassword = await buildHash('superadmin123');
+
+    if (!superAdmin) {
+      superAdmin = await User.create({
         name: 'Super Admin',
         email: superAdminEmail,
-        password: hashedPassword,
+        password: superAdminHashedPassword,
         role: 'Super Admin',
-        // Super Admin is not restricted to a single store, so assignedStore can be null
-        assignedStore: null 
+        assignedStore: null
       });
       console.log(`Created Super Admin: ${superAdminEmail} / superadmin123`);
     } else {
-      // Ensure role is Super Admin
-      if (superAdminExists.role !== 'Super Admin') {
-          superAdminExists.role = 'Super Admin';
-          await superAdminExists.save();
-          console.log('Updated Super Admin role');
-      }
-      console.log('Super Admin already exists');
+      superAdmin.name = 'Super Admin';
+      superAdmin.role = 'Super Admin';
+      superAdmin.assignedStore = null;
+      // Keep default deploy credentials deterministic per user requirement.
+      superAdmin.password = superAdminHashedPassword;
+      await superAdmin.save();
+      console.log(`Updated Super Admin defaults: ${superAdminEmail} / superadmin123`);
     }
 
     // 3. Create Default Store Admins
     const defaultAdmins = [
-      { name: 'SCY Admin', email: 'scy@expo.com', storeName: 'SCY ASSET' },
-      { name: 'IT Admin', email: 'it@expo.com', storeName: 'IT ASSET' },
-      { name: 'NOC Admin', email: 'noc@expo.com', storeName: 'NOC ASSET' }
+      { name: 'SCY Admin', email: 'scy@expo.com', storeName: 'SCY ASSET', password: 'admin123' },
+      { name: 'IT Admin', email: 'it@expo.com', storeName: 'IT ASSET', password: 'admin123' },
+      { name: 'NOC Admin', email: 'noc@expo.com', storeName: 'NOC ASSET', password: 'admin123' }
     ];
 
     for (const adminData of defaultAdmins) {
@@ -71,9 +73,8 @@ const seedStoresAndUsers = async () => {
       if (store) {
         let adminUser = await User.findOne({ email: adminData.email });
         
+        const hashedPassword = await buildHash(adminData.password);
         if (!adminUser) {
-          const salt = await bcrypt.genSalt(10);
-          const hashedPassword = await bcrypt.hash('admin123', salt);
           await User.create({
             name: adminData.name,
             email: adminData.email,
@@ -81,27 +82,15 @@ const seedStoresAndUsers = async () => {
             role: 'Admin',
             assignedStore: store._id
           });
-          console.log(`Created ${adminData.name}: ${adminData.email} / admin123`);
+          console.log(`Created ${adminData.name}: ${adminData.email} / ${adminData.password}`);
         } else {
-          // Check and update permissions if needed
-          let needsUpdate = false;
-          
-          if (adminUser.role !== 'Admin') {
-            adminUser.role = 'Admin';
-            needsUpdate = true;
-          }
-          
-          if (!adminUser.assignedStore || adminUser.assignedStore.toString() !== store._id.toString()) {
-            adminUser.assignedStore = store._id;
-            needsUpdate = true;
-          }
-
-          if (needsUpdate) {
-            await adminUser.save();
-            console.log(`Updated permissions for ${adminData.name} (Role: Admin, Store: ${adminData.storeName})`);
-          } else {
-            console.log(`Admin exists and is up to date: ${adminData.email}`);
-          }
+          adminUser.name = adminData.name;
+          adminUser.role = 'Admin';
+          adminUser.assignedStore = store._id;
+          // Keep default deploy credentials deterministic per user requirement.
+          adminUser.password = hashedPassword;
+          await adminUser.save();
+          console.log(`Updated defaults for ${adminData.email} / ${adminData.password}`);
         }
       } else {
         console.error(`Store ${adminData.storeName} not found for admin ${adminData.email}`);

@@ -34,7 +34,17 @@ PORT=5000
 JWT_SECRET=change_to_random_secret
 COOKIE_SECRET=change_to_random_secret
 COOKIE_SECURE=false
+SEED_DEFAULTS=true
 ```
+
+## Default login accounts
+
+With `SEED_DEFAULTS=true`, startup ensures these accounts exist with these passwords:
+
+- `superadmin@expo.com` / `superadmin123`
+- `scy@expo.com` / `admin123`
+- `it@expo.com` / `admin123`
+- `noc@expo.com` / `admin123`
 
 ## 3) Start MongoDB
 

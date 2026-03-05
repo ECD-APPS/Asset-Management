@@ -1,73 +1,154 @@
-import { useState } from 'react';
-import { Outlet, Link } from 'react-router-dom';
-import { Menu, Settings } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Outlet, Link, useNavigate } from 'react-router-dom';
+import { Menu, Search, ChevronDown, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { useAuth } from '../context/AuthContext';
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const { user, branding } = useAuth();
+  const [headerSearch, setHeaderSearch] = useState('');
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [systemHealthy, setSystemHealthy] = useState(true);
+  const { user, logout, activeStore } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let timer;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/healthz', { credentials: 'include' });
+        if (!res.ok) throw new Error('health check failed');
+        const data = await res.json();
+        setSystemHealthy(Boolean(data?.db_connected));
+      } catch {
+        setSystemHealthy(false);
+      }
+    };
+
+    checkHealth();
+    timer = setInterval(checkHealth, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const handleHeaderSearch = (e) => {
+    e.preventDefault();
+    const q = headerSearch.trim();
+    if (!q) return;
+    navigate(`/assets?search=${encodeURIComponent(q)}`);
+    setHeaderSearch('');
+    setProfileOpen(false);
+  };
 
   return (
-    <div className="flex h-screen bg-app-page text-app-main">
+    <div className="flex h-screen bg-app-page text-app-main font-sans">
       {/* Mobile Sidebar Overlay */}
       {sidebarOpen && (
-        <div 
-          className="fixed inset-0 z-40 bg-black bg-opacity-50 md:hidden"
+        <div
+          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm md:hidden"
           onClick={() => setSidebarOpen(false)}
-        ></div>
+        />
       )}
 
       {/* Sidebar Wrapper */}
-      <div className={`fixed inset-y-0 left-0 z-50 transform transition-all duration-300 ease-in-out 
-        ${isCollapsed ? 'md:w-20' : 'md:w-64'} 
-        w-64 
-        md:relative md:translate-x-0 
+      <div
+        className={`fixed inset-y-0 left-0 z-50 transform transition-all duration-300 ease-in-out
+        ${isCollapsed ? 'md:w-[88px]' : 'md:w-64'}
+        w-64
+        md:relative md:translate-x-0
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
-        <Sidebar 
-          onClose={() => setSidebarOpen(false)} 
-          isCollapsed={isCollapsed} 
-          toggleCollapse={() => setIsCollapsed(!isCollapsed)} 
+        <Sidebar
+          onClose={() => setSidebarOpen(false)}
+          isCollapsed={isCollapsed}
+          toggleCollapse={() => setIsCollapsed(!isCollapsed)}
         />
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Mobile Header */}
-        <header className="flex items-center justify-between p-4 bg-app-sidebar text-app-sidebar shadow md:hidden z-30 border-b border-app-sidebar">
-            <button onClick={() => setSidebarOpen(true)} className="text-white p-1">
-                <Menu size={24} />
+        <header className="flex items-center justify-between border-b border-app-sidebar bg-app-sidebar text-app-sidebar px-4 py-3 shadow-sm md:hidden z-30">
+            <button onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+                <Menu size={22} strokeWidth={1.5} />
             </button>
-            {user?.role === 'Technician' ? (
-              <span className="font-bold text-lg">Expo City Dubai</span>
-            ) : (
-              <img src={branding?.logoUrl || '/logo.svg'} alt="Expo City Dubai" className="h-8" />
-            )}
-            {user?.role === 'Admin' && (
-              <Link to="/setup" className="text-white p-1">
-                <Settings size={24} />
+            <div className="flex flex-col items-center">
+              <span className="text-sm font-semibold">SCY Asset</span>
+              <span className={`text-xs ${systemHealthy ? 'text-emerald-300' : 'text-rose-300'}`}>
+                {systemHealthy ? 'System Operational' : 'System Degraded'}
+              </span>
+            </div>
+            {user?.role === 'Admin' ? (
+              <Link to="/setup" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+                <Settings size={20} strokeWidth={1.5} />
               </Link>
+            ) : (
+              <div className="w-8" />
             )}
-            {user?.role !== 'Admin' && <div className="w-8"></div>}
         </header>
 
         {/* Desktop Header */}
-        <header className="hidden md:flex items-center justify-between p-4 bg-app-header z-30 px-8">
-            <h2 className="text-xl font-semibold text-app-main">
-              {/* Dynamic Title could go here, for now empty or Breadcrumb */}
-            </h2>
+        <header className="hidden md:flex items-center justify-between bg-app-header border-b border-app-card px-8 py-4 shadow-sm z-30">
+            <form onSubmit={handleHeaderSearch} className="relative w-full max-w-md">
+              <Search size={16} strokeWidth={1.5} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={headerSearch}
+                onChange={(e) => setHeaderSearch(e.target.value)}
+                placeholder="Search assets by name, serial, ticket..."
+                className="h-10 w-full rounded-xl border border-app-card bg-white/80 pl-9 pr-3 text-sm text-app-main placeholder:text-slate-400 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+              />
+            </form>
+
             <div className="flex items-center gap-4">
+              <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${systemHealthy ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                <span className={`h-2 w-2 rounded-full ${systemHealthy ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                {systemHealthy ? 'System Operational' : 'System Degraded'}
+              </div>
+
               {user?.role === 'Admin' && (
-                <Link to="/setup" className="text-slate-600 hover:text-app-accent transition-colors p-2 rounded-full hover:bg-slate-100" title="Setup">
-                  <Settings size={24} />
+                <Link to="/setup" className="text-slate-600 hover:text-app-accent transition-colors p-2 rounded-xl hover:bg-slate-100/80" title="Setup">
+                  <Settings size={18} strokeWidth={1.5} />
                 </Link>
               )}
+
+              <div className="relative">
+                <button
+                  onClick={() => setProfileOpen((prev) => !prev)}
+                  className="flex items-center gap-2 rounded-xl border border-app-card bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <div className="h-8 w-8 rounded-full bg-app-accent-soft text-app-accent flex items-center justify-center text-xs font-semibold">
+                    {String(user?.name || 'U').slice(0, 1).toUpperCase()}
+                  </div>
+                  <div className="text-left leading-tight">
+                    <p className="font-medium text-slate-900">{user?.name || 'User'}</p>
+                    <p className="text-xs text-slate-500">{activeStore?.name || user?.role}</p>
+                  </div>
+                  <ChevronDown size={16} strokeWidth={1.5} className="text-slate-500" />
+                </button>
+
+                {profileOpen && (
+                  <div className="absolute right-0 mt-2 w-56 rounded-xl border border-app-card bg-white p-2 shadow-md">
+                    <Link
+                      to="/portal"
+                      onClick={() => setProfileOpen(false)}
+                      className="block rounded-lg px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      Open Portal
+                    </Link>
+                    <button
+                      onClick={logout}
+                      className="block w-full rounded-lg px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
         </header>
 
         {/* Main Content */}
-        <div className="flex-1 overflow-auto p-4 md:p-8">
+        <div className="flex-1 overflow-auto p-4 md:p-8 bg-app-page">
           <Outlet />
         </div>
       </div>

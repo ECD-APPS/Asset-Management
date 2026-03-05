@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw, Scissors, Clock } from 'lucide-react';
 import api from '../api/axios';
@@ -277,6 +277,9 @@ const Assets = () => {
     action: true,
     price: true
   });
+  const requestIdRef = useRef(0);
+  const activeControllerRef = useRef(null);
+  const hasHydratedFiltersRef = useRef(false);
 
   useEffect(() => {
     if (showRecentUploads) {
@@ -361,11 +364,20 @@ const Assets = () => {
 
   const flatProducts = useMemo(() => flattenProducts(fullProducts), [fullProducts]);
 
-  const fetchAssets = async (params, options) => {
+  const fetchAssets = useCallback(async (params, options) => {
     const silent = options?.silent === true;
+    const requestId = ++requestIdRef.current;
+
+    if (activeControllerRef.current) {
+      activeControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+
     try {
       if (!silent) setLoading(true);
       const response = await api.get('/assets', {
+        signal: controller.signal,
         params: {
           page,
           limit,
@@ -389,14 +401,35 @@ const Assets = () => {
           ...(params || {})
         }
       });
+
+      if (requestId !== requestIdRef.current) return;
       setAssets(response.data.items || []);
       setTotal(response.data.total || 0);
     } catch (error) {
+      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return;
       console.error(error);
     } finally {
-      if (!silent) setLoading(false);
+      if (requestId === requestIdRef.current && !silent) setLoading(false);
     }
-  };
+  }, [
+    page,
+    limit,
+    showRecentUploads,
+    searchTerm,
+    filterStatus,
+    filterLocation,
+    filterCondition,
+    filterManufacturer,
+    filterModelNumber,
+    filterSerialNumber,
+    filterMacAddress,
+    filterProductName,
+    filterTicket,
+    filterRfid,
+    filterQr,
+    filterDateFrom,
+    filterDateTo
+  ]);
 
   const fetchStores = useCallback(async () => {
     try {
@@ -815,21 +848,25 @@ const Assets = () => {
   const getDerivedStatus = (asset) => {
     const s = asset.status;
     const cond = String(asset.condition || '').toLowerCase();
-    if (cond.includes('faulty') || s === 'Faulty') return { label: 'Faulty', color: 'bg-red-100 text-red-800' };
-    if (cond.includes('repair') || s === 'Under Repair') return { label: 'Under Repair', color: 'bg-amber-100 text-amber-800' };
-    if (cond.includes('disposed') || s === 'Disposed') return { label: 'Disposed', color: 'bg-gray-100 text-gray-800' };
-    if (cond.includes('scrap') || s === 'Scrapped') return { label: 'Scrapped', color: 'bg-gray-100 text-gray-800' };
-    if (s === 'In Use') return { label: 'In Use', color: 'bg-blue-100 text-blue-800' };
-    if (s === 'In Store') return { label: 'In Store', color: 'bg-green-100 text-green-800' };
-    if (s === 'Spare') return { label: 'Spare', color: 'bg-green-100 text-green-800' };
-    if (s === 'Missing') return { label: 'Missing', color: 'bg-amber-100 text-amber-800' };
-    return { label: s || '-', color: 'bg-gray-100 text-gray-800' };
+    if (cond.includes('faulty') || s === 'Faulty') return { label: 'Faulty', color: 'bg-rose-50 text-rose-700 border border-rose-100' };
+    if (cond.includes('repair') || s === 'Under Repair') return { label: 'Under Repair', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
+    if (cond.includes('disposed') || s === 'Disposed') return { label: 'Disposed', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
+    if (cond.includes('scrap') || s === 'Scrapped') return { label: 'Scrapped', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
+    if (s === 'In Use') return { label: 'In Use', color: 'bg-emerald-50 text-emerald-700 border border-emerald-100' };
+    if (s === 'In Store') return { label: 'In Store', color: 'bg-sky-50 text-sky-700 border border-sky-100' };
+    if (s === 'Spare') return { label: 'Spare', color: 'bg-amber-50 text-amber-700 border border-amber-100' };
+    if (s === 'Missing') return { label: 'Missing', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
+    return { label: s || '-', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
   };
 
 
   // Debounced filter/search effect
   useEffect(() => {
     const t = setTimeout(() => {
+      if (!hasHydratedFiltersRef.current) {
+        hasHydratedFiltersRef.current = true;
+        return;
+      }
       if (page !== 1) {
         setPage(1); // This will trigger the page effect
       } else {
@@ -846,10 +883,18 @@ const Assets = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, limit]);
 
+  useEffect(() => {
+    return () => {
+      if (activeControllerRef.current) {
+        activeControllerRef.current.abort();
+      }
+    };
+  }, []);
+
   return (
-    <div>
+    <div className="min-h-screen bg-app-page text-app-main">
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6">
-        <h1 className="text-2xl font-bold">
+        <h1 className="text-2xl font-semibold text-slate-900">
           {productParam ? `${productParam} Management` : 'Assets Management'}
         </h1>
         <div className="flex flex-wrap gap-2 items-center">
@@ -868,25 +913,25 @@ const Assets = () => {
                  </svg>
                  Add New Asset
                </button>
-               <button
-                 onClick={() => setShowBulkEditModal(true)}
-                 disabled={selectedIds.length === 0}
-                 className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg border text-sm ${selectedIds.length === 0 ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'}`}
-               >
+              <button
+                onClick={() => setShowBulkEditModal(true)}
+                disabled={selectedIds.length === 0}
+                className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl border text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+              >
                  Bulk Edit ({selectedIds.length})
                </button>
-               <button
-                 onClick={handleBulkDelete}
-                 disabled={selectedIds.length === 0 || bulkLoading}
-                 className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg border text-sm ${selectedIds.length === 0 || bulkLoading ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'}`}
-               >
+              <button
+                onClick={handleBulkDelete}
+                disabled={selectedIds.length === 0 || bulkLoading}
+                className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl border text-sm shadow-sm ${selectedIds.length === 0 || bulkLoading ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+              >
                  {bulkLoading ? 'Deleting…' : `Delete Selected (${selectedIds.length})`}
                </button>
-               <button onClick={() => setShowImportModal(true)} className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50">Bulk Import</button>
-               <button onClick={handleDownloadTemplate} className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50">Download Sample</button>
+              <button onClick={() => setShowImportModal(true)} className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-sm">Bulk Import</button>
+              <button onClick={handleDownloadTemplate} className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-sm">Download Sample</button>
              </>
            )}
-          <button onClick={handleExport} className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50">Export</button>
+          <button onClick={handleExport} className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-sm">Export</button>
         </div>
       </div>
       
@@ -1132,7 +1177,7 @@ const Assets = () => {
           <div className="flex gap-2 sm:col-span-2 lg:col-span-4 items-center">
             <button
               onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-              className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100"
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 shadow-sm"
             >
               <Filter className="w-4 h-4" />
               {showAdvancedFilters ? 'Hide Filters' : 'Filters'}
@@ -1140,7 +1185,7 @@ const Assets = () => {
             <div className="relative">
               <button
                 onClick={() => setShowColumnMenu(v => !v)}
-                className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-sm"
               >
                 <SlidersHorizontal className="w-4 h-4" />
                 Columns
@@ -1168,7 +1213,7 @@ const Assets = () => {
             </div>
             <button
               onClick={() => setShowRecentUploads(prev => !prev)}
-              className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg border ${showRecentUploads ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'}`}
+              className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl border shadow-sm ${showRecentUploads ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
               title="Show only the most recently uploaded assets"
             >
               <Clock className="w-4 h-4" />
@@ -1183,7 +1228,7 @@ const Assets = () => {
                 setFilterDateFrom(''); setFilterDateTo('');
                 setShowRecentUploads(false);
               }}
-              className="inline-flex items-center gap-2 h-10 px-4 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-sm"
             >
               <RotateCcw className="w-4 h-4" />
               Clear
@@ -1191,7 +1236,7 @@ const Assets = () => {
             <button
               onClick={handleExportSelected}
               disabled={selectedIds.length === 0}
-              className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg text-sm ${selectedIds.length === 0 ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'} border`}
+              className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
               title="Download selected rows as Excel"
             >
               <Download className="w-4 h-4" />
@@ -1203,7 +1248,7 @@ const Assets = () => {
                   <button
                     onClick={handleTopEdit}
                     disabled={selectedIds.length === 0}
-                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg text-sm ${selectedIds.length === 0 ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'} border`}
+                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
                     title="Edit selected (single = Edit; multiple = Bulk Edit)"
                   >
                     <Edit size={16} />
@@ -1212,7 +1257,7 @@ const Assets = () => {
                   <button
                     onClick={handleTopAssign}
                     disabled={selectedIds.length !== 1}
-                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg text-sm ${selectedIds.length !== 1 ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'} border`}
+                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length !== 1 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
                     title="Assign selected asset"
                   >
                     <UserCheck size={16} />
@@ -1221,7 +1266,7 @@ const Assets = () => {
                   <button
                     onClick={handleTopDelete}
                     disabled={selectedIds.length === 0}
-                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-lg text-sm ${selectedIds.length === 0 ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'} border`}
+                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
                     title="Delete selected"
                   >
                     <Trash2 size={16} />
@@ -1316,16 +1361,16 @@ const Assets = () => {
 
       {/* Loading Indicator */}
       {loading && (
-        <div className="bg-white rounded-lg shadow p-4 mb-4 text-center text-gray-500">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 mb-4 text-center text-slate-500">
           Loading assets...
         </div>
       )}
 
       {/* Desktop Table View */}
-      <div className="hidden md:block bg-white rounded-lg shadow overflow-x-auto">
-        <table className="min-w-full">
+      <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+        <table className="min-w-full text-sm">
           <thead>
-            <tr className="bg-gray-50 border-b">
+            <tr className="bg-slate-50 border-b border-slate-200">
               {user?.role !== 'Viewer' && (
                 <th className="px-3 py-2 md:px-4 md:py-3 text-center">
                   <input onClick={(e) => e.stopPropagation()} type="checkbox" checked={selectedIds.length === assets.length && assets.length > 0} onChange={toggleSelectAll} />
@@ -1358,9 +1403,9 @@ const Assets = () => {
               {(visibleColumns.action && user?.role !== 'Viewer') && <th className="px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>}
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
+          <tbody className="bg-white divide-y divide-slate-100">
             {assets.map((asset) => (
-              <tr key={asset._id} className={`hover:bg-gray-50 ${asset.isDuplicate ? 'bg-yellow-100' : ''} cursor-pointer`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
+              <tr key={asset._id} className={`hover:bg-slate-50 ${asset.isDuplicate ? 'bg-yellow-50' : ''} cursor-pointer`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
                 {user?.role !== 'Viewer' && (
                   <td className="px-3 py-2 md:px-4 md:py-4 text-center" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" checked={selectedIds.includes(asset._id)} onChange={() => toggleSelect(asset._id)} />
@@ -1379,8 +1424,10 @@ const Assets = () => {
                 {visibleColumns.manufacturer && <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm hidden xl:table-cell">{asset.manufacturer || '-'}</td>}
                 {visibleColumns.condition && <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm hidden lg:table-cell">{asset.condition || 'New / Excellent'}</td>}
                 {visibleColumns.status && (
-                  <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm font-medium text-gray-700">
-                    {asset.status || '-'}
+                  <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm font-medium text-slate-700">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getDerivedStatus(asset).color}`}>
+                      {asset.status || '-'}
+                    </span>
                   </td>
                 )}
                 {visibleColumns.prevStatus && <td className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-xs hidden xl:table-cell">{asset.previous_status || '-'}</td>}
@@ -1555,8 +1602,8 @@ const Assets = () => {
       </div>
 
       {/* Pagination Controls */}
-      <div className="bg-white rounded-lg shadow p-4 flex flex-col sm:flex-row items-center justify-between gap-4 mt-4">
-          <div className="text-sm text-gray-600">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex flex-col sm:flex-row items-center justify-between gap-4 mt-4">
+          <div className="text-sm text-slate-600">
             Showing {(total === 0) ? 0 : ((page - 1) * limit + 1)}–
             {Math.min(page * limit, total)} of {total}
           </div>
@@ -1564,7 +1611,7 @@ const Assets = () => {
             <select
               value={limit}
               onChange={(e) => { setLimit(parseInt(e.target.value, 10)); setPage(1); }}
-              className="border p-2 rounded text-sm"
+              className="border border-slate-200 p-2 rounded-xl text-sm"
             >
               <option value={10}>10</option>
               <option value={25}>25</option>
@@ -1574,21 +1621,21 @@ const Assets = () => {
             <button
               onClick={() => { if (page > 1) { setPage(page - 1); } }}
               disabled={page <= 1}
-              className="px-3 py-2 border rounded disabled:opacity-50"
+              className="px-3 py-2 border border-slate-200 rounded-xl disabled:opacity-50"
             >
               Prev
             </button>
             <button
               onClick={() => { const maxPage = Math.ceil(total / limit) || 1; if (page < maxPage) { setPage(page + 1); } }}
               disabled={page >= (Math.ceil(total / limit) || 1)}
-              className="px-3 py-2 border rounded disabled:opacity-50"
+              className="px-3 py-2 border border-slate-200 rounded-xl disabled:opacity-50"
             >
               Next
             </button>
             <button
               onClick={handleExportSelected}
               disabled={selectedIds.length === 0}
-              className={`px-3 py-2 rounded text-sm ${selectedIds.length === 0 ? 'bg-amber-300 text-white cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-600 text-white'}`}
+              className={`px-3 py-2 rounded-xl text-sm ${selectedIds.length === 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}
               title="Download selected rows as Excel"
             >
               Download Selected

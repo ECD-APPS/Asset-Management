@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Suspense, lazy } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ThemeProvider } from './context/ThemeContext';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import PropTypes from 'prop-types';
@@ -87,16 +88,17 @@ ProtectedRoute.propTypes = {
 function App() {
   return (
     <AuthProvider>
-      <ErrorBoundary>
-        <Suspense fallback={
-          <div className="flex items-center justify-center min-h-screen bg-gray-50">
-            <div className="flex flex-col items-center gap-4">
-              <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-gray-600 font-medium">Loading Expo Stores...</p>
+      <ThemeProvider>
+        <ErrorBoundary>
+          <Suspense fallback={
+            <div className="flex items-center justify-center min-h-screen bg-gray-50">
+              <div className="flex flex-col items-center gap-4">
+                <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                <p className="text-gray-600 font-medium">Loading Expo Stores...</p>
+              </div>
             </div>
-          </div>
-        }>
-          <Routes>
+          }>
+            <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/portal" element={
             <ProtectedRoute allowedRoles={['Super Admin', 'Viewer']}>
@@ -263,9 +265,10 @@ function App() {
             </div>
           } />
         </Route>
-      </Routes>
-      </Suspense>
-      </ErrorBoundary>
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
+      </ThemeProvider>
     </AuthProvider>
   );
 }

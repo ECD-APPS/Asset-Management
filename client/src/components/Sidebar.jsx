@@ -1,55 +1,80 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Box, Users, Store, LogOut, Ticket, ChevronDown, ChevronRight, Settings, Menu, Calendar, Lock } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Box,
+  Users,
+  Store,
+  LogOut,
+  Ticket,
+  ChevronDown,
+  ChevronRight,
+  Menu,
+  Calendar,
+  Lock
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ChangePasswordModal from './ChangePasswordModal';
 import api from '../api/axios';
 import PropTypes from 'prop-types';
 
-const SidebarItem = ({ item, depth = 0, openSubMenu, toggleSubMenu, location, onClose, isActive, isCollapsed, theme }) => {
+const SidebarItem = ({
+  item,
+  depth = 0,
+  openSubMenu,
+  toggleSubMenu,
+  location,
+  onClose,
+  isActive,
+  isCollapsed,
+  tone
+}) => {
   const isSubMenuOpen = openSubMenu[item.name];
   const hasSubItems = item.subItems && item.subItems.length > 0;
-  
-  // If collapsed, we don't indent
-  const paddingLeft = isCollapsed ? 0 : depth * 12 + 16;
-  
-  // If collapsed and this is a sub-item, don't show it (simple minimize behavior)
+  const active = item.path ? isActive(item.path) : false;
+  const parentActive = hasSubItems && item.subItems?.some((sub) => isActive(sub.path || ''));
+  const isHighlighted = active || parentActive;
+
   if (isCollapsed && depth > 0) return null;
+
+  const baseClass = `relative group flex items-center w-full rounded-xl transition-all ${
+    isCollapsed ? 'justify-center px-2 py-2.5' : `${depth > 0 ? 'pl-10 pr-3 py-2' : 'px-3 py-2.5'}`
+  }`;
+
+  const activeClass = tone.activeClass;
+  const inactiveClass = depth > 0 ? tone.inactiveSubClass : tone.inactiveRootClass;
 
   if (hasSubItems) {
     return (
       <div>
         <button
           onClick={() => toggleSubMenu(item.name)}
-          style={{ paddingLeft: isCollapsed ? 0 : `${paddingLeft}px` }}
-          className={`flex items-center ${isCollapsed ? 'justify-center px-2' : 'justify-between'} w-full py-2 rounded-lg transition-colors ${
-            location.pathname.startsWith(item.path || '/assets') && depth === 0
-              ? theme.item.activeDepth0
-              : theme.item.inactiveDepth0
-          } ${depth > 0 ? 'text-sm' : ''}`}
+          className={`${baseClass} ${isHighlighted ? activeClass : inactiveClass}`}
+          style={isHighlighted ? tone.activeStyle : undefined}
           title={isCollapsed ? item.name : ''}
         >
+          {isHighlighted && <span className={`absolute left-0 top-2 bottom-2 w-1 rounded-r-full ${tone.indicatorClass}`} />}
           <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
-            {item.icon && item.icon}
-            {!isCollapsed && <span>{item.name}</span>}
+            {item.icon}
+            {!isCollapsed && <span className={`truncate ${depth > 0 ? 'text-sm' : 'text-[15px] font-medium'}`}>{item.name}</span>}
           </div>
-          {!isCollapsed && (isSubMenuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
+          {!isCollapsed && (isSubMenuOpen ? <ChevronDown size={14} strokeWidth={1.5} /> : <ChevronRight size={14} strokeWidth={1.5} />)}
         </button>
-        {/* Only show subitems if NOT collapsed */}
+
         {!isCollapsed && isSubMenuOpen && (
-          <ul className={`mt-1 space-y-1 border-l ${theme.divider} ml-6 pl-2`}>
+          <ul className="mt-1.5 space-y-1">
             {item.subItems.map((sub) => (
               <li key={sub.uniqueKey || sub.path || sub.name}>
-                <SidebarItem 
-                  item={sub} 
-                  depth={depth + 1} 
+                <SidebarItem
+                  item={sub}
+                  depth={depth + 1}
                   openSubMenu={openSubMenu}
                   toggleSubMenu={toggleSubMenu}
                   location={location}
                   onClose={onClose}
                   isActive={isActive}
                   isCollapsed={isCollapsed}
-                  theme={theme}
+                  tone={tone}
                 />
               </li>
             ))}
@@ -63,16 +88,13 @@ const SidebarItem = ({ item, depth = 0, openSubMenu, toggleSubMenu, location, on
     <Link
       to={item.path}
       onClick={() => onClose && onClose()}
-      style={{ paddingLeft: isCollapsed ? 0 : `${paddingLeft}px` }}
-      className={`flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3'} py-2 rounded-lg transition-colors ${
-        isActive(item.path)
-          ? (depth === 0 ? theme.item.activeDepth0 : theme.item.activeDepth1)
-          : (depth === 0 ? theme.item.inactiveDepth0 : theme.item.inactiveDepth1)
-      } ${depth > 0 ? 'text-sm' : ''}`}
+      className={`${baseClass} ${active ? activeClass : inactiveClass}`}
+      style={active ? tone.activeStyle : undefined}
       title={isCollapsed ? item.name : ''}
     >
-      {item.icon && item.icon}
-      {!isCollapsed && <span>{item.name}</span>}
+      {active && <span className={`absolute left-0 top-2 bottom-2 w-1 rounded-r-full ${tone.indicatorClass}`} />}
+      {item.icon}
+      {!isCollapsed && <span className={`truncate ${depth > 0 ? 'text-sm' : 'text-[15px] font-medium'}`}>{item.name}</span>}
     </Link>
   );
 };
@@ -92,7 +114,13 @@ SidebarItem.propTypes = {
   onClose: PropTypes.func,
   isActive: PropTypes.func.isRequired,
   isCollapsed: PropTypes.bool,
-  theme: PropTypes.object.isRequired
+  tone: PropTypes.shape({
+    activeClass: PropTypes.string.isRequired,
+    inactiveRootClass: PropTypes.string.isRequired,
+    inactiveSubClass: PropTypes.string.isRequired,
+    indicatorClass: PropTypes.string.isRequired,
+    activeStyle: PropTypes.object
+  }).isRequired
 };
 
 const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
@@ -112,41 +140,41 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
       }
     };
 
-    if (user?.role === 'Admin' || user?.role === 'Viewer' || user?.role === 'Super Admin') {
+    if (['Admin', 'Viewer', 'Super Admin'].includes(user?.role)) {
       fetchProducts();
     }
   }, [user, location.pathname]);
 
   const toggleSubMenu = (name) => {
-    setOpenSubMenu(prev => ({ ...prev, [name]: !prev[name] }));
+    setOpenSubMenu((prev) => ({ ...prev, [name]: !prev[name] }));
   };
 
   const navItems = [
-    { name: 'Dashboard', path: '/', icon: <LayoutDashboard size={20} />, roles: ['Admin', 'Viewer'] },
+    { name: 'Dashboard', path: '/', icon: <LayoutDashboard size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer'] },
     {
       name: 'Events',
-      icon: <Calendar size={20} />,
+      icon: <Calendar size={18} strokeWidth={1.5} />,
       roles: ['Admin', 'Technician'],
       subItems: [
         { name: 'Recent Activity', path: '/events/recent-activity', uniqueKey: 'recent-activity' },
-        { name: 'System Logs', path: '/events/system-logs', uniqueKey: 'system-logs', roles: ['Admin'] } // System Logs is Admin Only
+        { name: 'System Logs', path: '/events/system-logs', uniqueKey: 'system-logs', roles: ['Admin'] }
       ]
     },
-    { 
-      name: 'Assets', 
-      icon: <Box size={20} />, 
+    {
+      name: 'Assets',
+      icon: <Box size={18} strokeWidth={1.5} />,
       roles: ['Admin', 'Viewer'],
       subItems: [
         { name: 'All Assets', path: '/assets', uniqueKey: 'all-assets' },
-        ...productsTree.map(root => ({
+        ...productsTree.map((root) => ({
           name: root.name,
           path: `/assets?product=${encodeURIComponent(root.name)}`,
           uniqueKey: `prod-root-${root._id}`,
-          subItems: (root.children || []).map(child => ({
+          subItems: (root.children || []).map((child) => ({
             name: child.name,
             path: `/assets?product=${encodeURIComponent(child.name)}`,
             uniqueKey: `prod-child-${root._id}-${child.name}`,
-            subItems: (child.children || []).map(grand => ({
+            subItems: (child.children || []).map((grand) => ({
               name: grand.name,
               path: `/assets?product=${encodeURIComponent(grand.name)}`,
               uniqueKey: `prod-grand-${root._id}-${child.name}-${grand.name}`
@@ -155,244 +183,189 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
         }))
       ]
     },
-    { name: 'Tech Assets', path: '/admin-tech-assets', icon: <Box size={20} />, roles: ['Admin'] },
-    { name: 'Add Members', path: '/add-members', icon: <Users size={20} />, roles: ['Admin'] },
-    { name: 'Locations', path: '/stores', icon: <Store size={20} />, roles: ['Admin', 'Viewer'] },
-    { name: 'Gate Passes', path: '/passes', icon: <Ticket size={20} />, roles: ['Admin'] },
-    { name: 'Products', path: '/products', icon: <Box size={20} />, roles: ['Admin', 'Viewer'] },
-    { name: 'Scanner', path: '/scanner', icon: <Box size={20} />, roles: ['Technician'] },
-    { name: 'My Assets', path: '/my-assets', icon: <Box size={20} />, roles: ['Technician'] },
-    { name: 'Unregistered Assets', path: '/assets/no-serial', icon: <Box size={20} />, roles: ['Admin', 'Viewer', 'Technician'] },
-    { name: 'Request Tools', path: '/tech-request', icon: <Box size={20} />, roles: ['Technician'] },
+    { name: 'Tech Assets', path: '/admin-tech-assets', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Admin'] },
+    { name: 'Add Members', path: '/add-members', icon: <Users size={18} strokeWidth={1.5} />, roles: ['Admin'] },
+    { name: 'Locations', path: '/stores', icon: <Store size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer'] },
+    { name: 'Gate Passes', path: '/passes', icon: <Ticket size={18} strokeWidth={1.5} />, roles: ['Admin'] },
+    { name: 'Products', path: '/products', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer'] },
+    { name: 'Scanner', path: '/scanner', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Technician'] },
+    { name: 'My Assets', path: '/my-assets', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Technician'] },
+    { name: 'Unregistered Assets', path: '/assets/no-serial', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer', 'Technician'] },
+    { name: 'Request Tools', path: '/tech-request', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Technician'] }
   ];
 
   const filterItems = (items) => {
     return items.reduce((acc, item) => {
-      // Check if user role is allowed for this item
       if (item.roles) {
         const hasRole = item.roles.includes(user?.role);
         const isSuperAdminAccessingAdmin = user?.role === 'Super Admin' && item.roles.includes('Admin');
-        
-        if (!hasRole && !isSuperAdminAccessingAdmin) {
-          return acc;
-        }
+        if (!hasRole && !isSuperAdminAccessingAdmin) return acc;
       }
-      
+
       const newItem = { ...item };
-      
-      // Recursively filter subItems
       if (newItem.subItems && newItem.subItems.length > 0) {
-        // If subItems have roles defined, filter them. 
-        // If not defined, assume they inherit parent's visibility (or are visible to all who can see parent)
-        // In our case, 'System Logs' has explicit roles.
-        const filteredSubItems = filterItems(newItem.subItems);
-        
-        // If subItems were filtered out completely, but the parent itself has a path, keep parent.
-        // If parent is just a container (no path), and all subItems are gone, maybe remove parent?
-        // For now, let's just keep the filtered subItems.
-        newItem.subItems = filteredSubItems;
+        newItem.subItems = filterItems(newItem.subItems);
       }
-      
+
       acc.push(newItem);
       return acc;
     }, []);
   };
 
   const filteredItems = filterItems(navItems);
+  const mainNavItems = filteredItems.filter((item) => item.name !== 'Events');
+  const filteredEvents = filteredItems.filter((item) => item.name === 'Events');
+  const selectedTheme = branding?.theme || 'default';
+  const isDefaultTheme = selectedTheme === 'default';
 
-  // Separate Events item to pin to bottom
-  const mainNavItems = filteredItems.filter(item => item.name !== 'Events');
-  const filteredEvents = filteredItems.filter(item => item.name === 'Events');
+  const toneMap = {
+    default: {
+      activeClass: 'text-black border shadow-sm font-semibold',
+      inactiveRootClass: 'text-app-sidebar hover:bg-white/14 hover:text-white',
+      inactiveSubClass: 'text-app-sidebar hover:bg-white/14 hover:text-white',
+      indicatorClass: 'bg-black',
+      activeStyle: { backgroundColor: 'rgb(255 165 0)', borderColor: 'rgb(255 165 0)' }
+    },
+    ocean: {
+      activeClass: 'text-sky-50 border shadow-sm font-medium',
+      inactiveRootClass: 'text-sky-100/95 hover:bg-sky-300/20 hover:text-white',
+      inactiveSubClass: 'text-sky-100/80 hover:bg-sky-300/18 hover:text-white',
+      indicatorClass: 'bg-sky-200',
+      activeStyle: { backgroundColor: 'rgba(14, 165, 233, 0.35)', borderColor: 'rgba(125, 211, 252, 0.6)' }
+    },
+    emerald: {
+      activeClass: 'text-emerald-50 border shadow-sm font-medium',
+      inactiveRootClass: 'text-emerald-100/95 hover:bg-emerald-300/18 hover:text-white',
+      inactiveSubClass: 'text-emerald-100/85 hover:bg-emerald-300/16 hover:text-white',
+      indicatorClass: 'bg-emerald-200',
+      activeStyle: { backgroundColor: 'rgba(16, 185, 129, 0.34)', borderColor: 'rgba(110, 231, 183, 0.55)' }
+    },
+    sunset: {
+      activeClass: 'text-amber-50 border shadow-sm font-medium',
+      inactiveRootClass: 'text-orange-100 hover:bg-orange-300/20 hover:text-white',
+      inactiveSubClass: 'text-orange-100/90 hover:bg-orange-300/16 hover:text-white',
+      indicatorClass: 'bg-amber-300',
+      activeStyle: { backgroundColor: 'rgba(251, 146, 60, 0.34)', borderColor: 'rgba(253, 186, 116, 0.55)' }
+    },
+    midnight: {
+      activeClass: 'text-slate-900 border shadow-sm font-semibold',
+      inactiveRootClass: 'text-slate-700 hover:bg-slate-100 hover:text-slate-900',
+      inactiveSubClass: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
+      indicatorClass: 'bg-slate-900',
+      activeStyle: { backgroundColor: 'rgba(15, 23, 42, 0.08)', borderColor: 'rgba(15, 23, 42, 0.2)' }
+    },
+    mono: {
+      activeClass: 'text-slate-50 border shadow-sm font-medium',
+      inactiveRootClass: 'text-slate-100/95 hover:bg-slate-300/16 hover:text-white',
+      inactiveSubClass: 'text-slate-100/80 hover:bg-slate-300/14 hover:text-white',
+      indicatorClass: 'bg-slate-200',
+      activeStyle: { backgroundColor: 'rgba(148, 163, 184, 0.24)', borderColor: 'rgba(203, 213, 225, 0.45)' }
+    }
+  };
+  const tone = toneMap[selectedTheme] || toneMap.default;
 
   const isActive = (itemPath) => {
-    if (itemPath.includes('?')) {
-      return location.pathname + location.search === itemPath;
-    }
+    if (!itemPath) return false;
+    if (itemPath.includes('?')) return location.pathname + location.search === itemPath;
     return location.pathname === itemPath;
   };
 
-  const getTheme = () => {
-    const selectedTheme = branding?.theme || 'default';
-    const map = {
-      default: {
-        sidebarBg: 'bg-app-sidebar',
-        sidebarText: 'text-app-sidebar',
-        divider: 'border-app-sidebar',
-        item: {
-          activeDepth0: 'bg-amber-500 text-black shadow-md',
-          inactiveDepth0: 'text-slate-200 hover:bg-white/10 hover:text-white',
-          activeDepth1: 'text-amber-300 font-bold',
-          inactiveDepth1: 'text-slate-300 hover:text-white'
-        },
-        logoText: 'text-slate-200',
-        storeText: 'text-amber-400'
-      },
-      ocean: {
-        sidebarBg: 'bg-app-sidebar',
-        sidebarText: 'text-app-sidebar',
-        divider: 'border-app-sidebar',
-        item: {
-          activeDepth0: 'bg-sky-400/20 text-sky-100 border border-sky-300/40 shadow-lg',
-          inactiveDepth0: 'text-sky-100/85 hover:bg-sky-200/10 hover:text-white',
-          activeDepth1: 'text-cyan-200 font-bold',
-          inactiveDepth1: 'text-sky-100/70 hover:text-white'
-        },
-        logoText: 'text-sky-100',
-        storeText: 'text-cyan-300'
-      },
-      emerald: {
-        sidebarBg: 'bg-app-sidebar',
-        sidebarText: 'text-app-sidebar',
-        divider: 'border-app-sidebar',
-        item: {
-          activeDepth0: 'bg-emerald-400/20 text-emerald-50 border border-emerald-300/35 shadow-lg',
-          inactiveDepth0: 'text-emerald-100/90 hover:bg-emerald-200/10 hover:text-white',
-          activeDepth1: 'text-emerald-200 font-bold',
-          inactiveDepth1: 'text-emerald-100/75 hover:text-white'
-        },
-        logoText: 'text-emerald-100',
-        storeText: 'text-emerald-300'
-      },
-      sunset: {
-        sidebarBg: 'bg-app-sidebar',
-        sidebarText: 'text-app-sidebar',
-        divider: 'border-app-sidebar',
-        item: {
-          activeDepth0: 'bg-orange-300/20 text-orange-50 border border-orange-200/40 shadow-lg',
-          inactiveDepth0: 'text-orange-100/90 hover:bg-orange-100/10 hover:text-white',
-          activeDepth1: 'text-amber-200 font-bold',
-          inactiveDepth1: 'text-orange-100/75 hover:text-white'
-        },
-        logoText: 'text-orange-100',
-        storeText: 'text-amber-300'
-      },
-      midnight: {
-        sidebarBg: 'bg-app-sidebar',
-        sidebarText: 'text-app-sidebar',
-        divider: 'border-app-sidebar',
-        item: {
-          activeDepth0: 'bg-sky-400/20 text-sky-100 border border-sky-300/35 shadow-lg',
-          inactiveDepth0: 'text-slate-200 hover:bg-slate-700/40 hover:text-white',
-          activeDepth1: 'text-cyan-200 font-bold',
-          inactiveDepth1: 'text-slate-300 hover:text-white'
-        },
-        logoText: 'text-slate-100',
-        storeText: 'text-sky-300'
-      },
-      mono: {
-        sidebarBg: 'bg-app-sidebar',
-        sidebarText: 'text-app-sidebar',
-        divider: 'border-app-sidebar',
-        item: {
-          activeDepth0: 'bg-white/15 text-white border border-white/25 shadow-md',
-          inactiveDepth0: 'text-slate-200 hover:bg-white/10 hover:text-white',
-          activeDepth1: 'text-slate-100 font-bold',
-          inactiveDepth1: 'text-slate-300 hover:text-white'
-        },
-        logoText: 'text-slate-100',
-        storeText: 'text-slate-300'
-      }
-    };
-    return map[selectedTheme] || map.default;
-  };
-
-  const theme = getTheme();
-
   return (
-    <div className={`flex flex-col h-full w-full ${theme.sidebarBg} ${theme.sidebarText} shadow-2xl transition-colors duration-500`}>
-      <div className={`p-4 border-b ${theme.divider} flex flex-col items-center relative transition-all duration-300`}>
-        {/* Desktop Toggle Button */}
-        <button 
-          onClick={toggleCollapse} 
-          className={`hidden md:block absolute top-4 ${isCollapsed ? 'left-1/2 transform -translate-x-1/2' : 'right-4'} ${theme.logoText} hover:opacity-80 z-10`}
-          title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+    <aside className="flex h-full w-full flex-col border-r border-app-sidebar bg-app-sidebar text-app-sidebar">
+      <div className="relative border-b border-app-sidebar p-4">
+        <button
+          onClick={toggleCollapse}
+          className={`hidden md:flex absolute top-4 ${isCollapsed ? 'left-1/2 -translate-x-1/2' : 'right-4'} h-8 w-8 items-center justify-center rounded-lg border border-app-sidebar text-app-sidebar hover:bg-white/10 ${isDefaultTheme ? 'shadow-[0_0_0_1px_rgba(255,165,0,0.25)]' : ''}`}
+          title={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
         >
-          <Menu size={20} />
+          <Menu size={16} strokeWidth={1.5} />
         </button>
 
         {!isCollapsed ? (
-          <div className="mt-6 flex flex-col items-center w-full">
-            <img src={branding?.logoUrl || '/logo.svg'} alt="Expo City Dubai" className="h-14 w-auto" />
-            <p className={`text-sm ${theme.logoText} mt-3 text-center font-medium`}>{user?.name}</p>
-            <p className={`text-xs ${theme.storeText} font-bold uppercase tracking-wider text-center mt-1`}>{activeStore?.name || user?.role}</p>
+          <div className="mt-6">
+            <div className="flex items-center gap-3">
+              <img src={branding?.logoUrl || '/logo.svg'} alt="SCY Asset" className="h-9 w-9 rounded-lg border border-app-sidebar bg-white/10 object-contain p-1" />
+              <div>
+                <p className="text-sm font-semibold text-app-sidebar">SCY Asset</p>
+                <p className="text-xs text-app-sidebar">{activeStore?.name || user?.role}</p>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-app-sidebar">{user?.name}</p>
           </div>
         ) : (
-          <div className="mt-10 flex justify-center w-full">
-            <img src={branding?.logoUrl || '/logo.svg'} alt="Expo City Dubai" className="h-8 w-auto" />
+          <div className="mt-10 flex justify-center">
+            <img src={branding?.logoUrl || '/logo.svg'} alt="SCY Asset" className="h-9 w-9 rounded-lg border border-app-sidebar bg-white/10 object-contain p-1" />
           </div>
         )}
       </div>
 
-      <nav className="flex-1 overflow-y-auto py-4 custom-scrollbar flex flex-col">
-        <ul className="space-y-2 px-2 flex-1">
+      <nav className="flex-1 overflow-y-auto py-4">
+        <ul className="space-y-1.5 px-3">
           {mainNavItems.map((item) => (
             <li key={item.name}>
-              <SidebarItem 
-                item={item} 
+              <SidebarItem
+                item={item}
                 openSubMenu={openSubMenu}
                 toggleSubMenu={toggleSubMenu}
                 location={location}
                 onClose={onClose}
                 isActive={isActive}
                 isCollapsed={isCollapsed}
-                theme={theme}
+                tone={tone}
               />
             </li>
           ))}
         </ul>
 
-        {/* Events Section - Pinned to Bottom */}
         {filteredEvents.map((item) => (
-          <div key={item.name} className={`px-2 mt-2 pt-2 border-t ${theme.divider}`}>
-            <SidebarItem 
-              item={item} 
+          <div key={item.name} className="mt-4 border-t border-app-sidebar px-3 pt-3">
+            <SidebarItem
+              item={item}
               openSubMenu={openSubMenu}
               toggleSubMenu={toggleSubMenu}
               location={location}
               onClose={onClose}
               isActive={isActive}
               isCollapsed={isCollapsed}
-              theme={theme}
+              tone={tone}
             />
           </div>
         ))}
       </nav>
 
-      <div className={`p-2 border-t ${theme.divider} bg-black/20`}>
+      <div className="border-t border-app-sidebar p-3 bg-black/10">
         {(user?.role === 'Super Admin' || user?.role === 'Viewer') && (
           <Link
             to="/portal"
-            className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-4'} w-full py-3 ${theme.storeText} hover:bg-black/10 rounded-lg transition-colors mb-2`}
+            className={`mb-2 flex w-full items-center rounded-xl px-3 py-2.5 text-sm text-app-sidebar hover:bg-white/10 ${isCollapsed ? 'justify-center' : 'gap-3'} ${isDefaultTheme ? 'hover:text-orange-300' : ''}`}
             title="Switch Store"
           >
-            <Store size={20} />
+            <Store size={18} strokeWidth={1.5} />
             {!isCollapsed && <span>Switch Store</span>}
           </Link>
         )}
+
         <button
           onClick={() => setIsPasswordModalOpen(true)}
-          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-4'} w-full py-3 ${theme.sidebarText} hover:bg-black/10 rounded-lg transition-colors mb-1`}
+          className={`mb-1 flex w-full items-center rounded-xl px-3 py-2.5 text-sm text-app-sidebar hover:bg-white/10 ${isCollapsed ? 'justify-center' : 'gap-3'} ${isDefaultTheme ? 'hover:text-orange-300' : ''}`}
           title="Change Password"
         >
-          <Lock size={20} />
+          <Lock size={18} strokeWidth={1.5} />
           {!isCollapsed && <span>Change Password</span>}
         </button>
 
         <button
           onClick={logout}
-          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-4'} w-full py-3 text-red-400 hover:bg-black/10 rounded-lg transition-colors`}
+          className={`flex w-full items-center rounded-xl px-3 py-2.5 text-sm text-rose-600 hover:bg-rose-50 ${isCollapsed ? 'justify-center' : 'gap-3'}`}
           title="Logout"
         >
-          <LogOut size={20} />
+          <LogOut size={18} strokeWidth={1.5} />
           {!isCollapsed && <span>Logout</span>}
         </button>
       </div>
 
-      <ChangePasswordModal 
-        isOpen={isPasswordModalOpen} 
-        onClose={() => setIsPasswordModalOpen(false)} 
-      />
-    </div>
+      <ChangePasswordModal isOpen={isPasswordModalOpen} onClose={() => setIsPasswordModalOpen(false)} />
+    </aside>
   );
 };
 

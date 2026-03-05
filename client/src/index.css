@@ -4,8 +4,8 @@
 
 @layer base {
   :root[data-theme='default'] {
-    --accent: 245 158 11;      /* amber-500 */
-    --accent-soft: 254 243 199;/* amber-100 */
+    --accent: 255 165 0;       /* pure orange */
+    --accent-soft: 255 227 179;/* light orange */
     --bg-page: 248 250 252;    /* slate-50 */
     --bg-card: 255 255 255;    /* white */
     --text-main: 15 23 42;     /* slate-900 */
@@ -14,9 +14,9 @@
     --page-glow: 0 0 0;
     --card-border: 226 232 240; /* slate-200 */
     --card-shadow: 15 23 42;    /* slate-900 (very low alpha in usage) */
-    --sidebar-bg: 15 23 42;
-    --sidebar-text: 226 232 240;
-    --sidebar-border: 255 255 255;
+    --sidebar-bg: 8 8 10;      /* black glass base */
+    --sidebar-text: 248 250 252; /* white text */
+    --sidebar-border: 255 165 0;
     --header-bg: 255 255 255;
     --shape-card: 14px;
     --shape-soft: 10px;
@@ -33,9 +33,9 @@
     --page-glow: 125 211 252;   /* sky-300 */
     --card-border: 191 219 254; /* blue-200 */
     --card-shadow: 59 130 246;
-    --sidebar-bg: 12 74 110;
-    --sidebar-text: 224 242 254;
-    --sidebar-border: 125 211 252;
+    --sidebar-bg: 8 47 73;
+    --sidebar-text: 241 245 249;
+    --sidebar-border: 14 165 233;
     --header-bg: 239 246 255;
     --shape-card: 18px;
     --shape-soft: 12px;
@@ -52,9 +52,9 @@
     --page-glow: 52 211 153;    /* emerald-400 */
     --card-border: 167 243 208; /* emerald-200 */
     --card-shadow: 16 185 129;
-    --sidebar-bg: 6 78 59;
-    --sidebar-text: 209 250 229;
-    --sidebar-border: 52 211 153;
+    --sidebar-bg: 6 95 70;
+    --sidebar-text: 240 253 244;
+    --sidebar-border: 34 197 94;
     --header-bg: 240 253 244;
     --shape-card: 16px;
     --shape-soft: 10px;
@@ -71,8 +71,8 @@
     --page-glow: 251 146 60;    /* orange-400 */
     --card-border: 254 215 170; /* orange-200 */
     --card-shadow: 249 115 22;
-    --sidebar-bg: 124 45 18;
-    --sidebar-text: 255 237 213;
+    --sidebar-bg: 127 29 29;
+    --sidebar-text: 255 251 235;
     --sidebar-border: 251 146 60;
     --header-bg: 255 247 237;
     --shape-card: 20px;
@@ -90,9 +90,9 @@
     --page-glow: 14 165 233;    /* sky-500 */
     --card-border: 51 65 85;    /* slate-700 */
     --card-shadow: 14 165 233;
-    --sidebar-bg: 2 6 23;
-    --sidebar-text: 186 230 253;
-    --sidebar-border: 14 165 233;
+    --sidebar-bg: 3 7 18;
+    --sidebar-text: 226 232 240;
+    --sidebar-border: 99 102 241;
     --header-bg: 15 23 42;
     --shape-card: 14px;
     --shape-soft: 10px;
@@ -109,9 +109,9 @@
     --page-glow: 156 163 175;   /* gray-400 */
     --card-border: 229 231 235; /* gray-200 */
     --card-shadow: 55 65 81;
-    --sidebar-bg: 31 41 55;
-    --sidebar-text: 243 244 246;
-    --sidebar-border: 156 163 175;
+    --sidebar-bg: 30 41 59;
+    --sidebar-text: 248 250 252;
+    --sidebar-border: 148 163 184;
     --header-bg: 249 250 251;
     --shape-card: 8px;
     --shape-soft: 8px;
@@ -147,6 +147,10 @@
     border-radius: var(--shape-card);
   }
 
+  .border-app-card {
+    border-color: rgb(var(--card-border));
+  }
+
   .text-app-main {
     color: rgb(var(--text-main));
   }
@@ -170,8 +174,8 @@
 
   .bg-app-sidebar {
     background:
-      radial-gradient(900px 260px at -10% 0%, rgb(var(--sidebar-border) / 0.22), transparent 55%),
-      linear-gradient(165deg, rgb(var(--sidebar-bg)), rgb(var(--sidebar-bg) / 0.92));
+      radial-gradient(900px 260px at -10% 0%, rgb(var(--sidebar-border) / 0.28), transparent 55%),
+      linear-gradient(165deg, rgb(var(--sidebar-bg) / 0.98), rgb(var(--sidebar-bg) / 0.9));
   }
 
   .text-app-sidebar {
