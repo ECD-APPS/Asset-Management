@@ -195,13 +195,14 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
       roles: ['Admin', 'Viewer', 'Technician'],
       subItems: [
         { name: 'Register Tools', path: '/tools', uniqueKey: 'tools-register', roles: ['Admin', 'Viewer'] },
+        { name: 'Consumables', path: '/consumables', uniqueKey: 'tools-consumables', roles: ['Admin', 'Viewer'] },
         { name: 'Technician Panel', path: '/tools/panel', uniqueKey: 'tools-panel', roles: ['Technician', 'Admin'] },
         { name: 'Request Tools', path: '/tech-request', uniqueKey: 'tools-request', roles: ['Technician'] }
       ]
     },
     { name: 'Scanner', path: '/scanner', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Technician'] },
     { name: 'My Assets', path: '/my-assets', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Technician'] },
-    { name: 'Unregistered Assets', path: '/assets/no-serial', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer', 'Technician'] },
+    
     
   ];
 

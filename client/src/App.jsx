@@ -33,6 +33,7 @@ const RecentActivity = lazy(() => import('./pages/RecentActivity'));
 const SystemLogs = lazy(() => import('./pages/SystemLogs'));
 const Tools = lazy(() => import('./pages/Tools'));
 const TechTools = lazy(() => import('./pages/TechTools'));
+const Consumables = lazy(() => import('./pages/Consumables'));
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const { user, loading, activeStore, globalLoading } = useAuth();
@@ -178,6 +179,12 @@ function App() {
           <Route path="/tools/panel" element={
             <ProtectedRoute allowedRoles={['Technician', 'Admin']}>
               <TechTools />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/consumables" element={
+            <ProtectedRoute allowedRoles={['Admin', 'Viewer']}>
+              <Consumables />
             </ProtectedRoute>
           } />
 
