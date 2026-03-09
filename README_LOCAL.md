@@ -67,6 +67,9 @@ Open terminal 2:
 
 ```bash
 cd client
+# Optional: if backend runs on a non-default port, set Vite proxy env:
+# cp .env.example .env
+# edit VITE_API_PORT to match backend PORT
 npm run dev -- --host --port 5173
 ```
 
