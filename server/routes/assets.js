@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Asset = require('../models/Asset');
 const Product = require('../models/Product');
 const Store = require('../models/Store');
@@ -8,6 +9,7 @@ const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
 const Request = require('../models/Request');
 const Pass = require('../models/Pass');
+const CollectionApproval = require('../models/CollectionApproval');
 const { protect, admin, restrictViewer } = require('../middleware/authMiddleware');
 const xlsx = require('xlsx');
 const multer = require('multer');
@@ -73,6 +75,7 @@ async function notifyAssetEvent({ asset, recipientEmail, subject, lines = [] }) 
 
 async function createAssignmentGatePass({
   asset,
+  allAssets,
   issuedBy,
   recipientName,
   recipientEmail,
@@ -96,6 +99,21 @@ async function createAssignmentGatePass({
   }
   const passNumber = `${prefix}-${dateStr}-${sequence}`;
 
+  const passAssets = (Array.isArray(allAssets) && allAssets.length > 0 ? allAssets : [asset]).filter(Boolean);
+  const passAssetEntries = passAssets.map((a) => ({
+    asset: a._id,
+    name: a.name || '',
+    model: a.model_number || '',
+    serial_number: a.serial_number || '',
+    brand: a.manufacturer || '',
+    asset_model: a.model_number || '',
+    location: a.location || '',
+    movement: 'Outbound',
+    status: a.condition || 'Good',
+    remarks: `Auto-created during assignment of ${a.name || 'asset'}`,
+    quantity: Number(a.quantity || 1)
+  }));
+
   const pass = await Pass.create({
     pass_number: passNumber,
     file_no: `ECD/ECT/EXITPASS/${passNumber}`,
@@ -105,19 +123,7 @@ async function createAssignmentGatePass({
     provided_by: String(issuedBy?.name || '').trim(),
     collected_by: String(recipientName || '').trim(),
     approved_by: String(issuedBy?.name || '').trim(),
-    assets: [{
-      asset: asset._id,
-      name: asset.name || '',
-      model: asset.model_number || '',
-      serial_number: asset.serial_number || '',
-      brand: asset.manufacturer || '',
-      asset_model: asset.model_number || '',
-      location: asset.location || '',
-      movement: 'Outbound',
-      status: asset.condition || 'Good',
-      remarks: `Auto-created during assignment of ${asset.name || 'asset'}`,
-      quantity: Number(asset.quantity || 1)
-    }],
+    assets: passAssetEntries,
     issued_to: {
       name: String(recipientName || '').trim() || 'Recipient',
       company: String(recipientCompany || '').trim() || (recipientEmail ? `Email: ${recipientEmail}` : ''),
@@ -127,13 +133,22 @@ async function createAssignmentGatePass({
     issued_by: issuedBy._id,
     destination: String(destination || recipientName || '').trim(),
     origin: String(origin || asset.location || '').trim(),
-    justification: String(justification || '').trim() || `Asset assignment for ${asset.name || 'asset'}`,
-    notes: `Auto-generated gate pass for asset assignment (${asset.serial_number || 'N/A'})`,
+    justification: String(justification || '').trim() || `Asset assignment for ${passAssets.length} asset(s)`,
+    notes: `Auto-generated gate pass for asset assignment (${passAssets.map((a) => a.serial_number || 'N/A').join(', ')})`,
     store: asset.store || null
   });
 
   return pass;
 }
+
+const buildCollectionApprovalHtml = ({ title, message, token, approved = false }) => {
+  const safeTitle = String(title || '');
+  const safeMessage = String(message || '');
+  if (approved) {
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title></head><body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;"><div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;"><h2 style="margin:0 0 12px 0;color:#0f172a;">${safeTitle}</h2><p style="color:#334155;margin:0;">${safeMessage}</p></div></body></html>`;
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title></head><body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;"><div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;"><h2 style="margin:0 0 12px 0;color:#0f172a;">${safeTitle}</h2><p style="color:#334155;margin:0 0 16px 0;">${safeMessage}</p><a href="/api/assets/collect-approval/${token}/approve" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;border-radius:8px;padding:10px 16px;">Grant Permission</a></div></body></html>`;
+};
 
 function readUploadedWorkbook(file) {
   if (!file) {
@@ -306,8 +321,17 @@ router.get('/', protect, async (req, res) => {
     const location = String(req.query.location || '').trim();
     const deliveredBy = String(req.query.delivered_by || '').trim();
     const vendorName = String(req.query.vendor_name || '').trim();
+    const disposedParam = String(req.query.disposed || '').trim().toLowerCase();
 
     const filter = {};
+    // Exclude disposed assets by default from inventory views.
+    if (disposedParam === 'true') {
+      filter.disposed = true;
+    } else if (disposedParam === 'false') {
+      filter.disposed = false;
+    } else {
+      filter.disposed = false;
+    }
     if (q) {
       const rx = new RegExp(q, 'i');
       const orClauses = [
@@ -342,26 +366,16 @@ router.get('/', protect, async (req, res) => {
     if (status) {
       if (status === 'In Use') {
         filter.status = 'In Use';
-      } else if (status === 'Spare') {
-        filter.assigned_to = null;
-        filter.condition = { $in: ['New', 'Used'] };
-        filter.status = { $nin: ['Faulty', 'Under Repair', 'Disposed', 'In Use'] };
+      } else if (status === 'In Store') {
+        filter.status = 'In Store';
+      } else if (status === 'Missing') {
+        filter.status = 'Missing';
       } else if (status === 'Faulty') {
-        filter.$or = [
-          { status: 'Faulty' },
-          { condition: 'Faulty' }
-        ];
-      } else if (status === 'Disposed') {
-        filter.$or = [
-          { status: 'Disposed' },
-          { condition: 'Disposed' }
-        ];
-      } else if (status === 'New' || status === 'Used') {
-        filter.status = status;
-        filter.assigned_to = null;
-        filter.assigned_to_external = null;
+        filter.condition = 'Faulty';
       } else if (status.includes(',')) {
-        filter.status = { $in: status.split(',').map(s => s.trim()) };
+        const allowed = new Set(['In Store', 'In Use', 'Missing']);
+        const normalized = status.split(',').map((s) => s.trim()).filter((s) => allowed.has(s));
+        if (normalized.length > 0) filter.status = { $in: normalized };
       } else {
         filter.status = status;
       }
@@ -646,7 +660,7 @@ router.get('/search-serial', protect, async (req, res) => {
 // @access  Private
 router.get('/stats', protect, async (req, res) => {
   try {
-    const filter = {};
+    const filter = { disposed: false };
     let targetStoreId = null;
 
     if (req.activeStore && mongoose.isValidObjectId(req.activeStore)) {
@@ -695,12 +709,10 @@ router.get('/stats', protect, async (req, res) => {
       totalAssets,
       assignedCount,
       faultyCount,
-      underRepairCount,
-      disposedCount,
+      missingCount,
       inStoreCount,
       pendingReturnsCount,
       pendingRequestsCount,
-      spareCount,
       conditionCounts,
       statusCounts,
       modelCounts,
@@ -723,27 +735,13 @@ router.get('/stats', protect, async (req, res) => {
       sumQuantity({ 
         ...filter,
         $or: [
-          { status: 'Faulty' },
           { condition: 'Faulty' }
         ]
       }),
-      sumQuantity({ ...filter, status: 'Under Repair' }),
-      sumQuantity({ 
-        ...filter,
-        $or: [
-          { status: 'Disposed' },
-          { condition: 'Disposed' }
-        ]
-      }),
-      sumQuantity({ ...filter, status: { $in: ['In Store', 'Faulty'] } }),
+      sumQuantity({ ...filter, status: 'Missing' }),
+      sumQuantity({ ...filter, status: 'In Store' }),
       Asset.countDocuments({ ...filter, return_pending: true }),
       Request.countDocuments(requestFilter),
-      sumQuantity({ 
-        ...filter,
-        assigned_to: null, 
-        condition: { $in: ['New', 'Used'] }, 
-        status: { $nin: ['Faulty', 'Under Repair', 'Disposed', 'In Use'] } 
-      }),
       Asset.aggregate([
         { $match: filter },
         { 
@@ -751,13 +749,6 @@ router.get('/stats', protect, async (req, res) => {
             condBucket: {
               $switch: {
                 branches: [
-                  { case: { $eq: ['$status', 'Faulty'] }, then: 'Faulty' },
-                  { case: { $eq: ['$status', 'Under Repair'] }, then: 'Under Repair' },
-                  { case: { $eq: ['$status', 'Disposed'] }, then: 'Disposed' },
-                  { case: { $regexMatch: { input: { $ifNull: ['$condition', ''] }, regex: /disposed/i } }, then: 'Disposed' },
-                  { case: { $eq: ['$status', 'Scrapped'] }, then: 'Scrapped' },
-                  { case: { $eq: ['$status', 'New'] }, then: 'New' },
-                  { case: { $eq: ['$status', 'Used'] }, then: 'Used' },
                   { case: { $regexMatch: { input: { $ifNull: ['$condition', ''] }, regex: /new/i } }, then: 'New' },
                   { case: { $regexMatch: { input: { $ifNull: ['$condition', ''] }, regex: /used/i } }, then: 'Used' }
                 ],
@@ -851,19 +842,14 @@ router.get('/stats', protect, async (req, res) => {
       ])
     ]);
 
-    const inStoreExclusive = Math.max(
-      totalAssets - assignedCount - faultyCount - underRepairCount - disposedCount,
-      0
-    );
+    const inStoreExclusive = inStoreCount;
     const stats = {
       overview: {
         total: totalAssets,
         inUse: assignedCount,
         inStore: inStoreExclusive,
-        spare: spareCount,
+        missing: missingCount,
         faulty: faultyCount,
-        underRepair: underRepairCount,
-        disposed: disposedCount,
         pendingReturns: pendingReturnsCount,
         pendingRequests: pendingRequestsCount,
         assetTypes: (assetTypeCountAgg[0] && assetTypeCountAgg[0].count) || 0
@@ -872,9 +858,7 @@ router.get('/stats', protect, async (req, res) => {
         New: 0,
         Used: 0,
         Faulty: 0,
-        'Under Repair': 0,
-        Disposed: 0,
-        Scrapped: 0
+        Repaired: 0
       },
       models: [],
       products: [],
@@ -895,8 +879,6 @@ router.get('/stats', protect, async (req, res) => {
     conditionCounts.forEach(item => {
       if (item._id) stats.conditions[item._id] = item.count;
     });
-    const scr = statusCounts.find(s => s._id === 'Scrapped');
-    if (scr) stats.conditions.Scrapped = scr.count;
 
     stats.models = modelCounts.map(item => ({
       name: item._id || 'Unknown',
@@ -1296,8 +1278,10 @@ router.post('/split', protect, restrictViewer, async (req, res) => {
     // Generate new Unique ID for the new batch
     newAssetData.uniqueId = await generateUniqueId(asset.name);
     newAssetData.quantity = qtyToSplit;
-    newAssetData.status = newStatus || 'Faulty';
-    newAssetData.condition = newCondition || 'Faulty';
+    const allowedStatuses = new Set(['In Store', 'In Use', 'Missing']);
+    const allowedConditions = new Set(['New', 'Used', 'Faulty', 'Repaired']);
+    newAssetData.status = allowedStatuses.has(newStatus) ? newStatus : 'In Store';
+    newAssetData.condition = allowedConditions.has(newCondition) ? newCondition : 'Faulty';
     newAssetData.source = 'Split from ' + asset.uniqueId;
     
     // Clear assignment if splitting (usually split items go to store/faulty pile, not stay assigned to same person immediately)
@@ -1313,7 +1297,7 @@ router.post('/split', protect, restrictViewer, async (req, res) => {
       role: req.user.role,
       store: asset.store,
       action: 'Split Asset',
-      details: `Split ${qtyToSplit} items from ${asset.name} (${asset.uniqueId}) as ${newStatus}`
+      details: `Split ${qtyToSplit} items from ${asset.name} (${asset.uniqueId}) as ${newAssetData.status}/${newAssetData.condition}`
     });
 
     res.status(200).json({ original: asset, new: newAsset });
@@ -1406,22 +1390,21 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       if (!location && storeName) location = storeName;
       const statusRaw = norm['status'];
       const statusNorm = String(statusRaw || '').trim().toLowerCase();
-      // Asset.status enum does not include New/Used (those belong to condition)
       const statusMap = {
         'available/new': 'In Store',
         'new': 'In Store',
-        'spare': 'Spare',
-        'spare (new)': 'Spare',
-        'spare (used)': 'Spare',
+        'spare': 'In Store',
+        'spare (new)': 'In Store',
+        'spare (used)': 'In Store',
         'available/used': 'In Store',
         'used': 'In Store',
         'in store': 'In Store',
         'in use': 'In Use',
-        'available faulty': 'Faulty',
-        'faulty': 'Faulty',
-        'disposed': 'Disposed',
-        'under repair': 'Under Repair',
-        'scrapped': 'Scrapped',
+        'available faulty': 'In Store',
+        'faulty': 'In Store',
+        'disposed': 'In Store',
+        'under repair': 'In Store',
+        'scrapped': 'In Store',
         'missing': 'Missing'
       };
       const status = statusMap[statusNorm] || 'In Store';
@@ -1432,8 +1415,8 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         if (cNorm.includes('new')) condition = 'New';
         else if (cNorm.includes('used')) condition = 'Used';
         else if (cNorm.includes('faulty')) condition = 'Faulty';
-        else if (cNorm.includes('repair')) condition = 'Under Repair';
-        else if (cNorm.includes('disposed')) condition = 'Disposed';
+        else if (cNorm.includes('repair')) condition = 'Repaired';
+        else if (cNorm.includes('disposed') || cNorm.includes('scrap')) condition = 'Faulty';
         else if (cNorm.includes('repaired')) condition = 'Repaired';
       } else {
         // If condition column is empty, infer sensible condition from status text
@@ -1442,9 +1425,9 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         } else if (statusNorm === 'faulty' || statusNorm === 'available faulty') {
           condition = 'Faulty';
         } else if (statusNorm === 'under repair') {
-          condition = 'Under Repair';
-        } else if (statusNorm === 'disposed') {
-          condition = 'Disposed';
+          condition = 'Repaired';
+        } else if (statusNorm === 'disposed' || statusNorm === 'scrapped') {
+          condition = 'Faulty';
         } else if (statusNorm === 'repaired') {
           condition = 'Repaired';
         }
@@ -1629,6 +1612,11 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     if (!Array.isArray(data) || data.length === 0) {
       return res.status(400).json({ message: 'Invalid Excel file: no data rows found' });
     }
+    if (data.length > 20000) {
+      return res.status(400).json({
+        message: 'Too many rows in one import file. Please keep it up to 20,000 rows per upload.'
+      });
+    }
 
     const duplicates = [];
     const createdCount = { v: 0 };
@@ -1672,6 +1660,19 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     });
 
     const fileSeenSerials = new Set();
+    const parsedAssets = [];
+    const makeFastUniqueId = (() => {
+      let seq = 0;
+      return (assetType) => {
+        seq += 1;
+        const raw = String(assetType || 'AST').replace(/[^a-z0-9]/gi, '').toUpperCase();
+        const prefix = (raw.slice(0, 3) || 'AST').padEnd(3, 'X');
+        const ts = Date.now().toString(36).toUpperCase();
+        const n = seq.toString(36).toUpperCase();
+        const rand = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
+        return `${prefix}${ts}${n}${rand}`;
+      };
+    })();
     const invalidRows = [];
     
     // Helper to check for N/A
@@ -1714,6 +1715,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       const qtyRaw = norm['quantity'] || norm['qty'] || '1';
       let quantity = parseInt(String(qtyRaw).trim(), 10);
       if (!Number.isFinite(quantity) || quantity <= 0) quantity = 1;
+      if (quantity > 1000000) quantity = 1000000;
       const priceRaw = norm['price'] || norm['unit price'] || '0';
       let price = parseFloat(String(priceRaw).toString().replace(/[, ]/g, ''));
       if (!Number.isFinite(price) || price < 0) price = 0;
@@ -1737,22 +1739,21 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       
       const statusRaw = norm['status'];
       const statusNorm = String(statusRaw || '').trim().toLowerCase();
-      // Asset.status enum does not include New/Used (those belong to condition)
       const statusMap = {
         'available/new': 'In Store',
         'new': 'In Store',
-        'spare': 'Spare',
-        'spare (new)': 'Spare',
-        'spare (used)': 'Spare',
+        'spare': 'In Store',
+        'spare (new)': 'In Store',
+        'spare (used)': 'In Store',
         'available/used': 'In Store',
         'used': 'In Store',
         'in store': 'In Store',
         'in use': 'In Use',
-        'available faulty': 'Faulty',
-        'faulty': 'Faulty',
-        'disposed': 'Disposed',
-        'under repair': 'Under Repair',
-        'scrapped': 'Scrapped',
+        'available faulty': 'In Store',
+        'faulty': 'In Store',
+        'disposed': 'In Store',
+        'under repair': 'In Store',
+        'scrapped': 'In Store',
         'missing': 'Missing'
       };
       const status = statusMap[statusNorm] || 'In Store';
@@ -1769,8 +1770,8 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
          if (cNorm === 'new' || cNorm.includes('new')) condition = 'New';
          else if (cNorm === 'used' || cNorm.includes('used')) condition = 'Used';
          else if (cNorm === 'faulty' || cNorm.includes('faulty')) condition = 'Faulty';
-         else if (cNorm === 'under repair' || cNorm.includes('repair')) condition = 'Under Repair';
-         else if (cNorm === 'disposed' || cNorm.includes('disposed')) condition = 'Disposed';
+         else if (cNorm === 'under repair' || cNorm.includes('repair')) condition = 'Repaired';
+         else if (cNorm === 'disposed' || cNorm.includes('disposed') || cNorm.includes('scrap')) condition = 'Faulty';
          else if (cNorm === 'repaired' || cNorm.includes('repaired')) condition = 'Repaired';
       } else {
          // If condition column is empty, infer sensible condition from status text
@@ -1779,9 +1780,9 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
          } else if (statusNorm === 'faulty' || statusNorm === 'available faulty') {
            condition = 'Faulty';
          } else if (statusNorm === 'under repair') {
-           condition = 'Under Repair';
-         } else if (statusNorm === 'disposed') {
-           condition = 'Disposed';
+           condition = 'Repaired';
+         } else if (statusNorm === 'disposed' || statusNorm === 'scrapped') {
+           condition = 'Faulty';
          } else if (statusNorm === 'repaired') {
            condition = 'Repaired';
          }
@@ -1794,11 +1795,11 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
         storeId = req.activeStore;
       }
       
-      // Upsert by Serial (Store-scoped)
+      // Build normalized row first; duplicates are resolved in batched DB step.
       {
         const serialStr = String(serial).trim();
-        const uniqueId = await generateUniqueId(name);
-        
+        const uniqueId = makeFastUniqueId(name);
+
         let deliveredAtDate;
         if (deliveredAtRaw) {
           deliveredAtDate = new Date(deliveredAtRaw);
@@ -1834,43 +1835,100 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
           price
         };
 
-        try {
-          // If serial present, enforce duplicate policy by role/permission
-          if (serialStr) {
-            const existing = await Asset.findOne({ serial_number: serialStr, store: storeId });
-            if (existing) {
-              if (allowDuplicates && isAdminUser) {
-                await Asset.create(assetData);
-                createdCount.v++;
-              } else {
-                duplicates.push({
-                  serial: serialStr,
-                  reason: isAdminUser
-                    ? 'Duplicate serial exists in same store (enable Allow duplicates to force add)'
-                    : 'Duplicate serial exists in same store (Admin permission required)',
-                  asset: assetData
-                });
-              }
-            } else {
-              await Asset.create(assetData);
-              createdCount.v++;
-            }
-          } else {
-            await Asset.create(assetData);
-            createdCount.v++;
-          }
-        } catch (e) {
-          duplicates.push({ serial: serialStr || '', reason: e.message || 'Upsert error' });
+        parsedAssets.push({ serialStr, storeId, assetData });
+      }
+    }
+
+    // Resolve duplicates in bulk for performance with large imports.
+    const queryPairs = [];
+    const queryPairSeen = new Set();
+    for (const row of parsedAssets) {
+      const serialKey = String(row.serialStr || '').trim().toLowerCase();
+      const storeKey = String(row.storeId || '').trim();
+      if (!serialKey || !storeKey) continue;
+      const pair = `${storeKey}::${serialKey}`;
+      if (queryPairSeen.has(pair)) continue;
+      queryPairSeen.add(pair);
+      queryPairs.push({ store: row.storeId, serial_number: row.serialStr });
+    }
+
+    const existingPairSet = new Set();
+    const CHUNK = 500;
+    for (let i = 0; i < queryPairs.length; i += CHUNK) {
+      const chunk = queryPairs.slice(i, i + CHUNK);
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await Asset.find({ $or: chunk }).select('store serial_number').lean();
+      existing.forEach((doc) => {
+        existingPairSet.add(`${String(doc.store)}::${String(doc.serial_number || '').trim().toLowerCase()}`);
+      });
+    }
+
+    const docsToInsert = [];
+    for (const row of parsedAssets) {
+      const serialKey = String(row.serialStr || '').trim().toLowerCase();
+      const storeKey = String(row.storeId || '').trim();
+      const pair = `${storeKey}::${serialKey}`;
+
+      if (!serialKey || !storeKey) {
+        docsToInsert.push(row.assetData);
+        continue;
+      }
+
+      if (fileSeenSerials.has(pair)) {
+        duplicates.push({
+          serial: row.serialStr,
+          reason: 'Duplicate serial in uploaded file',
+          asset: row.assetData
+        });
+        continue;
+      }
+      fileSeenSerials.add(pair);
+
+      if (existingPairSet.has(pair) && !(allowDuplicates && isAdminUser)) {
+        duplicates.push({
+          serial: row.serialStr,
+          reason: isAdminUser
+            ? 'Duplicate serial exists in same store (enable Allow duplicates to force add)'
+            : 'Duplicate serial exists in same store (Admin permission required)',
+          asset: row.assetData
+        });
+        continue;
+      }
+
+      docsToInsert.push(row.assetData);
+    }
+
+    if (docsToInsert.length > 0) {
+      try {
+        const inserted = await Asset.insertMany(docsToInsert, { ordered: false });
+        createdCount.v += inserted.length;
+      } catch (e) {
+        const insertedCount = Number(e?.result?.nInserted || e?.insertedDocs?.length || 0);
+        createdCount.v += insertedCount;
+        if (Array.isArray(e?.writeErrors)) {
+          e.writeErrors.forEach((we) => {
+            duplicates.push({
+              serial: we?.err?.op?.serial_number || '',
+              reason: we?.errmsg || 'Insert error',
+              asset: we?.err?.op
+            });
+          });
+        } else {
+          throw e;
         }
       }
     }
 
+    const totalQuantityCreated = docsToInsert.reduce((sum, a) => {
+      const q = Number(a?.quantity);
+      return sum + (Number.isFinite(q) && q > 0 ? q : 1);
+    }, 0);
     await ActivityLog.create({
       user: req.user.name,
       email: req.user.email,
       role: req.user.role,
       action: 'Bulk Upsert Assets',
-      details: `Upsert completed. Created ${createdCount.v}, Updated ${updatedCount.v}`,
+      details: `Import completed. Created ${createdCount.v} records, Quantity ${totalQuantityCreated}`,
       store: req.activeStore
     });
     const suffix = invalidRows.length
@@ -1878,6 +1936,10 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       : '';
     res.json({
       message: `Processed ${createdCount.v + updatedCount.v} assets (created ${createdCount.v}, updated ${updatedCount.v})${suffix}`,
+      totals: {
+        records_created: createdCount.v,
+        quantity_created: totalQuantityCreated
+      },
       skipped_duplicates: duplicates,
       invalid_rows: invalidRows
     });
@@ -2066,6 +2128,7 @@ router.get('/by-technician', protect, admin, async (req, res) => {
 router.post('/assign', protect, admin, async (req, res) => {
   const {
     assetId,
+    assetIds,
     technicianId,
     ticketNumber,
     otherRecipient,
@@ -2077,41 +2140,77 @@ router.post('/assign', protect, admin, async (req, res) => {
     gatePassJustification
   } = req.body;
   try {
-    const asset = await Asset.findById(assetId);
-    if (!asset) {
-      return res.status(404).json({ message: 'Asset not found' });
+    const normalizedIds = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(assetIds) ? assetIds : []),
+          ...(assetId ? [assetId] : [])
+        ]
+          .map((id) => String(id || '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (normalizedIds.length === 0) {
+      return res.status(400).json({ message: 'Provide assetId or assetIds' });
     }
+
+    const assets = await Asset.find({ _id: { $in: normalizedIds } });
+    if (assets.length !== normalizedIds.length) {
+      return res.status(404).json({ message: 'One or more assets were not found' });
+    }
+
+    const disposedAssets = assets.filter((a) => a.disposed === true);
+    if (disposedAssets.length > 0) {
+      return res.status(400).json({
+        message: `Cannot assign: ${disposedAssets.length} selected asset(s) are disposed`
+      });
+    }
+
+    const alreadyAssigned = assets.filter((a) => a.assigned_to || (a.assigned_to_external && a.assigned_to_external.name));
+    if (alreadyAssigned.length > 0) {
+      return res.status(400).json({
+        message: `Cannot assign: ${alreadyAssigned.length} selected asset(s) are already assigned`
+      });
+    }
+
     let gatePass = null;
-    
-    // Admin can assign either to a technician or to an external person
+    const updatedAssets = [];
+
+    // Admin can assign either to a technician or to an external person.
     if (technicianId) {
-      const technician = await User.findById(technicianId);
+      const technician = await User.findById(technicianId).lean();
       if (!technician) {
         return res.status(404).json({ message: 'Technician not found' });
       }
-      // Save previous status before assignment
-      asset.previous_status = asset.status;
-      
-      asset.assigned_to = technicianId;
-      asset.status = 'In Use';
-      if (ticketNumber) asset.ticket_number = ticketNumber;
-      asset.history.push({
-        action: 'Assigned (Admin)',
-        ticket_number: ticketNumber || 'N/A',
-        user: req.user.name
-      });
-      await asset.save();
-      await ActivityLog.create({
-        user: req.user.name,
-        email: req.user.email,
-        role: req.user.role,
-        action: 'Assign Asset',
-        details: `Assigned asset ${asset.name} (SN: ${asset.serial_number}) to ${technician.name} (Ticket: ${ticketNumber || 'N/A'})`,
-        store: asset.store
-      });
+
+      for (const asset of assets) {
+        asset.previous_status = asset.status;
+        asset.assigned_to = technicianId;
+        asset.assigned_to_external = null;
+        asset.status = 'In Use';
+        if (ticketNumber) asset.ticket_number = ticketNumber;
+        asset.history.push({
+          action: 'Assigned (Admin)',
+          ticket_number: ticketNumber || 'N/A',
+          user: req.user.name
+        });
+        await asset.save();
+        updatedAssets.push(asset);
+
+        await ActivityLog.create({
+          user: req.user.name,
+          email: req.user.email,
+          role: req.user.role,
+          action: 'Assign Asset',
+          details: `Assigned asset ${asset.name} (SN: ${asset.serial_number}) to ${technician.name} (Ticket: ${ticketNumber || 'N/A'})`,
+          store: asset.store
+        });
+      }
+
+      const primaryAsset = updatedAssets[0];
       const targetEmail = String(recipientEmail || technician.email || '').trim().toLowerCase();
       if (needGatePass === true) {
-        const finalOrigin = String(gatePassOrigin || asset.location || '').trim();
+        const finalOrigin = String(gatePassOrigin || primaryAsset.location || '').trim();
         const finalDestination = String(gatePassDestination || technician.name || '').trim();
         if (!ticketNumber) {
           return res.status(400).json({ message: 'Ticket number is required when gate pass is enabled' });
@@ -2120,7 +2219,8 @@ router.post('/assign', protect, admin, async (req, res) => {
           return res.status(400).json({ message: 'Gate pass origin and destination are required' });
         }
         gatePass = await createAssignmentGatePass({
-          asset,
+          asset: primaryAsset,
+          allAssets: updatedAssets,
           issuedBy: req.user,
           recipientName: technician.name,
           recipientEmail: targetEmail,
@@ -2133,15 +2233,16 @@ router.post('/assign', protect, admin, async (req, res) => {
         });
       }
       await notifyAssetEvent({
-        asset,
+        asset: primaryAsset,
         recipientEmail: targetEmail,
         subject: 'Asset Assigned to You',
         lines: [
           `Asset assignment update for ${technician.name}.`,
-          `Asset: ${asset.name}`,
-          `Model: ${asset.model_number || 'N/A'}`,
-          `Serial: ${asset.serial_number || 'N/A'}`,
-          `Store Location: ${asset.location || 'N/A'}`,
+          `Assigned Count: ${updatedAssets.length}`,
+          updatedAssets.length === 1 ? `Asset: ${primaryAsset.name}` : `Assets: ${updatedAssets.map((a) => a.name).join(', ')}`,
+          updatedAssets.length === 1 ? `Model: ${primaryAsset.model_number || 'N/A'}` : null,
+          `Serial(s): ${updatedAssets.map((a) => a.serial_number || 'N/A').join(', ')}`,
+          `Store Location: ${primaryAsset.location || 'N/A'}`,
           `Ticket: ${ticketNumber || 'N/A'}`,
           gatePass?.pass_number ? `Gate Pass: ${gatePass.pass_number}` : null,
           gatePass?.origin ? `From: ${gatePass.origin}` : null,
@@ -2149,41 +2250,48 @@ router.post('/assign', protect, admin, async (req, res) => {
           `Action: Assigned by ${req.user.name}`
         ]
       });
-      return res.json({ asset, gatePass: gatePass || null });
+      return res.json({
+        asset: primaryAsset,
+        assets: updatedAssets,
+        assignedCount: updatedAssets.length,
+        gatePass: gatePass || null
+      });
     } else if (otherRecipient && otherRecipient.name) {
-      // Assign to external person without linking to a User
-      // Save previous status before assignment
-      asset.previous_status = asset.status;
-
-      asset.status = 'In Use';
-      
-      asset.assigned_to_external = {
-        name: otherRecipient.name,
-        email: otherRecipient.email,
-        phone: otherRecipient.phone,
-        note: otherRecipient.note
-      };
-      asset.assigned_to = null;
-      if (ticketNumber) asset.ticket_number = ticketNumber;
-
       const otherInfo = `Name: ${otherRecipient.name}${otherRecipient.phone ? `, Phone: ${otherRecipient.phone}` : ''}${otherRecipient.note ? `, Note: ${otherRecipient.note}` : ''}`;
-      asset.history.push({
-        action: `Assigned (External) — ${otherInfo}`,
-        ticket_number: ticketNumber || 'N/A',
-        user: req.user.name
-      });
-      await asset.save();
-      await ActivityLog.create({
-        user: req.user.name,
-        email: req.user.email,
-        role: req.user.role,
-        action: 'Assign Asset (External)',
-        details: `Assigned asset ${asset.name} (SN: ${asset.serial_number}) externally — ${otherInfo} (Ticket: ${ticketNumber || 'N/A'})`,
-        store: asset.store
-      });
+
+      for (const asset of assets) {
+        asset.previous_status = asset.status;
+        asset.status = 'In Use';
+        asset.assigned_to_external = {
+          name: otherRecipient.name,
+          email: otherRecipient.email,
+          phone: otherRecipient.phone,
+          note: otherRecipient.note
+        };
+        asset.assigned_to = null;
+        if (ticketNumber) asset.ticket_number = ticketNumber;
+        asset.history.push({
+          action: `Assigned (External) — ${otherInfo}`,
+          ticket_number: ticketNumber || 'N/A',
+          user: req.user.name
+        });
+        await asset.save();
+        updatedAssets.push(asset);
+
+        await ActivityLog.create({
+          user: req.user.name,
+          email: req.user.email,
+          role: req.user.role,
+          action: 'Assign Asset (External)',
+          details: `Assigned asset ${asset.name} (SN: ${asset.serial_number}) externally — ${otherInfo} (Ticket: ${ticketNumber || 'N/A'})`,
+          store: asset.store
+        });
+      }
+
+      const primaryAsset = updatedAssets[0];
       const externalEmail = String(otherRecipient.email || recipientEmail || '').trim().toLowerCase();
       if (needGatePass === true) {
-        const finalOrigin = String(gatePassOrigin || asset.location || '').trim();
+        const finalOrigin = String(gatePassOrigin || primaryAsset.location || '').trim();
         const finalDestination = String(gatePassDestination || otherRecipient.name || '').trim();
         if (!ticketNumber) {
           return res.status(400).json({ message: 'Ticket number is required when gate pass is enabled' });
@@ -2192,7 +2300,8 @@ router.post('/assign', protect, admin, async (req, res) => {
           return res.status(400).json({ message: 'Gate pass origin and destination are required' });
         }
         gatePass = await createAssignmentGatePass({
-          asset,
+          asset: primaryAsset,
+          allAssets: updatedAssets,
           issuedBy: req.user,
           recipientName: otherRecipient.name,
           recipientEmail: externalEmail,
@@ -2205,15 +2314,16 @@ router.post('/assign', protect, admin, async (req, res) => {
         });
       }
       await notifyAssetEvent({
-        asset,
+        asset: primaryAsset,
         recipientEmail: externalEmail,
         subject: 'Asset Assigned to You',
         lines: [
           `Asset assignment update for ${otherRecipient.name}.`,
-          `Asset: ${asset.name}`,
-          `Model: ${asset.model_number || 'N/A'}`,
-          `Serial: ${asset.serial_number || 'N/A'}`,
-          `Store Location: ${asset.location || 'N/A'}`,
+          `Assigned Count: ${updatedAssets.length}`,
+          updatedAssets.length === 1 ? `Asset: ${primaryAsset.name}` : `Assets: ${updatedAssets.map((a) => a.name).join(', ')}`,
+          updatedAssets.length === 1 ? `Model: ${primaryAsset.model_number || 'N/A'}` : null,
+          `Serial(s): ${updatedAssets.map((a) => a.serial_number || 'N/A').join(', ')}`,
+          `Store Location: ${primaryAsset.location || 'N/A'}`,
           `Ticket: ${ticketNumber || 'N/A'}`,
           gatePass?.pass_number ? `Gate Pass: ${gatePass.pass_number}` : null,
           gatePass?.origin ? `From: ${gatePass.origin}` : null,
@@ -2221,12 +2331,65 @@ router.post('/assign', protect, admin, async (req, res) => {
           `Action: Assigned by ${req.user.name}`
         ]
       });
-      return res.json({ asset, gatePass: gatePass || null });
+      return res.json({
+        asset: primaryAsset,
+        assets: updatedAssets,
+        assignedCount: updatedAssets.length,
+        gatePass: gatePass || null
+      });
     } else {
       return res.status(400).json({ message: 'Provide technicianId or otherRecipient.name' });
     }
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// @desc    Dispose asset as non-repairable (Admin)
+// @route   POST /api/assets/dispose
+// @access  Private/Admin
+router.post('/dispose', protect, admin, async (req, res) => {
+  const { assetId, reason } = req.body;
+  try {
+    const asset = await Asset.findById(assetId);
+    if (!asset) {
+      return res.status(404).json({ message: 'Asset not found' });
+    }
+    if (asset.disposed === true) {
+      return res.status(400).json({ message: 'Asset is already disposed' });
+    }
+
+    asset.disposed = true;
+    asset.disposed_at = new Date();
+    asset.disposed_by = req.user.name || '';
+    asset.disposal_reason = String(reason || '').trim();
+    asset.previous_status = asset.status;
+    asset.status = 'Missing';
+    asset.condition = 'Faulty';
+    asset.assigned_to = null;
+    asset.assigned_to_external = null;
+    asset.return_pending = false;
+    asset.return_request = null;
+    asset.history.push({
+      action: 'Disposed (Not Repairable)',
+      details: asset.disposal_reason || 'No reason provided',
+      user: req.user.name,
+      date: new Date()
+    });
+
+    await asset.save();
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Dispose Asset',
+      details: `Disposed asset ${asset.name} (SN: ${asset.serial_number})${asset.disposal_reason ? ` - Reason: ${asset.disposal_reason}` : ''}`,
+      store: asset.store
+    });
+
+    return res.json({ message: 'Asset disposed successfully', asset });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 });
 
@@ -2298,6 +2461,104 @@ router.post('/unassign', protect, admin, async (req, res) => {
   }
 });
 
+// @desc    Open line manager collection approval page (public token)
+// @route   GET /api/assets/collect-approval/:token
+// @access  Public (token)
+router.get('/collect-approval/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).send('Invalid approval token');
+    const approval = await CollectionApproval.findOne({ token }).lean();
+    if (!approval) {
+      return res.status(404).send(buildCollectionApprovalHtml({
+        title: 'Approval Link Invalid',
+        message: 'This approval link is invalid or has been removed.',
+        approved: true
+      }));
+    }
+    if (approval.status !== 'Pending') {
+      return res.status(200).send(buildCollectionApprovalHtml({
+        title: 'Approval Already Processed',
+        message: `This request is already ${approval.status.toLowerCase()}.`,
+        approved: true
+      }));
+    }
+    if (new Date(approval.expiresAt) <= new Date()) {
+      return res.status(410).send(buildCollectionApprovalHtml({
+        title: 'Approval Link Expired',
+        message: 'This approval request has expired. Ask technician to request again.',
+        approved: true
+      }));
+    }
+    return res.status(200).send(buildCollectionApprovalHtml({
+      title: 'Technician Collection Approval',
+      message: 'Click below to grant line manager permission for this collection request.',
+      token
+    }));
+  } catch (error) {
+    return res.status(500).send(`Approval error: ${error.message}`);
+  }
+});
+
+// @desc    Approve technician collection request (public token)
+// @route   GET /api/assets/collect-approval/:token/approve
+// @access  Public (token)
+router.get('/collect-approval/:token/approve', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).send('Invalid approval token');
+    const approval = await CollectionApproval.findOne({ token });
+    if (!approval) {
+      return res.status(404).send(buildCollectionApprovalHtml({
+        title: 'Approval Link Invalid',
+        message: 'This approval link is invalid or has been removed.',
+        approved: true
+      }));
+    }
+    if (approval.status !== 'Pending') {
+      return res.status(200).send(buildCollectionApprovalHtml({
+        title: 'Approval Already Processed',
+        message: `This request is already ${approval.status.toLowerCase()}.`,
+        approved: true
+      }));
+    }
+    if (new Date(approval.expiresAt) <= new Date()) {
+      approval.status = 'Rejected';
+      await approval.save();
+      return res.status(410).send(buildCollectionApprovalHtml({
+        title: 'Approval Link Expired',
+        message: 'This approval request has expired. Ask technician to request again.',
+        approved: true
+      }));
+    }
+
+    approval.status = 'Approved';
+    approval.approvedAt = new Date();
+    approval.approvedByEmail = approval.lineManagerEmail || 'line-manager-link';
+    await approval.save();
+
+    const asset = await Asset.findById(approval.asset).lean();
+    if (asset) {
+      await ActivityLog.create({
+        user: 'Line Manager',
+        email: approval.approvedByEmail,
+        role: 'Line Manager',
+        action: 'Approve Technician Collection',
+        details: `Approved collection for ${asset.name} (SN: ${asset.serial_number || 'N/A'})`,
+        store: asset.store
+      });
+    }
+
+    return res.status(200).send(buildCollectionApprovalHtml({
+      title: 'Permission Granted',
+      message: 'Line manager approval granted successfully. Technician can now collect the asset.',
+      approved: true
+    }));
+  } catch (error) {
+    return res.status(500).send(`Approval error: ${error.message}`);
+  }
+});
+
 // @desc    Collect Material (Technician)
 // @route   POST /api/assets/collect
 // @access  Private/Technician
@@ -2312,8 +2573,99 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
     if (asset.assigned_to) {
       return res.status(400).json({ message: 'Asset is already assigned' });
     }
-    if (asset.status === 'Faulty' || asset.status === 'Disposed' || asset.status === 'Under Repair') {
-      return res.status(400).json({ message: 'Asset is not available (Faulty/Under Repair/Disposed)' });
+    if (asset.disposed === true) {
+      return res.status(400).json({ message: 'Disposed asset cannot be collected' });
+    }
+    if (asset.condition === 'Faulty' || asset.status === 'Missing') {
+      return res.status(400).json({ message: 'Asset is not available (Faulty/Missing)' });
+    }
+
+    let approvedRequestToConsume = null;
+    if (req.user.role === 'Technician') {
+      const storeDoc = await Store.findById(asset.store).select('name emailConfig').lean();
+      const cfg = storeDoc?.emailConfig || {};
+      const approvalRequired = Boolean(cfg.requireLineManagerApprovalForCollection);
+
+      if (approvalRequired) {
+        approvedRequestToConsume = await CollectionApproval.findOne({
+          asset: asset._id,
+          technician: req.user._id,
+          status: 'Approved',
+          expiresAt: { $gt: new Date() }
+        }).sort({ approvedAt: -1 });
+
+        if (!approvedRequestToConsume) {
+          let pendingRequest = await CollectionApproval.findOne({
+            asset: asset._id,
+            technician: req.user._id,
+            status: 'Pending',
+            expiresAt: { $gt: new Date() }
+          }).sort({ createdAt: -1 });
+
+          if (!pendingRequest) {
+            const lmRecipients = Array.isArray(cfg.collectionApprovalRecipients) && cfg.collectionApprovalRecipients.length > 0
+              ? cfg.collectionApprovalRecipients
+              : (Array.isArray(cfg.lineManagerRecipients) ? cfg.lineManagerRecipients : []);
+            const uniqueRecipients = Array.from(new Set(
+              lmRecipients.map((v) => String(v || '').trim().toLowerCase()).filter(Boolean)
+            ));
+            if (uniqueRecipients.length === 0) {
+              return res.status(400).json({
+                message: 'Line manager approval is enabled but no line manager email is configured. Please contact Super Admin.'
+              });
+            }
+
+            const token = crypto.randomBytes(24).toString('hex');
+            const approvalLink = `${req.protocol}://${req.get('host')}/api/assets/collect-approval/${token}`;
+            const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
+
+            pendingRequest = await CollectionApproval.create({
+              token,
+              asset: asset._id,
+              technician: req.user._id,
+              store: asset.store || null,
+              ticketNumber: String(ticketNumber || ''),
+              installationLocation: String(installationLocation || ''),
+              lineManagerEmail: uniqueRecipients.join(','),
+              status: 'Pending',
+              expiresAt
+            });
+
+            const lines = [
+              `Technician ${req.user.name} (${req.user.email}) requested to collect an asset.`,
+              `Store: ${storeDoc?.name || 'N/A'}`,
+              `Asset: ${asset.name}`,
+              `Serial: ${asset.serial_number || 'N/A'}`,
+              `Ticket: ${ticketNumber || 'N/A'}`,
+              `Location: ${installationLocation || 'N/A'}`,
+              `Approval link: ${approvalLink}`,
+              `This link expires on: ${expiresAt.toLocaleString()}`
+            ];
+            await sendStoreEmail({
+              storeId: asset.store || null,
+              to: uniqueRecipients.join(','),
+              subject: `Line Manager Approval Required - ${asset.name}`,
+              text: lines.join('\n'),
+              html: `<div>${lines.map((line) => `<p>${line}</p>`).join('')}</div>`,
+              context: 'collection-approval-request'
+            });
+
+            await ActivityLog.create({
+              user: req.user.name,
+              email: req.user.email,
+              role: req.user.role,
+              action: 'Collection Approval Requested',
+              details: `Requested line manager approval for ${asset.name} (SN: ${asset.serial_number || 'N/A'})`,
+              store: asset.store
+            });
+          }
+
+          return res.status(202).json({
+            pendingApproval: true,
+            message: 'Line manager approval is required. Approval link sent to configured line manager email(s).'
+          });
+        }
+      }
     }
 
     const prev = asset.status;
@@ -2327,6 +2679,12 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
     });
 
     await asset.save();
+
+    if (approvedRequestToConsume) {
+      approvedRequestToConsume.status = 'Consumed';
+      approvedRequestToConsume.consumedAt = new Date();
+      await approvedRequestToConsume.save();
+    }
 
     // Log Activity
     await ActivityLog.create({
@@ -2369,7 +2727,10 @@ router.post('/faulty', protect, restrictViewer, async (req, res) => {
       return res.status(404).json({ message: 'Asset not found' });
     }
 
-    asset.status = 'Faulty';
+    if (asset.status !== 'Missing') {
+      asset.status = 'In Store';
+    }
+    asset.condition = 'Faulty';
     asset.history.push({
       action: 'Reported Faulty',
       ticket_number: ticketNumber,
@@ -2464,7 +2825,7 @@ router.post('/return', protect, restrictViewer, async (req, res) => {
     }
     // Convert condition
     const condRaw = String(condition || '').trim().toLowerCase();
-    const condMap = { new: 'New', used: 'Used', faulty: 'Faulty', 'under repair': 'Under Repair', repaired: 'Repaired' };
+    const condMap = { new: 'New', used: 'Used', faulty: 'Faulty', repaired: 'Repaired', 'under repair': 'Repaired' };
     const cond = condMap[condRaw];
     if (!cond) return res.status(400).json({ message: 'Invalid return condition' });
     
@@ -2472,6 +2833,7 @@ router.post('/return', protect, restrictViewer, async (req, res) => {
     const previousUser = asset.assigned_to ? req.user.name : 'Unknown';
     
     asset.status = 'In Store';
+    asset.condition = cond;
     asset.assigned_to = null;
     asset.assigned_to_external = null;
     
@@ -2529,12 +2891,13 @@ router.post('/return-request', protect, restrictViewer, async (req, res) => {
       return res.status(403).json({ message: 'You can only request return for your assigned assets' });
     }
     const condRaw = String(condition || '').trim().toLowerCase();
-    const condMap = { new: 'New', used: 'Used', faulty: 'Faulty', 'under repair': 'Under Repair', repaired: 'Repaired' };
+    const condMap = { new: 'New', used: 'Used', faulty: 'Faulty', repaired: 'Repaired', 'under repair': 'Repaired' };
     const cond = condMap[condRaw];
     if (!cond) return res.status(400).json({ message: 'Invalid return condition' });
     
     // Auto-approve return logic
-    asset.status = cond;
+    asset.status = 'In Store';
+    asset.condition = cond;
     asset.assigned_to = null;
     asset.assigned_to_external = null;
     asset.return_pending = false;
@@ -2737,19 +3100,24 @@ router.put('/:id', protect, admin, async (req, res) => {
       asset.qr_code = qr_code || asset.qr_code || '';
       asset.store = store || asset.store;
       if (location !== undefined) asset.location = capitalizeWords(location);
-      // Normalize status/condition
+      // Normalize status/condition to allowed values.
       let normStatus = status || asset.status;
       let normCondition = condition || asset.condition;
+      if (typeof normStatus === 'string') {
+        const s = normStatus.trim().toLowerCase();
+        if (s === 'spare' || s === 'faulty' || s === 'under repair' || s === 'disposed' || s === 'scrapped') normStatus = 'In Store';
+      }
       if (typeof normCondition === 'string') {
         const c = normCondition.trim().toLowerCase();
-        if (c === 'scrap') normCondition = 'Scrapped';
+        if (c === 'under repair') normCondition = 'Repaired';
+        if (c === 'disposed' || c === 'scrapped' || c === 'scrap') normCondition = 'Faulty';
       }
       asset.status = normStatus;
       asset.condition = normCondition;
 
       const updatedAsset = await asset.save();
 
-      // Log Activity (+ mark disposal candidate when condition is Scrapped or status is Faulty)
+      // Log activity (+ mark maintenance candidate when condition is Faulty)
       await ActivityLog.create({
         user: req.user.name,
         email: req.user.email,
@@ -2758,13 +3126,13 @@ router.put('/:id', protect, admin, async (req, res) => {
         details: `Edited asset ${updatedAsset.name} (SN: ${oldSerial} -> ${updatedAsset.serial_number})`,
         store: updatedAsset.store
       });
-      if (updatedAsset.condition === 'Scrapped' || updatedAsset.status === 'Faulty') {
+      if (updatedAsset.condition === 'Faulty') {
         await ActivityLog.create({
           user: req.user.name,
           email: req.user.email,
           role: req.user.role,
-          action: 'Queued for Disposal',
-          details: `Asset ${updatedAsset.name} marked for disposal (status: ${updatedAsset.status}, condition: ${updatedAsset.condition})`,
+          action: 'Queued for Maintenance',
+          details: `Asset ${updatedAsset.name} marked for maintenance (status: ${updatedAsset.status}, condition: ${updatedAsset.condition})`,
           store: updatedAsset.store
         });
       }

@@ -66,7 +66,7 @@ const Assets = () => {
     isOpen: false,
     asset: null,
     quantity: 1,
-    status: 'Faulty',
+    status: 'In Store',
     condition: 'Faulty'
   });
 
@@ -75,7 +75,7 @@ const Assets = () => {
       isOpen: true,
       asset,
       quantity: 1,
-      status: 'Faulty',
+      status: 'In Store',
       condition: 'Faulty'
     });
   };
@@ -195,6 +195,7 @@ const Assets = () => {
 
   // Assign State
   const [assigningAsset, setAssigningAsset] = useState(null);
+  const [assigningAssetIds, setAssigningAssetIds] = useState([]);
   const [assignForm, setAssignForm] = useState({
     technicianId: '',
     recipientEmail: '',
@@ -357,9 +358,9 @@ const Assets = () => {
   };
 
   const handleTopAssign = () => {
-    if (selectedIds.length !== 1) return;
+    if (selectedIds.length === 0) return;
     const asset = assets.find(a => a._id === selectedIds[0]);
-    if (asset) handleAssignClick(asset);
+    if (asset) handleAssignClick(asset, selectedIds);
   };
 
   const handleTopDelete = () => {
@@ -577,16 +578,57 @@ const Assets = () => {
 
   const handleDownloadTemplate = async () => {
     try {
-      const response = await api.get('/assets/template', { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'assets_import_template.xlsx');
-      document.body.appendChild(link);
-      link.click();
+      const headers = [
+        'Category',
+        'Product Type',
+        'Product Name',
+        'Model Number',
+        'Quantity',
+        'Serial Number',
+        'MAC Address',
+        'Manufacturer',
+        'Ticket Number',
+        'PO Number',
+        'Vendor Name',
+        'Price',
+        'RFID',
+        'QR Code',
+        'Store Location',
+        'Status',
+        'Condition',
+        'Delivered By',
+        'Delivered At'
+      ];
+      const sample = [
+        'ACCESS CONTROL SYSTEMS',
+        'LOCKS',
+        'MAGNETIC LOCKS',
+        'MEC-1200',
+        1,
+        '1584632152',
+        '',
+        'SIEMENS',
+        'TKT-1001',
+        'PO-1001',
+        'ABC TRADERS',
+        1250,
+        '',
+        '',
+        'SCY ASSET',
+        'In Store',
+        'New',
+        'JOHN DOE',
+        '2024-01-01 10:00'
+      ];
+      const wb = XLSX.utils.book_new();
+      const wsTemplate = XLSX.utils.aoa_to_sheet([headers]);
+      const wsSample = XLSX.utils.aoa_to_sheet([headers, sample]);
+      XLSX.utils.book_append_sheet(wb, wsTemplate, 'Template');
+      XLSX.utils.book_append_sheet(wb, wsSample, 'Sample');
+      XLSX.writeFile(wb, 'assets_import_template.xlsx', { bookType: 'xlsx' });
     } catch (error) {
       console.error('Error downloading template:', error);
-      alert('Failed to download template');
+      alert(error?.response?.data?.message || error?.message || 'Failed to download template');
     }
   };
 
@@ -747,8 +789,9 @@ const Assets = () => {
     }
   };
 
-  const handleAssignClick = (asset) => {
+  const handleAssignClick = (asset, ids = [asset?._id]) => {
     setAssigningAsset(asset);
+    setAssigningAssetIds((ids || []).filter(Boolean));
     setAssignForm({
       technicianId: '',
       recipientEmail: '',
@@ -801,6 +844,7 @@ const Assets = () => {
     try {
       const payload = {
         assetId: assigningAsset._id,
+        assetIds: assigningAssetIds.length > 0 ? assigningAssetIds : [assigningAsset._id],
         ticketNumber: assignForm.ticketNumber,
         needGatePass: Boolean(assignForm.needGatePass),
         recipientEmail: assignForm.recipientEmail,
@@ -816,11 +860,12 @@ const Assets = () => {
       }
       const res = await api.post(`/assets/assign`, payload);
       setAssigningAsset(null);
+      setAssigningAssetIds([]);
       fetchAssets(undefined, { silent: true });
       if (res.data?.gatePass?.pass_number) {
-        alert(`Asset assigned successfully. Gate pass created: ${res.data.gatePass.pass_number}`);
+        alert(`${res.data?.assignedCount || payload.assetIds.length} asset(s) assigned successfully. Single gate pass created: ${res.data.gatePass.pass_number}`);
       } else {
-        alert('Asset assigned successfully');
+        alert(`${res.data?.assignedCount || payload.assetIds.length} asset(s) assigned successfully`);
       }
     } catch (error) {
       console.error('Error assigning asset:', error);
@@ -935,13 +980,10 @@ const Assets = () => {
   const getDerivedStatus = (asset) => {
     const s = asset.status;
     const cond = String(asset.condition || '').toLowerCase();
-    if (cond.includes('faulty') || s === 'Faulty') return { label: 'Faulty', color: 'bg-rose-50 text-rose-700 border border-rose-100' };
-    if (cond.includes('repair') || s === 'Under Repair') return { label: 'Under Repair', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
-    if (cond.includes('disposed') || s === 'Disposed') return { label: 'Disposed', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
-    if (cond.includes('scrap') || s === 'Scrapped') return { label: 'Scrapped', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
+    if (cond.includes('faulty')) return { label: 'Faulty', color: 'bg-rose-50 text-rose-700 border border-rose-100' };
+    if (cond.includes('repair')) return { label: 'Repaired', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
     if (s === 'In Use') return { label: 'In Use', color: 'bg-emerald-50 text-emerald-700 border border-emerald-100' };
     if (s === 'In Store') return { label: 'In Store', color: 'bg-sky-50 text-sky-700 border border-sky-100' };
-    if (s === 'Spare') return { label: 'Spare', color: 'bg-amber-50 text-amber-700 border border-amber-100' };
     if (s === 'Missing') return { label: 'Missing', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
     return { label: s || '-', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
   };
@@ -950,9 +992,29 @@ const Assets = () => {
   // Debounced filter/search effect
   useEffect(() => {
     const t = setTimeout(() => {
+      const hasAnyActiveFilter = Boolean(
+        showRecentUploads ||
+        searchTerm ||
+        filterLocation ||
+        filterStatus ||
+        filterCondition ||
+        filterManufacturer ||
+        filterModelNumber ||
+        filterSerialNumber ||
+        filterMacAddress ||
+        filterProductName ||
+        filterTicket ||
+        filterRfid ||
+        filterQr ||
+        filterDateFrom ||
+        filterDateTo
+      );
+
       if (!hasHydratedFiltersRef.current) {
         hasHydratedFiltersRef.current = true;
-        return;
+        // If URL/query preloads filters (e.g. /assets?status=Missing),
+        // run the first filtered fetch immediately instead of skipping it.
+        if (!hasAnyActiveFilter) return;
       }
       if (page !== 1) {
         setPage(1); // This will trigger the page effect
@@ -1160,7 +1222,7 @@ const Assets = () => {
                   Previewing {importPreview?.length || 0} assets
                 </div>
                 <div className="mb-3 text-xs text-gray-600">
-                  Duplicate serial rows are highlighted in yellow. They will be blocked unless Admin enables "Allow duplicates in same store".
+                  Duplicate serial rows are highlighted in yellow. They will be blocked unless Admin enables &quot;Allow duplicates in same store&quot;.
                 </div>
                 <div className="max-h-80 overflow-auto border rounded">
                   <table className="min-w-full text-sm">
@@ -1260,8 +1322,6 @@ const Assets = () => {
             <option value="Used">Used</option>
             <option value="Faulty">Faulty</option>
             <option value="Repaired">Repaired</option>
-            <option value="Under Repair">Under Repair</option>
-            <option value="Disposed">Disposed</option>
           </select>
           <select
             value={filterStatus}
@@ -1271,9 +1331,7 @@ const Assets = () => {
             <option value="">All Statuses</option>
             <option value="In Store">In Store</option>
             <option value="In Use">In Use</option>
-            <option value="Spare">Spare</option>
             <option value="Missing">Missing</option>
-            <option value="Scrapped">Scrapped</option>
           </select>
           <div className="flex gap-2 sm:col-span-2 lg:col-span-4 items-center">
             <button
@@ -1361,12 +1419,12 @@ const Assets = () => {
                   </button>
                   <button
                     onClick={handleTopAssign}
-                    disabled={selectedIds.length !== 1}
-                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length !== 1 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
-                    title="Assign selected asset"
+                disabled={selectedIds.length === 0}
+                className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
+                title="Assign selected asset(s)"
                   >
                     <UserCheck size={16} />
-                    Assign
+                {selectedIds.length > 1 ? 'Bulk Assign' : 'Assign'}
                   </button>
                   <button
                     onClick={handleTopDelete}
@@ -1754,7 +1812,10 @@ const Assets = () => {
           <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
             <h2 className="text-xl font-bold mb-4">Assign Asset</h2>
             <div className="mb-4">
-              <p className="text-sm text-gray-600 mb-2">Assigning: <span className="font-semibold">{assigningAsset.name}</span> ({assigningAsset.serial_number})</p>
+              <p className="text-sm text-gray-600 mb-2">
+                Assigning {assigningAssetIds.length || 1} asset(s)
+                {assigningAsset ? <>: <span className="font-semibold">{assigningAsset.name}</span> ({assigningAsset.serial_number})</> : null}
+              </p>
             </div>
             <div className="space-y-4">
               <div>
@@ -1983,7 +2044,7 @@ const Assets = () => {
             </div>
             <div className="mt-6 flex justify-end space-x-3">
               <button
-                onClick={() => setAssigningAsset(null)}
+                onClick={() => { setAssigningAsset(null); setAssigningAssetIds([]); }}
                 className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300"
               >
                 Cancel
@@ -2170,9 +2231,6 @@ const Assets = () => {
                   <option value="Used">Used</option>
                   <option value="Faulty">Faulty</option>
                   <option value="Repaired">Repaired</option>
-                  <option value="Under Repair">Under Repair</option>
-                  <option value="Disposed">Disposed</option>
-                  <option value="Scrapped">Scrapped</option>
                 </select>
               </div>
               <div>
@@ -2185,9 +2243,7 @@ const Assets = () => {
                 >
                   <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
-                  <option value="Spare">Spare</option>
                   <option value="Missing">Missing</option>
-                  <option value="Scrapped">Scrapped</option>
                 </select>
               </div>
             </div>
@@ -2389,8 +2445,6 @@ const Assets = () => {
                   <option value="Used">Used</option>
                   <option value="Faulty">Faulty</option>
                   <option value="Repaired">Repaired</option>
-                  <option value="Under Repair">Under Repair</option>
-                  <option value="Disposed">Disposed</option>
                 </select>
               </div>
               <div>
@@ -2403,9 +2457,7 @@ const Assets = () => {
                 >
                   <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
-                  <option value="Spare">Spare</option>
                   <option value="Missing">Missing</option>
-                  <option value="Scrapped">Scrapped</option>
                 </select>
               </div>
             </div>
@@ -2468,9 +2520,7 @@ const Assets = () => {
                   <option value="">No change</option>
                   <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
-                  <option value="Spare">Spare</option>
                   <option value="Missing">Missing</option>
-                  <option value="Scrapped">Scrapped</option>
                 </select>
               </div>
               <div>
@@ -2485,8 +2535,6 @@ const Assets = () => {
                   <option value="Used">Used</option>
                   <option value="Faulty">Faulty</option>
                   <option value="Repaired">Repaired</option>
-                  <option value="Under Repair">Under Repair</option>
-                  <option value="Disposed">Disposed</option>
                 </select>
               </div>
               <div>
@@ -2592,10 +2640,7 @@ const Assets = () => {
                   onChange={(e) => setSplitModal(prev => ({ ...prev, status: e.target.value }))}
                   className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                 >
-                  <option value="Faulty">Faulty</option>
-                  <option value="Under Repair">Under Repair</option>
-                  <option value="Disposed">Disposed</option>
-                  <option value="Spare">Spare</option>
+                  <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
                   <option value="Missing">Missing</option>
                 </select>
@@ -2611,9 +2656,7 @@ const Assets = () => {
                   <option value="Faulty">Faulty</option>
                   <option value="Used">Used</option>
                   <option value="Repaired">Repaired</option>
-                  <option value="Under Repair">Under Repair</option>
                   <option value="New">New</option>
-                  <option value="Disposed">Disposed</option>
                 </select>
               </div>
             </div>

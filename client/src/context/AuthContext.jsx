@@ -1,4 +1,4 @@
-import { createContext, useState, useEffect, useContext } from 'react';
+import { createContext, useState, useEffect, useContext, useCallback } from 'react';
 import api from '../api/axios';
 import PropTypes from 'prop-types';
 
@@ -15,7 +15,7 @@ export const AuthProvider = ({ children }) => {
   const [globalLoading, setGlobalLoading] = useState(false);
   const [branding, setBranding] = useState({ logoUrl: '/logo.svg', theme: 'default' });
 
-  const resolveStoreIdForBranding = (storeValue = activeStore, userValue = user) => {
+  const resolveStoreIdForBranding = useCallback((storeValue = activeStore, userValue = user) => {
     if (storeValue && storeValue !== 'all') {
       return storeValue?._id || storeValue || '';
     }
@@ -23,7 +23,7 @@ export const AuthProvider = ({ children }) => {
       return userValue.assignedStore?._id || userValue.assignedStore || '';
     }
     return '';
-  };
+  }, [activeStore, user]);
 
   const setFavicon = (href) => {
     try {
@@ -40,7 +40,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const fetchBranding = async (storeOverride = undefined, userOverride = undefined) => {
+  const fetchBranding = useCallback(async (storeOverride = undefined, userOverride = undefined) => {
     try {
       const storeId = resolveStoreIdForBranding(
         storeOverride === undefined ? activeStore : storeOverride,
@@ -58,7 +58,7 @@ export const AuthProvider = ({ children }) => {
       setFavicon('/logo.svg');
       document.documentElement.dataset.theme = 'default';
     }
-  };
+  }, [activeStore, resolveStoreIdForBranding, user]);
 
   useEffect(() => {
     (async () => {
@@ -96,7 +96,7 @@ export const AuthProvider = ({ children }) => {
 
     fetchBranding();
     verifySession();
-  }, []);
+  }, [fetchBranding]);
 
   useEffect(() => {
     if (loading) return;

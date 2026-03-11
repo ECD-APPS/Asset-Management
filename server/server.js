@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 // Removed built-in categories seeder
 const seedStoresAndUsers = require('./utils/seedStoresAndUsers');
 const compression = require('compression');
@@ -53,22 +54,25 @@ try {
 // Security & hardening
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+const isProd = process.env.NODE_ENV === 'production';
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 // Rate limit (general)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: isProd ? 5000 : 20000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.path === '/api/healthz' || req.path === '/api/readyz',
+  message: { message: 'Too many API requests, please try again later.' }
 });
-app.use(limiter);
+// Apply limiter only on API routes; never throttle static index/assets.
+app.use('/api', limiter);
 // Prevent NoSQL injection
 app.use(mongoSanitize());
 
 // Cookies and CSRF
-const isProd = process.env.NODE_ENV === 'production';
 const cookieSecure = String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
 app.use(cookieParser(process.env.COOKIE_SECRET || 'dev-cookie-secret'));
 
@@ -201,7 +205,6 @@ const ActivityLog = require('./models/ActivityLog');
 const { protect, admin } = require('./middleware/authMiddleware');
 
 // Serve built client in production
-const fs = require('fs');
 const clientDist = path.resolve(__dirname, '../client/dist');
 const indexHtml = path.join(clientDist, 'index.html');
 
@@ -238,7 +241,20 @@ app.get('/version', (req, res) => {
 // 3. Static Files (Try to serve if they exist)
 if (fs.existsSync(clientDist)) {
   console.log('Serving static files from:', clientDist);
-  app.use(express.static(clientDist));
+  app.use(express.static(clientDist, {
+    etag: true,
+    lastModified: true,
+    maxAge: isProd ? '7d' : 0,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+        return;
+      }
+      if (isProd && filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+      }
+    }
+  }));
 } else {
   console.log('Client dist folder NOT found at:', clientDist);
 }

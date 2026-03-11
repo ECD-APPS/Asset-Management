@@ -656,6 +656,8 @@ router.get('/email-config', protect, admin, async (req, res) => {
         fromName: cfg.fromName || '',
         notificationRecipients: Array.isArray(cfg.notificationRecipients) ? cfg.notificationRecipients : [],
         lineManagerRecipients: Array.isArray(cfg.lineManagerRecipients) ? cfg.lineManagerRecipients : [],
+        requireLineManagerApprovalForCollection: Boolean(cfg.requireLineManagerApprovalForCollection),
+        collectionApprovalRecipients: Array.isArray(cfg.collectionApprovalRecipients) ? cfg.collectionApprovalRecipients : [],
         enabled: Boolean(cfg.enabled)
       },
       canOverrideAllStores: req.user.role === 'Super Admin'
@@ -683,6 +685,8 @@ router.put('/email-config', protect, admin, async (req, res) => {
       fromName,
       notificationRecipients,
       lineManagerRecipients,
+      requireLineManagerApprovalForCollection,
+      collectionApprovalRecipients,
       enabled
     } = req.body;
 
@@ -701,6 +705,9 @@ router.put('/email-config', protect, admin, async (req, res) => {
     const mergedLineManagerRecipients = lineManagerRecipients === undefined
       ? (Array.isArray(existingStore?.emailConfig?.lineManagerRecipients) ? existingStore.emailConfig.lineManagerRecipients : [])
       : normalizeRecipientList(lineManagerRecipients);
+    const mergedCollectionApprovalRecipients = collectionApprovalRecipients === undefined
+      ? (Array.isArray(existingStore?.emailConfig?.collectionApprovalRecipients) ? existingStore.emailConfig.collectionApprovalRecipients : [])
+      : normalizeRecipientList(collectionApprovalRecipients);
 
     const update = {
       emailConfig: {
@@ -713,6 +720,10 @@ router.put('/email-config', protect, admin, async (req, res) => {
         fromName: String(fromName || '').trim(),
         notificationRecipients: mergedRecipients,
         lineManagerRecipients: mergedLineManagerRecipients,
+        requireLineManagerApprovalForCollection: requireLineManagerApprovalForCollection === undefined
+          ? Boolean(existingStore?.emailConfig?.requireLineManagerApprovalForCollection)
+          : Boolean(requireLineManagerApprovalForCollection),
+        collectionApprovalRecipients: mergedCollectionApprovalRecipients,
         enabled: Boolean(enabled !== false),
         updatedBy: req.user._id,
         updatedAt: new Date()

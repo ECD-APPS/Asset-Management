@@ -43,6 +43,8 @@ const storeSchema = new mongoose.Schema({
     fromName: { type: String, default: '' },
     notificationRecipients: [{ type: String, trim: true, lowercase: true }],
     lineManagerRecipients: [{ type: String, trim: true, lowercase: true }],
+    requireLineManagerApprovalForCollection: { type: Boolean, default: false },
+    collectionApprovalRecipients: [{ type: String, trim: true, lowercase: true }],
     enabled: { type: Boolean, default: false },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     updatedAt: { type: Date, default: null }

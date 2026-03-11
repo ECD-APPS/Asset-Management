@@ -45,15 +45,56 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
 
   const handleDownloadTemplate = async () => {
     try {
-      const response = await api.get('/assets/template', { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'Asset_Import_Template.xlsx');
-      document.body.appendChild(link);
-      link.click();
+      const headers = [
+        'Category',
+        'Product Type',
+        'Product Name',
+        'Model Number',
+        'Quantity',
+        'Serial Number',
+        'MAC Address',
+        'Manufacturer',
+        'Ticket Number',
+        'PO Number',
+        'Vendor Name',
+        'Price',
+        'RFID',
+        'QR Code',
+        'Store Location',
+        'Status',
+        'Condition',
+        'Delivered By',
+        'Delivered At'
+      ];
+      const sample = [
+        'ACCESS CONTROL SYSTEMS',
+        'LOCKS',
+        'MAGNETIC LOCKS',
+        'MEC-1200',
+        1,
+        '1584632152',
+        '',
+        'SIEMENS',
+        'TKT-1001',
+        'PO-1001',
+        'ABC TRADERS',
+        1250,
+        '',
+        '',
+        'SCY ASSET',
+        'In Store',
+        'New',
+        'JOHN DOE',
+        '2024-01-01 10:00'
+      ];
+      const wb = XLSX.utils.book_new();
+      const wsTemplate = XLSX.utils.aoa_to_sheet([headers]);
+      const wsSample = XLSX.utils.aoa_to_sheet([headers, sample]);
+      XLSX.utils.book_append_sheet(wb, wsTemplate, 'Template');
+      XLSX.utils.book_append_sheet(wb, wsSample, 'Sample');
+      XLSX.writeFile(wb, 'Asset_Import_Template.xlsx', { bookType: 'xlsx' });
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to download template');
+      setError(err.response?.data?.message || err.message || 'Failed to download template');
     }
   };
 

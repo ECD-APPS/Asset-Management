@@ -43,6 +43,8 @@ const Portal = () => {
     fromName: '',
     notificationRecipients: '',
     lineManagerRecipients: '',
+    requireLineManagerApprovalForCollection: false,
+    collectionApprovalRecipients: '',
     enabled: true
   });
   const [emailLoading, setEmailLoading] = useState(false);
@@ -135,6 +137,8 @@ const Portal = () => {
           fromName: cfg.fromName || '',
           notificationRecipients: Array.isArray(cfg.notificationRecipients) ? cfg.notificationRecipients.join(', ') : '',
           lineManagerRecipients: Array.isArray(cfg.lineManagerRecipients) ? cfg.lineManagerRecipients.join(', ') : '',
+          requireLineManagerApprovalForCollection: Boolean(cfg.requireLineManagerApprovalForCollection),
+          collectionApprovalRecipients: Array.isArray(cfg.collectionApprovalRecipients) ? cfg.collectionApprovalRecipients.join(', ') : '',
           enabled: Boolean(cfg.enabled)
         });
         setTestEmail(user?.email || '');
@@ -818,6 +822,21 @@ const Portal = () => {
                       onChange={(e) => handleEmailField('lineManagerRecipients', e.target.value)}
                       className="border border-slate-300 rounded-lg p-2.5 text-sm md:col-span-2"
                       placeholder="Line manager emails (comma-separated)"
+                    />
+                    <label className="md:col-span-2 inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(emailConfig.requireLineManagerApprovalForCollection)}
+                        onChange={(e) => handleEmailField('requireLineManagerApprovalForCollection', e.target.checked)}
+                      />
+                      Require line manager approval before technician can collect asset
+                    </label>
+                    <input
+                      type="text"
+                      value={emailConfig.collectionApprovalRecipients}
+                      onChange={(e) => handleEmailField('collectionApprovalRecipients', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm md:col-span-2"
+                      placeholder="Collection approval line manager emails (comma-separated)"
                     />
                   </div>
                   <div className="flex flex-wrap gap-3 mt-4 items-center">
