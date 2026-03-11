@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Truck, FileText, Box, CheckSquare, RefreshCw, Trash2, Database, AlertTriangle, Mail, Send } from 'lucide-react';
+import { Truck, FileText, Box, CheckSquare, RefreshCw, Trash2, Database, AlertTriangle, Mail, Send, Palette } from 'lucide-react';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 
 const Setup = () => {
-  const { user } = useAuth();
+  const { user, branding, refreshBranding } = useAuth();
   const [storage, setStorage] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
   const [globalResetLoading, setGlobalResetLoading] = useState(false);
@@ -37,6 +37,7 @@ const Setup = () => {
   });
   const isMainAdmin = user?.role === 'Super Admin';
   const canManageEmail = user?.role === 'Super Admin';
+  const [themeSaving, setThemeSaving] = useState(false);
 
   const resolveUserStoreId = () => {
     const raw = user?.assignedStore;
@@ -155,6 +156,29 @@ const Setup = () => {
       alert('Failed to save notification preferences: ' + (error.response?.data?.message || error.message));
     } finally {
       setNotifSaving(false);
+    }
+  };
+
+  const themeOptions = [
+    { value: 'default', label: 'Default (Expo Amber)' },
+    { value: 'ocean', label: 'Ocean Glass (Blue)' },
+    { value: 'emerald', label: 'Emerald Glow (Green)' },
+    { value: 'sunset', label: 'Sunset Flow (Warm)' },
+    { value: 'midnight', label: 'Midnight Neon (Dark)' },
+    { value: 'mono', label: 'Mono Pro (Minimal)' }
+  ];
+
+  const applyTheme = async (newTheme) => {
+    if (!newTheme || themeSaving || (branding?.theme || 'default') === newTheme) return;
+    try {
+      setThemeSaving(true);
+      await api.post('/system/theme', { theme: newTheme });
+      await refreshBranding();
+      alert('Theme updated successfully.');
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to update theme');
+    } finally {
+      setThemeSaving(false);
     }
   };
 
@@ -564,6 +588,37 @@ const Setup = () => {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {user?.role === 'Admin' && (
+        <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          <div className="flex items-center mb-6">
+            <Palette className="w-6 h-6 text-indigo-600 mr-2" />
+            <h2 className="text-xl font-bold text-gray-800">Customize Application Theme</h2>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            Choose a professional theme for your workspace experience.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+            <select
+              value={branding?.theme || 'default'}
+              onChange={(e) => applyTheme(e.target.value)}
+              className="w-full sm:w-72 border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white text-gray-900"
+            >
+              {themeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => applyTheme(branding?.theme || 'default')}
+              disabled={themeSaving}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm"
+            >
+              {themeSaving ? 'Applying...' : 'Apply Theme'}
+            </button>
+          </div>
         </div>
       )}
 

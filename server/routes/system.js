@@ -196,10 +196,10 @@ router.post('/logo', protect, superAdmin, brandingUpload.single('logo'), async (
   }
 });
 
-// @desc    Update application theme (Super Admin only)
+// @desc    Update application theme (Admin or Super Admin)
 // @route   POST /api/system/theme
-// @access  Private/SuperAdmin
-router.post('/theme', protect, superAdmin, async (req, res) => {
+// @access  Private/Admin
+router.post('/theme', protect, admin, async (req, res) => {
   try {
     const { theme } = req.body;
     const allowed = ['default', 'ocean', 'emerald', 'sunset', 'midnight', 'mono'];

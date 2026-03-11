@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
-import { Users, ArrowLeft, Database, AlertTriangle, X, Store, Building2, ChevronRight, Settings, ShieldCheck, Activity, Search, Lock, LogOut, Palette, UploadCloud, CheckCircle2 } from 'lucide-react';
+import { Users, ArrowLeft, Database, AlertTriangle, X, Store, Building2, ChevronRight, Settings, ShieldCheck, Activity, Search, Lock, LogOut, Mail, Send, UploadCloud, CheckCircle2 } from 'lucide-react';
 import AddMembers from './AddMembers';
 import ChangePasswordModal from '../components/ChangePasswordModal';
 
@@ -32,7 +32,21 @@ const Portal = () => {
   const [bulkSummary, setBulkSummary] = useState(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [lastBackupTime, setLastBackupTime] = useState(null);
-  const [themeSaving, setThemeSaving] = useState(false);
+  const [emailStoreId, setEmailStoreId] = useState('');
+  const [emailConfig, setEmailConfig] = useState({
+    smtpHost: '',
+    smtpPort: 587,
+    username: '',
+    password: '',
+    encryption: 'TLS',
+    fromEmail: '',
+    fromName: '',
+    enabled: true
+  });
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailSaving, setEmailSaving] = useState(false);
+  const [testEmail, setTestEmail] = useState('');
+  const [testingEmail, setTestingEmail] = useState(false);
 
   useEffect(() => {
     const isGlobalViewer = user?.role === 'Viewer' && !user?.assignedStore;
@@ -79,6 +93,41 @@ const Portal = () => {
       setLastBackupTime(saved);
     }
   }, [user, navigate]);
+
+  useEffect(() => {
+    if (user?.role !== 'Super Admin') return;
+    if (!emailStoreId && stores.length > 0) {
+      setEmailStoreId(stores[0]._id);
+    }
+  }, [user?.role, emailStoreId, stores]);
+
+  useEffect(() => {
+    if (user?.role !== 'Super Admin') return;
+    if (!emailStoreId) return;
+    const loadEmailConfig = async () => {
+      try {
+        setEmailLoading(true);
+        const res = await api.get('/system/email-config', { params: { storeId: emailStoreId } });
+        const cfg = res.data?.emailConfig || {};
+        setEmailConfig({
+          smtpHost: cfg.smtpHost || '',
+          smtpPort: cfg.smtpPort || 587,
+          username: cfg.username || '',
+          password: cfg.password || '',
+          encryption: cfg.encryption || 'TLS',
+          fromEmail: cfg.fromEmail || '',
+          fromName: cfg.fromName || '',
+          enabled: Boolean(cfg.enabled)
+        });
+        setTestEmail(user?.email || '');
+      } catch (error) {
+        console.error('Error loading email configuration:', error);
+      } finally {
+        setEmailLoading(false);
+      }
+    };
+    loadEmailConfig();
+  }, [user?.role, emailStoreId, user?.email]);
 
   const handleSelectStore = (store) => {
     selectStore(store);
@@ -282,56 +331,34 @@ const Portal = () => {
     }
   };
 
-  const themeOptions = [
-    {
-      value: 'default',
-      label: 'Default (Expo Amber)',
-      surface: 'from-slate-50 to-white',
-      swatches: ['bg-amber-500', 'bg-slate-900', 'bg-slate-200']
-    },
-    {
-      value: 'ocean',
-      label: 'Ocean Glass (Blue)',
-      surface: 'from-sky-100 to-blue-50',
-      swatches: ['bg-blue-500', 'bg-cyan-400', 'bg-slate-100']
-    },
-    {
-      value: 'emerald',
-      label: 'Emerald Glow (Green)',
-      surface: 'from-emerald-100 to-green-50',
-      swatches: ['bg-emerald-500', 'bg-teal-400', 'bg-slate-100']
-    },
-    {
-      value: 'sunset',
-      label: 'Sunset Flow (Warm)',
-      surface: 'from-orange-100 to-amber-50',
-      swatches: ['bg-orange-500', 'bg-amber-400', 'bg-rose-200']
-    },
-    {
-      value: 'midnight',
-      label: 'Midnight Neon (Dark)',
-      surface: 'from-slate-900 to-slate-800',
-      swatches: ['bg-sky-400', 'bg-indigo-500', 'bg-slate-600']
-    },
-    {
-      value: 'mono',
-      label: 'Mono Pro (Minimal)',
-      surface: 'from-slate-100 to-gray-50',
-      swatches: ['bg-slate-800', 'bg-gray-500', 'bg-gray-200']
-    }
-  ];
+  const handleEmailField = (field, value) => {
+    setEmailConfig((prev) => ({ ...prev, [field]: value }));
+  };
 
-  const applyTheme = async (newTheme) => {
-    if (!newTheme || themeSaving || (branding?.theme || 'default') === newTheme) return;
+  const handleSaveEmailConfig = async () => {
+    if (!emailStoreId) return alert('Please select a store first.');
     try {
-      setThemeSaving(true);
-      await api.post('/system/theme', { theme: newTheme });
-      await refreshBranding();
-      alert('Theme updated successfully.');
+      setEmailSaving(true);
+      await api.put('/system/email-config', { storeId: emailStoreId, ...emailConfig });
+      alert('Email configuration saved successfully.');
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to update theme');
+      alert(err.response?.data?.message || 'Failed to save email configuration');
     } finally {
-      setThemeSaving(false);
+      setEmailSaving(false);
+    }
+  };
+
+  const handleTestEmail = async () => {
+    if (!emailStoreId) return alert('Please select a store first.');
+    if (!testEmail) return alert('Enter recipient email for test.');
+    try {
+      setTestingEmail(true);
+      await api.post('/system/email-config/test', { storeId: emailStoreId, to: testEmail });
+      alert('Test email sent successfully.');
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to send test email');
+    } finally {
+      setTestingEmail(false);
     }
   };
 
@@ -642,61 +669,113 @@ const Portal = () => {
               </div>
             </div>
 
-            {/* Customize Application Theme (Super Admin only, but Portal is SA-only) */}
+            {/* Customize Email Configuration */}
             <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 shadow-sm">
               <div className="flex items-center gap-4 md:gap-5">
                 <div className="p-3 md:p-4 bg-indigo-50 rounded-lg text-indigo-600 border border-indigo-100">
-                  <Palette size={20} className="md:w-[24px] md:h-[24px]" />
+                  <Mail size={20} className="md:w-[24px] md:h-[24px]" />
                 </div>
                 <div className="flex-1">
-                  <h3 className="text-base md:text-lg font-bold text-slate-900 mb-1">Customize Application Theme</h3>
+                  <h3 className="text-base md:text-lg font-bold text-slate-900 mb-1">Customize Email Configuration</h3>
                   <p className="text-slate-500 text-xs md:text-sm mb-3">
-                    Choose a professional theme. Changes apply to the entire application.
+                    Configure notification email SMTP per store (Super Admin only).
                   </p>
-                  <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <select
-                      value={branding?.theme || 'default'}
-                      onChange={(e) => applyTheme(e.target.value)}
-                      className="w-full sm:w-64 border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white text-slate-900"
+                      value={emailStoreId}
+                      onChange={(e) => setEmailStoreId(e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white text-slate-900"
                     >
-                      {themeOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      <option value="">Select store</option>
+                      {stores.map((store) => (
+                        <option key={store._id} value={store._id}>{store.name}</option>
                       ))}
                     </select>
-                    {themeSaving && (
-                      <span className="text-xs text-slate-400">
-                        Applying theme…
-                      </span>
-                    )}
+                    <input
+                      type="text"
+                      value={emailConfig.smtpHost}
+                      onChange={(e) => handleEmailField('smtpHost', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm"
+                      placeholder="SMTP Host"
+                    />
+                    <input
+                      type="number"
+                      value={emailConfig.smtpPort}
+                      onChange={(e) => handleEmailField('smtpPort', Number(e.target.value || 0))}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm"
+                      placeholder="SMTP Port"
+                    />
+                    <input
+                      type="text"
+                      value={emailConfig.username}
+                      onChange={(e) => handleEmailField('username', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm"
+                      placeholder="SMTP Username"
+                    />
+                    <input
+                      type="password"
+                      value={emailConfig.password}
+                      onChange={(e) => handleEmailField('password', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm"
+                      placeholder="SMTP Password"
+                    />
+                    <select
+                      value={emailConfig.encryption}
+                      onChange={(e) => handleEmailField('encryption', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm"
+                    >
+                      <option value="TLS">TLS</option>
+                      <option value="SSL">SSL</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={emailConfig.fromEmail}
+                      onChange={(e) => handleEmailField('fromEmail', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm"
+                      placeholder="From Email"
+                    />
+                    <input
+                      type="text"
+                      value={emailConfig.fromName}
+                      onChange={(e) => handleEmailField('fromName', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm md:col-span-2"
+                      placeholder="From Name"
+                    />
                   </div>
-                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
-                    {themeOptions.map((opt) => {
-                      const isActive = (branding?.theme || 'default') === opt.value;
-                      return (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() => applyTheme(opt.value)}
-                          disabled={themeSaving}
-                          className={`text-left rounded-xl border p-3 transition-all shadow-sm ${
-                            isActive
-                              ? 'border-indigo-500 ring-2 ring-indigo-200 bg-indigo-50/60'
-                              : 'border-slate-200 hover:border-indigo-300 hover:shadow-md bg-white'
-                          } ${themeSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
-                          title={opt.label}
-                        >
-                          <div className={`h-12 rounded-lg bg-gradient-to-br ${opt.surface} border border-white/40 mb-2 relative overflow-hidden`}>
-                            <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_80%_20%,rgba(255,255,255,0.7),transparent_45%)]"></div>
-                          </div>
-                          <div className="flex items-center gap-1.5 mb-2">
-                            {opt.swatches.map((sw, idx) => (
-                              <span key={`${opt.value}-${idx}`} className={`w-3.5 h-3.5 rounded-full border border-white shadow-sm ${sw}`}></span>
-                            ))}
-                          </div>
-                          <p className="text-xs font-semibold text-slate-800 leading-tight">{opt.label}</p>
-                        </button>
-                      );
-                    })}
+                  <div className="flex flex-wrap gap-3 mt-4 items-center">
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={emailConfig.enabled}
+                        onChange={(e) => handleEmailField('enabled', e.target.checked)}
+                      />
+                      Enable this store email configuration
+                    </label>
+                    <input
+                      type="email"
+                      value={testEmail}
+                      onChange={(e) => setTestEmail(e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2 text-sm min-w-[220px]"
+                      placeholder="Test recipient email"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleTestEmail}
+                      disabled={testingEmail || !emailStoreId || emailLoading}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      <Send size={14} />
+                      {testingEmail ? 'Sending...' : 'Test Email'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveEmailConfig}
+                      disabled={emailSaving || !emailStoreId || emailLoading}
+                      className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {emailSaving ? 'Saving...' : 'Save Configuration'}
+                    </button>
+                    {emailLoading && <span className="text-xs text-slate-400">Loading configuration...</span>}
                   </div>
                 </div>
               </div>
