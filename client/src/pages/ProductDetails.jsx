@@ -325,6 +325,7 @@ const ProductDetails = () => {
                 <tr>
                   <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unique ID</th>
                   <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Serial Number</th>
+                  <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
                   <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                   <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Condition</th>
                   <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location / Store</th>
@@ -343,6 +344,11 @@ const ProductDetails = () => {
                         <span className="font-bold text-gray-900">{asset.serial_number || 'N/A'}</span>
                         {asset.serial_last_4 && <span className="text-xs text-gray-500">Last 4: {asset.serial_last_4}</span>}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="text-sm font-semibold text-gray-900">
+                        {Number(asset.quantity) > 0 ? Number(asset.quantity) : 1}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {(() => {

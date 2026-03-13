@@ -10,19 +10,27 @@ const Layout = () => {
   const [headerSearch, setHeaderSearch] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
   const [systemHealthy, setSystemHealthy] = useState(true);
+  const [dbMode, setDbMode] = useState('unknown');
   const { user, logout, activeStore } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
     let timer;
+    let consecutiveHealthFailures = 0;
     const checkHealth = async () => {
       try {
         const res = await fetch('/api/healthz', { credentials: 'include' });
         if (!res.ok) throw new Error('health check failed');
         const data = await res.json();
+        consecutiveHealthFailures = 0;
         setSystemHealthy(Boolean(data?.db_connected));
+        setDbMode(String(data?.db_mode || 'unknown'));
       } catch {
-        setSystemHealthy(false);
+        consecutiveHealthFailures += 1;
+        if (consecutiveHealthFailures >= 2) {
+          setSystemHealthy(false);
+          setDbMode('unknown');
+        }
       }
     };
 
@@ -76,6 +84,9 @@ const Layout = () => {
               <span className={`text-xs ${systemHealthy ? 'text-emerald-300' : 'text-rose-300'}`}>
                 {systemHealthy ? 'System Operational' : 'System Degraded'}
               </span>
+              <span className={`text-[10px] ${dbMode === 'in-memory' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                DB: {dbMode === 'in-memory' ? 'In-Memory' : dbMode === 'persistent' ? 'Persistent' : 'Unknown'}
+              </span>
             </div>
             {user?.role === 'Admin' ? (
               <Link to="/setup" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
@@ -103,6 +114,27 @@ const Layout = () => {
               <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${systemHealthy ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                 <span className={`h-2 w-2 rounded-full ${systemHealthy ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                 {systemHealthy ? 'System Operational' : 'System Degraded'}
+              </div>
+              <div
+                className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${
+                  dbMode === 'in-memory'
+                    ? 'bg-amber-50 text-amber-700'
+                    : dbMode === 'persistent'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : 'bg-slate-100 text-slate-700'
+                }`}
+                title="Database mode reported by /api/healthz"
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    dbMode === 'in-memory'
+                      ? 'bg-amber-500'
+                      : dbMode === 'persistent'
+                        ? 'bg-emerald-500'
+                        : 'bg-slate-400'
+                  }`}
+                />
+                {dbMode === 'in-memory' ? 'DB: In-Memory' : dbMode === 'persistent' ? 'DB: Persistent' : 'DB: Unknown'}
               </div>
 
               {user?.role === 'Admin' && (

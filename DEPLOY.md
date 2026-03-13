@@ -34,18 +34,18 @@ openssl rand -hex 32
 
 ## 2) Deploy (Recommended)
 
-### Option A: One command script
+### Option A: One command script (Safe Release)
 
 ```bash
-./deploy.sh
+./deploy.sh safe-release
 ```
 
-This validates config and starts/updates the production stack.
+This runs prechecks, creates pre-deploy backup (if app is running), deploys, and verifies API + web health.
 
 ### Option B: Makefile
 
 ```bash
-make deploy-prod
+make safe-release-prod
 ```
 
 ## 3) Verify Health
@@ -69,11 +69,17 @@ curl -f http://localhost:3000/ || echo "web unhealthy"
 curl -f http://localhost:5000/api/healthz || echo "api unhealthy"
 ```
 
+Or run automated verification:
+
+```bash
+./deploy.sh verify
+```
+
 ## 4) Regular Update Deployment
 
 ```bash
 git pull
-./deploy.sh
+./deploy.sh safe-release
 ```
 
 This rebuilds changed images and recreates services safely.
@@ -103,10 +109,10 @@ Build only:
 If latest deployment is bad:
 
 ```bash
-git log --oneline -n 5
-git checkout <previous-good-commit>
-./deploy.sh
+./deploy.sh rollback-help
 ```
+
+Then follow the printed commands (checkout previous good commit + safe release).
 
 After rollback, create a hotfix branch and investigate before re-updating.
 
@@ -153,5 +159,5 @@ docker image prune -f
 For daily use, your team only needs:
 
 ```bash
-git pull && ./deploy.sh
+git pull && ./deploy.sh safe-release
 ```

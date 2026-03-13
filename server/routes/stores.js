@@ -7,6 +7,23 @@ const { protect, admin } = require('../middleware/authMiddleware');
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const normalizeName = (value) => String(value || '').trim().replace(/\s+/g, ' ');
 
+const resolveCreateStoreContext = (req, payload = {}) => {
+  let finalParentStore = payload.parentStore;
+  let finalIsMainStore = payload.isMainStore || false;
+
+  if (req.user.role !== 'Super Admin') {
+    finalIsMainStore = false;
+    if (!req.user.assignedStore) {
+      return { error: 'No assigned store found for Admin' };
+    }
+    finalParentStore = req.user.assignedStore;
+  } else if (req.activeStore && !finalParentStore && !finalIsMainStore) {
+    finalParentStore = req.activeStore;
+  }
+
+  return { finalParentStore, finalIsMainStore };
+};
+
 // @desc    Get all stores (with optional filtering)
 // @route   GET /api/stores
 // @access  Private
@@ -187,27 +204,11 @@ router.get('/', protect, async (req, res) => {
 router.post('/', protect, admin, async (req, res) => {
   const { name, isMainStore, parentStore } = req.body;
   try {
-    // Determine context from request
-    let finalParentStore = parentStore;
-    let finalIsMainStore = isMainStore || false;
-
-    // RBAC & Isolation
-    if (req.user.role !== 'Super Admin') {
-      // Regular Admin cannot create Main Store
-      finalIsMainStore = false;
-      
-      // Regular Admin MUST create under their assigned store
-      if (req.user.assignedStore) {
-        finalParentStore = req.user.assignedStore;
-      } else {
-        return res.status(403).json({ message: 'No assigned store found for Admin' });
-      }
-    } else {
-      // Super Admin: if activeStore is set (e.g. via portal selection) and no parent specified, use it
-      if (req.activeStore && !finalParentStore && !finalIsMainStore) {
-          finalParentStore = req.activeStore;
-      }
+    const context = resolveCreateStoreContext(req, { isMainStore, parentStore });
+    if (context.error) {
+      return res.status(403).json({ message: context.error });
     }
+    const { finalParentStore, finalIsMainStore } = context;
 
     const cleanName = normalizeName(name);
     if (!cleanName) {
@@ -233,6 +234,103 @@ router.post('/', protect, admin, async (req, res) => {
       return res.status(400).json({ message: 'A location with this name already exists in this store' });
     }
     res.status(400).json({ message: error.message });
+  }
+});
+
+// @desc    Bulk create locations
+// @route   POST /api/stores/bulk
+// @access  Private/Admin
+router.post('/bulk', protect, admin, async (req, res) => {
+  try {
+    const names = Array.isArray(req.body?.names) ? req.body.names : [];
+    if (names.length === 0) {
+      return res.status(400).json({ message: 'At least one location name is required.' });
+    }
+    if (names.length > 1000) {
+      return res.status(400).json({ message: 'Maximum 1000 locations can be added at once.' });
+    }
+
+    const context = resolveCreateStoreContext(req, {
+      isMainStore: false,
+      parentStore: req.body?.parentStore
+    });
+    if (context.error) {
+      return res.status(403).json({ message: context.error });
+    }
+    const { finalParentStore } = context;
+
+    const normalizedNames = names
+      .map((name) => normalizeName(name))
+      .filter(Boolean);
+    if (normalizedNames.length === 0) {
+      return res.status(400).json({ message: 'No valid location names found after normalization.' });
+    }
+
+    const uniqueNames = [];
+    const seen = new Set();
+    const skipped = [];
+    for (const name of normalizedNames) {
+      const key = name.toLowerCase();
+      if (seen.has(key)) {
+        skipped.push({ name, reason: 'duplicate in request' });
+        continue;
+      }
+      seen.add(key);
+      uniqueNames.push(name);
+    }
+
+    const existingRows = await Store.find({ parentStore: finalParentStore || null })
+      .select('name')
+      .lean();
+    const existingSet = new Set(existingRows.map((row) => normalizeName(row?.name).toLowerCase()));
+
+    const toInsert = [];
+    for (const name of uniqueNames) {
+      if (existingSet.has(name.toLowerCase())) {
+        skipped.push({ name, reason: 'already exists' });
+        continue;
+      }
+      toInsert.push({
+        name,
+        isMainStore: false,
+        parentStore: finalParentStore
+      });
+    }
+
+    let inserted = [];
+    if (toInsert.length > 0) {
+      try {
+        inserted = await Store.insertMany(toInsert, { ordered: false });
+      } catch (error) {
+        const writeErrors = Array.isArray(error?.writeErrors) ? error.writeErrors : [];
+        const duplicateIndexes = new Set(
+          writeErrors
+            .filter((e) => e?.code === 11000 && Number.isInteger(e?.index))
+            .map((e) => e.index)
+        );
+        if (duplicateIndexes.size > 0) {
+          for (const idx of duplicateIndexes) {
+            const row = toInsert[idx];
+            if (!row?.name) continue;
+            skipped.push({ name: row.name, reason: 'already exists' });
+          }
+        }
+        inserted = Array.isArray(error?.insertedDocs) ? error.insertedDocs : [];
+        if (!writeErrors.length) {
+          return res.status(400).json({ message: error.message });
+        }
+      }
+    }
+
+    return res.status(201).json({
+      requested: names.length,
+      normalized: normalizedNames.length,
+      created: inserted.length,
+      skippedCount: skipped.length,
+      skipped
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
   }
 });
 

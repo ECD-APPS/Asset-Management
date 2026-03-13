@@ -18,6 +18,7 @@ const Products = ({ readOnly = false }) => {
   
   const [productName, setProductName] = useState('');
   const [productImage, setProductImage] = useState(null);
+  const [submittingEdit, setSubmittingEdit] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [parentId, setParentId] = useState('');
   const [bulkNames, setBulkNames] = useState('');
@@ -64,9 +65,19 @@ const Products = ({ readOnly = false }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const cleanName = String(productName || '').trim().replace(/\s+/g, ' ');
+    if (!cleanName) {
+      alert('Product name is required.');
+      return;
+    }
+    if (cleanName.length > 120) {
+      alert('Product name is too long (max 120 characters).');
+      return;
+    }
     try {
+      setSubmittingEdit(true);
       const formData = new FormData();
-      formData.append('name', productName);
+      formData.append('name', cleanName);
       if (productImage) {
         formData.append('image', productImage);
       }
@@ -82,13 +93,35 @@ const Products = ({ readOnly = false }) => {
       fetchProducts();
     } catch (err) {
       alert(err.response?.data?.message || `Failed to update product`);
+    } finally {
+      setSubmittingEdit(false);
     }
   };
 
   const handleImageChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setProductImage(e.target.files[0]);
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const maxBytes = 10 * 1024 * 1024;
+    const allowedTypes = [
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'image/svg+xml',
+      'image/bmp',
+      'image/tiff'
+    ];
+    if (!allowedTypes.includes(file.type)) {
+      alert('Invalid image format. Use JPG, PNG, WEBP, GIF, SVG, BMP, or TIFF.');
+      e.target.value = '';
+      return;
     }
+    if (file.size > maxBytes) {
+      alert('Image is too large. Maximum size is 10MB.');
+      e.target.value = '';
+      return;
+    }
+    setProductImage(file);
   };
 
   const flatten = (list, level = 0, ancestors = []) => {
@@ -165,11 +198,16 @@ const Products = ({ readOnly = false }) => {
             <label className="block text-sm font-medium text-gray-700 mb-1">Product Image</label>
             <input
               type="file"
-              accept="image/*"
+              accept=".jpg,.jpeg,.png,.webp,.gif,.svg,.bmp,.tiff"
               onChange={handleImageChange}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
-            <p className="text-xs text-gray-500 mt-1">Recommended: Square image (1:1 aspect ratio)</p>
+            <p className="text-xs text-gray-500 mt-1">Recommended: Square image (1:1). Max 10MB.</p>
+            {productImage && (
+              <p className="text-xs text-green-700 mt-1">
+                Selected: {productImage.name}
+              </p>
+            )}
           </div>
           <div className="flex justify-end gap-3">
             <button
@@ -181,9 +219,10 @@ const Products = ({ readOnly = false }) => {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              disabled={submittingEdit}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
-              Save Changes
+              {submittingEdit ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
         </form>

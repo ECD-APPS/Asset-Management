@@ -14,6 +14,14 @@ export const AuthProvider = ({ children }) => {
   const [activeStore, setActiveStore] = useState(null);
   const [globalLoading, setGlobalLoading] = useState(false);
   const [branding, setBranding] = useState({ logoUrl: '/logo.svg', theme: 'default' });
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const normalizeStoreSelection = useCallback((value) => {
+    if (!value) return null;
+    if (value === 'all') return 'all';
+    if (typeof value === 'string') return { _id: value };
+    if (typeof value === 'object' && value._id) return value;
+    return null;
+  }, []);
 
   const resolveStoreIdForBranding = useCallback((storeValue = activeStore, userValue = user) => {
     if (storeValue && storeValue !== 'all') {
@@ -61,63 +69,93 @@ export const AuthProvider = ({ children }) => {
   }, [activeStore, resolveStoreIdForBranding, user]);
 
   useEffect(() => {
-    (async () => {
+    const verifySession = async () => {
       try {
+        // Prime CSRF/session cookies before auth check to reduce refresh race conditions.
         await api.get('/auth/csrf-token');
       } catch (error) {
         console.error('CSRF token fetch failed:', error);
       }
-    })();
-
-    const verifySession = async () => {
       const storedUser = localStorage.getItem('user');
       const storedActiveStore = localStorage.getItem('activeStore');
+      let hydratedUser = null;
 
       if (storedUser) {
-        let parsedStoredUser = null;
         try {
           // Hydrate from local storage first to survive browser refreshes
           // when the session check is temporarily unavailable.
-          parsedStoredUser = JSON.parse(storedUser);
-          setUser(parsedStoredUser);
+          hydratedUser = JSON.parse(storedUser);
+          setUser(hydratedUser);
 
           if (storedActiveStore) {
-            setActiveStore(JSON.parse(storedActiveStore));
+            setActiveStore(normalizeStoreSelection(JSON.parse(storedActiveStore)));
           }
+        } catch (error) {
+          console.error('Failed to hydrate auth from local storage:', error);
+          localStorage.removeItem('user');
+          localStorage.removeItem('activeStore');
+          setUser(null);
+          setActiveStore(null);
+        }
+      }
 
-          // Verify session with server
+      const maxAttempts = 3;
+      let refreshedFromServer = false;
+      let unauthorizedCount = 0;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          // Verify cookie-backed server session (even if local cache is missing).
           const res = await api.get('/auth/me');
-          setUser(res.data); // Update with fresh data from server
-
-          // Keep local cache in sync with server user payload
+          setUser(res.data);
           localStorage.setItem('user', JSON.stringify(res.data));
+
+          // Keep active store pinned for non-super users.
+          if (res.data?.role !== 'Super Admin' && res.data?.assignedStore) {
+            const normalizedAssignedStore = normalizeStoreSelection(res.data.assignedStore);
+            setActiveStore(normalizedAssignedStore);
+            localStorage.setItem('activeStore', JSON.stringify(normalizedAssignedStore));
+          }
+          refreshedFromServer = true;
+          break;
         } catch (error) {
           const status = error?.response?.status;
-          const isUnauthorized = status === 401 || status === 403;
+          const unauthorized = status === 401 || status === 403;
+          const transient =
+            !status ||
+            status >= 500 ||
+            status === 429 ||
+            error?.code === 'ECONNABORTED' ||
+            error?.message === 'Network Error';
 
-          if (isUnauthorized) {
-            // Session is really invalid, clear local state.
+          if (unauthorized) {
+            unauthorizedCount += 1;
+            // On hard refresh, some environments may transiently return 401 during restart/cookie race.
+            // If we have a hydrated user, require two unauthorized checks before clearing local session.
+            if (hydratedUser && unauthorizedCount < 2 && attempt < maxAttempts) {
+              await sleep(250 * attempt);
+              continue;
+            }
             localStorage.removeItem('user');
             localStorage.removeItem('activeStore');
             setUser(null);
             setActiveStore(null);
-          } else {
-            // Temporary network/backend issue: preserve local session state.
-            console.error('Session verification deferred due to transient error:', error);
-            if (!parsedStoredUser) {
-              localStorage.removeItem('user');
-              localStorage.removeItem('activeStore');
-              setUser(null);
-              setActiveStore(null);
-            }
+            break;
           }
+          if (!transient || attempt === maxAttempts) break;
+          await sleep(250 * attempt);
         }
+      }
+
+      if (!refreshedFromServer && !hydratedUser) {
+        // Could not prove a valid session and no safe cache exists.
+        setUser(null);
+        setActiveStore(null);
       }
       setLoading(false);
     };
 
     verifySession();
-  }, []);
+  }, [normalizeStoreSelection]);
 
   useEffect(() => {
     if (loading) return;
@@ -136,8 +174,9 @@ export const AuthProvider = ({ children }) => {
 
       // If regular admin/technician, set their assigned store as active
       if (userData.role !== 'Super Admin' && userData.assignedStore) {
-        setActiveStore(userData.assignedStore);
-        localStorage.setItem('activeStore', JSON.stringify(userData.assignedStore));
+        const normalizedAssignedStore = normalizeStoreSelection(userData.assignedStore);
+        setActiveStore(normalizedAssignedStore);
+        localStorage.setItem('activeStore', JSON.stringify(normalizedAssignedStore));
       } else if (userData.role === 'Super Admin') {
         // Super Admin: Clear active store initially (force selection).
         setActiveStore(null);
@@ -165,8 +204,9 @@ export const AuthProvider = ({ children }) => {
   };
 
   const selectStore = (store) => {
-    setActiveStore(store);
-    localStorage.setItem('activeStore', JSON.stringify(store));
+    const normalizedStore = normalizeStoreSelection(store);
+    setActiveStore(normalizedStore);
+    localStorage.setItem('activeStore', JSON.stringify(normalizedStore));
   };
 
   const value = {

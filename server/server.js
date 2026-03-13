@@ -15,6 +15,7 @@ const csrf = require('csurf');
 const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
 const { createBackupArtifact } = require('./utils/backupRecovery');
+const serverPackage = require('./package.json');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -120,6 +121,7 @@ app.get('/healthz', async (req, res) => {
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     db_connected: ok,
+    db_mode: runtimeDbMode,
     uptime_s: Math.round(process.uptime()),
     timestamp: new Date().toISOString()
   });
@@ -135,6 +137,7 @@ app.get('/api/healthz', async (req, res) => {
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     db_connected: ok,
+    db_mode: runtimeDbMode,
     uptime_s: Math.round(process.uptime()),
     timestamp: new Date().toISOString()
   });
@@ -257,7 +260,7 @@ if (String(process.env.ENABLE_DEBUG_ROUTES || '').toLowerCase() === 'true') {
 
 // 2. Version Route (Always available)
 app.get('/version', (req, res) => {
-  res.send('v1.0.2 - Unconditional Routing Fix');
+  res.send(`v${serverPackage.version || 'unknown'}`);
 });
 
 // 3. Static Files (Try to serve if they exist)
@@ -318,31 +321,53 @@ app.get('*', (req, res) => {
 let backupJobStarted = false;
 let mongod = null;
 let backupSchedulerStarted = false;
+let runtimeDbMode = 'unknown';
 
 // Connect to MongoDB
 const connectDB = async () => {
   let mongoUri = process.env.MONGO_URI;
+  const timeout = isProd ? 30000 : 5000;
+  const allowInMemoryFallback = String(process.env.ALLOW_INMEMORY_FALLBACK || 'false').toLowerCase() === 'true';
+  const connectWithUri = async (uri) => {
+    await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: timeout,
+      socketTimeoutMS: 45000,
+    });
+  };
 
   // Dev fallback for local reliability when no external DB is configured.
   if (!mongoUri && !isProd) {
-    if (!mongod) {
-      console.log('MONGO_URI is missing. Starting in-memory MongoDB for development...');
-      const { MongoMemoryServer } = require('mongodb-memory-server');
-      mongod = await MongoMemoryServer.create();
+    const localFallbackUri = process.env.LOCAL_FALLBACK_MONGO_URI || 'mongodb://127.0.0.1:27017/expo';
+    try {
+      await connectWithUri(localFallbackUri);
+      mongoUri = localFallbackUri;
+      runtimeDbMode = 'persistent';
+      process.env.MONGO_URI = mongoUri;
+      console.log(`MONGO_URI missing. Connected to local MongoDB fallback: ${localFallbackUri}`);
+    } catch (localError) {
+      if (!allowInMemoryFallback) {
+        throw new Error(
+          `MONGO_URI is not configured and local MongoDB fallback is unreachable (${localFallbackUri}). ` +
+          'Refusing to start with ephemeral in-memory DB. Set MONGO_URI or ALLOW_INMEMORY_FALLBACK=true explicitly.'
+        );
+      }
+      if (!mongod) {
+        console.log('MONGO_URI missing, local MongoDB unavailable, and ALLOW_INMEMORY_FALLBACK=true. Starting in-memory MongoDB...');
+        const { MongoMemoryServer } = require('mongodb-memory-server');
+        mongod = await MongoMemoryServer.create();
+      }
+      mongoUri = mongod.getUri();
+      runtimeDbMode = 'in-memory';
+      process.env.MONGO_URI = mongoUri;
+      await connectWithUri(mongoUri);
     }
-    mongoUri = mongod.getUri();
-    process.env.MONGO_URI = mongoUri;
+  } else {
+    if (!mongoUri) {
+      throw new Error('MONGO_URI is required in production.');
+    }
+    runtimeDbMode = 'persistent';
+    await connectWithUri(mongoUri);
   }
-
-  if (!mongoUri) {
-    throw new Error('MONGO_URI is required in production.');
-  }
-
-  const timeout = isProd ? 30000 : 5000;
-  await mongoose.connect(mongoUri, {
-    serverSelectionTimeoutMS: timeout,
-    socketTimeoutMS: 45000,
-  });
   console.log('MongoDB Connected to:', mongoUri);
 
   // Always enforce required operational accounts on startup so updates/deploys
@@ -555,9 +580,29 @@ const startServer = async () => {
   await connectDBWithRetry();
   const PORT = process.env.PORT || 5000;
   serverInstance = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  serverInstance.keepAliveTimeout = 65000;
+  serverInstance.headersTimeout = 66000;
+  serverInstance.requestTimeout = 60000;
+  serverInstance.on('error', (error) => {
+    if (error?.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Stop previous server instance before restarting.`);
+    } else {
+      console.error('HTTP server error:', error);
+    }
+    process.exit(1);
+  });
 };
 
 startServer().catch((error) => {
   console.error('Server startup failed:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
   process.exit(1);
 });

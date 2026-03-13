@@ -1,6 +1,15 @@
 const User = require('../models/User');
 const Session = require('../models/Session');
 const Store = require('../models/Store');
+const cookieSecureMode = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
+const sessionMaxAgeMs = parseInt(process.env.SESSION_MAX_AGE_MS || `${30 * 24 * 60 * 60 * 1000}`, 10);
+const renewThresholdMs = parseInt(process.env.SESSION_RENEW_THRESHOLD_MS || `${24 * 60 * 60 * 1000}`, 10);
+const shouldUseSecureCookie = (req) => {
+  if (cookieSecureMode === 'true' || cookieSecureMode === '1') return true;
+  if (cookieSecureMode === 'false' || cookieSecureMode === '0') return false;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return Boolean(req.secure || forwardedProto === 'https');
+};
 
 const protect = async (req, res, next) => {
   try {
@@ -14,6 +23,22 @@ const protect = async (req, res, next) => {
     const session = await Session.findOne({ sid, expiresAt: { $gt: now } }).lean();
     if (!session) {
       return res.status(401).json({ message: 'Session expired or invalid' });
+    }
+    const millisToExpire = new Date(session.expiresAt).getTime() - now.getTime();
+    const shouldRenew = Number.isFinite(millisToExpire) && millisToExpire <= renewThresholdMs;
+    const updates = { lastAccessedAt: now };
+    if (shouldRenew) {
+      updates.expiresAt = new Date(now.getTime() + sessionMaxAgeMs);
+    }
+    Session.updateOne({ _id: session._id }, { $set: updates }).catch(() => {});
+    if (shouldRenew) {
+      res.cookie('sid', sid, {
+        httpOnly: true,
+        secure: shouldUseSecureCookie(req),
+        sameSite: 'lax',
+        path: '/',
+        maxAge: sessionMaxAgeMs
+      });
     }
     req.user = await User.findById(session.user).select('-password');
     if (!req.user) {

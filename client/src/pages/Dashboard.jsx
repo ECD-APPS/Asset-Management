@@ -26,23 +26,36 @@ const Dashboard = () => {
   const [systemOk, setSystemOk] = useState(true);
   const [_HEALTH, setHealth] = useState({ backend: false, db: false });
   const [recentAssets, setRecentAssets] = useState([]);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   useEffect(() => {
     const fetchStats = async () => {
-      try {
-        setError(null);
-        const [statsResponse, recentResponse] = await Promise.all([
-          api.get('/assets/stats'),
-          api.get('/assets', { params: { page: 1, limit: 8 } })
-        ]);
-        setStats(statsResponse.data);
-        setRecentAssets(recentResponse.data?.assets || []);
-      } catch (error) {
-        console.error('Error fetching stats:', error);
-        setError('Failed to load dashboard data. Please try refreshing.');
-      } finally {
-        setLoading(false);
+      const maxAttempts = 3;
+      let lastError = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          setError(null);
+          const [statsResponse, recentResponse] = await Promise.all([
+            api.get('/assets/stats'),
+            api.get('/assets', { params: { page: 1, limit: 8 } })
+          ]);
+          setStats(statsResponse.data);
+          setRecentAssets(recentResponse.data?.assets || recentResponse.data?.items || []);
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          const status = error?.response?.status;
+          const transient = !status || status >= 500 || status === 429 || error?.code === 'ECONNABORTED' || error?.message === 'Network Error';
+          if (!transient || attempt === maxAttempts) break;
+          await sleep(250 * attempt);
+        }
       }
+      if (lastError) {
+        console.error('Error fetching stats:', lastError);
+        setError('Failed to load dashboard data. Please try refreshing.');
+      }
+      setLoading(false);
     };
 
     fetchStats();
@@ -50,6 +63,7 @@ const Dashboard = () => {
 
   useEffect(() => {
     let timer;
+    let consecutiveHealthFailures = 0;
     const checkHealth = async () => {
       try {
         const res = await fetch('/api/healthz', { credentials: 'include' });
@@ -57,11 +71,15 @@ const Dashboard = () => {
         const data = await res.json();
         const backend = true;
         const db = !!data.db_connected;
+        consecutiveHealthFailures = 0;
         setHealth({ backend, db });
         setSystemOk(backend && db);
       } catch {
-        setHealth({ backend: false, db: false });
-        setSystemOk(false);
+        consecutiveHealthFailures += 1;
+        if (consecutiveHealthFailures >= 2) {
+          setHealth({ backend: false, db: false });
+          setSystemOk(false);
+        }
       }
     };
     checkHealth();

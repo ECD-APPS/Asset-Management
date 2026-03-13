@@ -31,4 +31,26 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const config = error?.config || {};
+    const status = error?.response?.status;
+    const method = String(config?.method || '').toLowerCase();
+    const isIdempotent = method === 'get';
+    const isTransient =
+      !status ||
+      status === 429 ||
+      status >= 500 ||
+      error?.code === 'ECONNABORTED' ||
+      error?.message === 'Network Error';
+
+    if (isIdempotent && isTransient && !config.__retryOnce) {
+      config.__retryOnce = true;
+      return api.request(config);
+    }
+    return Promise.reject(error);
+  }
+);
+
 export default api;

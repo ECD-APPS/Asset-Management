@@ -38,6 +38,9 @@ const Setup = () => {
   const isMainAdmin = user?.role === 'Super Admin';
   const canManageEmail = user?.role === 'Super Admin';
   const [themeSaving, setThemeSaving] = useState(false);
+  const [bulkLocationInput, setBulkLocationInput] = useState('');
+  const [bulkLocationLoading, setBulkLocationLoading] = useState(false);
+  const [bulkLocationResult, setBulkLocationResult] = useState(null);
 
   const resolveUserStoreId = () => {
     const raw = user?.assignedStore;
@@ -207,6 +210,49 @@ const Setup = () => {
     }
   };
 
+  const handleBulkLocationAdd = async () => {
+    if (bulkLocationLoading) return;
+    const candidates = String(bulkLocationInput || '')
+      .split(/[\n,]+/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const uniqueNames = Array.from(new Set(candidates.map((n) => n.toLowerCase())))
+      .map((lower) => candidates.find((n) => n.toLowerCase() === lower))
+      .filter(Boolean);
+
+    if (uniqueNames.length === 0) {
+      alert('Please enter at least one location name.');
+      return;
+    }
+    if (uniqueNames.length > 1000) {
+      alert('Maximum 1000 locations can be added at once.');
+      return;
+    }
+
+    try {
+      setBulkLocationLoading(true);
+      setBulkLocationResult(null);
+      const res = await api.post('/stores/bulk', { names: uniqueNames });
+      const failed = (res.data?.skipped || []).map((item) => ({
+        name: item.name,
+        message: item.reason || 'Skipped'
+      }));
+
+      setBulkLocationResult({
+        requested: Number(res.data?.normalized || uniqueNames.length),
+        created: Number(res.data?.created || 0),
+        failed
+      });
+      if (Number(res.data?.created || 0) > 0) {
+        setBulkLocationInput('');
+      }
+    } catch (error) {
+      alert('Bulk add failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setBulkLocationLoading(false);
+    }
+  };
+
   return (
     <div className="container mx-auto p-8">
       <h1 className="text-3xl font-bold mb-8 text-gray-800">System Setup & Management</h1>
@@ -314,6 +360,54 @@ const Setup = () => {
             </p>
           </div>
         </Link>
+
+        {(user?.role === 'Admin' || user?.role === 'Super Admin') && (
+          <div className="bg-white p-6 rounded-lg shadow-md border border-gray-100 h-full">
+            <h3 className="text-lg font-bold text-gray-800 mb-2">Bulk Location Add</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Add multiple locations at once (up to 1000). Enter one location per line (or comma separated).
+            </p>
+            <textarea
+              value={bulkLocationInput}
+              onChange={(e) => setBulkLocationInput(e.target.value)}
+              placeholder={'Example:\nA\nB\nC\nD'}
+              className="w-full h-28 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-500">
+                Duplicates are auto-skipped in input; existing locations will show in failed list.
+              </p>
+              <button
+                type="button"
+                onClick={handleBulkLocationAdd}
+                disabled={bulkLocationLoading}
+                className={`px-4 py-2 rounded-lg text-white font-medium ${
+                  bulkLocationLoading ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                {bulkLocationLoading ? 'Adding Locations...' : 'Add Locations'}
+              </button>
+            </div>
+            {bulkLocationResult && (
+              <div className="mt-4 text-sm">
+                <p className="text-gray-700">
+                  Requested: <span className="font-semibold">{bulkLocationResult.requested}</span> | Created:{' '}
+                  <span className="font-semibold text-green-700">{bulkLocationResult.created}</span> | Failed:{' '}
+                  <span className="font-semibold text-red-700">{bulkLocationResult.failed.length}</span>
+                </p>
+                {bulkLocationResult.failed.length > 0 && (
+                  <div className="mt-2 max-h-36 overflow-auto rounded border border-red-100 bg-red-50 p-2 text-xs text-red-700">
+                    {bulkLocationResult.failed.map((item) => (
+                      <p key={`${item.name}-${item.message}`}>
+                        {item.name}: {item.message}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Database Management Section (Admin Only) */}

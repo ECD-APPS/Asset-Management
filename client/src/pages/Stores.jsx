@@ -20,11 +20,12 @@ const Stores = () => {
   const [editingName, setEditingName] = useState('');
 
   const fetchStores = useCallback(async () => {
-    if (!activeStore?._id) return;
+    const activeStoreId = activeStore?._id || activeStore;
+    if (!activeStoreId) return;
     try {
       setLoading(true);
       const params = new URLSearchParams({
-        parent: activeStore._id,
+        parent: String(activeStoreId),
         includeAssetTotals: 'true',
         page: String(page),
         limit: String(pageSize)

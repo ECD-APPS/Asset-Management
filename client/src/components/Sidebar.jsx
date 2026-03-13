@@ -283,8 +283,8 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
   };
 
   return (
-    <aside className="flex h-full w-full flex-col border-r border-app-sidebar bg-app-sidebar text-app-sidebar">
-      <div className="relative border-b border-app-sidebar p-4">
+    <aside className="flex h-full w-full flex-col border-r border-app-sidebar bg-app-sidebar text-app-sidebar shadow-xl">
+      <div className="relative border-b border-app-sidebar p-4 md:p-5">
         <button
           onClick={toggleCollapse}
           className={`hidden md:flex absolute top-4 ${isCollapsed ? 'left-1/2 -translate-x-1/2' : 'right-4'} h-8 w-8 items-center justify-center rounded-lg border border-app-sidebar text-app-sidebar hover:bg-white/10 ${isDefaultTheme ? 'shadow-[0_0_0_1px_rgba(255,165,0,0.25)]' : ''}`}
@@ -294,19 +294,29 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
         </button>
 
         {!isCollapsed ? (
-          <div className="mt-6">
-            <div className="flex items-center gap-3">
-              <img src={branding?.logoUrl || '/logo.svg'} alt="SCY Asset" className="h-9 w-9 rounded-lg border border-app-sidebar bg-white/10 object-contain p-1" />
-              <div>
-                <p className="text-sm font-semibold text-app-sidebar">SCY Asset</p>
-                <p className="text-xs text-app-sidebar">{activeStore?.name || user?.role}</p>
-              </div>
+          <div className="mt-5 flex flex-col items-center text-center">
+            <div className="inline-flex items-center justify-center rounded-2xl border border-app-sidebar bg-white/10 p-3 shadow-lg">
+              <img
+                src={branding?.logoUrl || '/logo.svg'}
+                alt="SCY Asset"
+                className="h-16 w-16 rounded-xl object-contain"
+              />
             </div>
-            <p className="mt-3 text-xs text-app-sidebar">{user?.name}</p>
+            <p className="mt-3 text-base font-semibold tracking-wide text-app-sidebar">SCY Asset</p>
+            <p className="mt-1 rounded-full border border-app-sidebar px-2.5 py-0.5 text-[11px] text-app-sidebar">
+              {activeStore?.name || user?.role}
+            </p>
+            <p className="mt-2 text-xs text-app-sidebar">{user?.name}</p>
           </div>
         ) : (
-          <div className="mt-10 flex justify-center">
-            <img src={branding?.logoUrl || '/logo.svg'} alt="SCY Asset" className="h-9 w-9 rounded-lg border border-app-sidebar bg-white/10 object-contain p-1" />
+          <div className="mt-9 flex justify-center">
+            <div className="inline-flex items-center justify-center rounded-xl border border-app-sidebar bg-white/10 p-2 shadow">
+              <img
+                src={branding?.logoUrl || '/logo.svg'}
+                alt="SCY Asset"
+                className="h-11 w-11 rounded-lg object-contain"
+              />
+            </div>
           </div>
         )}
       </div>
