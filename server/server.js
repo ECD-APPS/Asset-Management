@@ -53,7 +53,8 @@ try {
 
 // Security & hardening
 app.disable('x-powered-by');
-app.set('trust proxy', 1);
+const trustProxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
+app.set('trust proxy', Number.isFinite(trustProxyHops) ? trustProxyHops : 1);
 const isProd = process.env.NODE_ENV === 'production';
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -64,7 +65,12 @@ const limiter = rateLimit({
   max: isProd ? 5000 : 20000,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.path === '/api/healthz' || req.path === '/api/readyz',
+  // In 3-tier deployments, multiple users can share same source IP.
+  // Never block auth endpoints with global API limiter.
+  skip: (req) =>
+    req.path === '/api/healthz' ||
+    req.path === '/api/readyz' ||
+    req.path.startsWith('/api/auth/'),
   message: { message: 'Too many API requests, please try again later.' }
 });
 // Apply limiter only on API routes; never throttle static index/assets.
@@ -73,7 +79,13 @@ app.use('/api', limiter);
 app.use(mongoSanitize());
 
 // Cookies and CSRF
-const cookieSecure = String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
+const cookieSecureMode = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
+const shouldUseSecureCookie = (req) => {
+  if (cookieSecureMode === 'true' || cookieSecureMode === '1') return true;
+  if (cookieSecureMode === 'false' || cookieSecureMode === '0') return false;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return Boolean(req.secure || forwardedProto === 'https');
+};
 app.use(cookieParser(process.env.COOKIE_SECRET || 'dev-cookie-secret'));
 
 app.use(compression({
@@ -131,7 +143,7 @@ if (enableCsrf) {
       key: 'csrfSecret',
       httpOnly: true,
       sameSite: 'lax',
-      secure: cookieSecure,
+      secure: false,
       path: '/',
     }
   });
@@ -139,11 +151,12 @@ if (enableCsrf) {
   // Expose token for client apps via non-HttpOnly cookie (read by Axios)
   app.use((req, res, next) => {
     try {
+      const secureCookie = shouldUseSecureCookie(req);
       const token = req.csrfToken();
       res.cookie('XSRF-TOKEN', token, {
         httpOnly: false,
         sameSite: 'lax',
-        secure: cookieSecure,
+        secure: secureCookie,
         path: '/',
       });
     } catch (e) {

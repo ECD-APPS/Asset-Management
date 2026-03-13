@@ -6,7 +6,11 @@ const mongoose = require('mongoose');
 const { protect, admin } = require('../middleware/authMiddleware');
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const normalizeName = (value) => String(value || '').trim().replace(/\s+/g, ' ');
-const normalizeKey = (value) => normalizeName(value).toLowerCase();
+const normalizeKey = (value) =>
+  normalizeName(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 
 // @desc    Get all stores (with optional filtering)
 // @route   GET /api/stores

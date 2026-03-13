@@ -9,15 +9,25 @@ const { body, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 
 const Session = require('../models/Session');
-const cookieSecure = String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
+const cookieSecureMode = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const shouldUseSecureCookie = (req) => {
+  if (cookieSecureMode === 'true' || cookieSecureMode === '1') return true;
+  if (cookieSecureMode === 'false' || cookieSecureMode === '0') return false;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return Boolean(req.secure || forwardedProto === 'https');
+};
 
 // Login rate limiter (relaxed for internal use)
 const loginLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,   // 5 minutes window
-  max: 50,                   // Allow up to 50 attempts per 5 minutes
+  max: 200,                  // Internal deployments can have many concurrent users behind one IP
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    return `${req.ip}::${email || 'unknown'}`;
+  },
   message: { message: 'Too many login attempts, please try again later.' }
 });
 
@@ -55,6 +65,7 @@ router.post('/login',
       const maxAgeMs = parseInt(process.env.SESSION_MAX_AGE_MS || `${30 * 24 * 60 * 60 * 1000}`, 10);
       const expires = new Date(Date.now() + maxAgeMs);
       await Session.create({ sid, user: user._id, expiresAt: expires });
+      const cookieSecure = shouldUseSecureCookie(req);
       res.cookie('sid', sid, {
         httpOnly: true,
         secure: cookieSecure,
@@ -85,6 +96,7 @@ router.post('/logout', (req, res) => {
   if (sid) {
     Session.deleteOne({ sid }).catch(() => {});
   }
+  const cookieSecure = shouldUseSecureCookie(req);
   res.clearCookie('sid', { path: '/', secure: cookieSecure, sameSite: 'lax' });
   res.status(200).json({ message: 'Logged out' });
 });
