@@ -1071,6 +1071,20 @@ router.post('/', protect, restrictViewer, async (req, res) => {
     const finalProductName = normProduct || linkedProductName || '';
  
     const uniqueId = await generateUniqueId(name);
+    const requestedStoreId = store || req.activeStore;
+    let finalStoreId = requestedStoreId;
+    if (store && req.activeStore) {
+      const selectedStore = await Store.findById(store).select('_id parentStore').lean();
+      // If user has an active main store context, allow selected child location under it.
+      if (selectedStore && String(selectedStore.parentStore || '') === String(req.activeStore)) {
+        finalStoreId = selectedStore._id;
+      } else if (String(store) === String(req.activeStore)) {
+        finalStoreId = req.activeStore;
+      } else {
+        finalStoreId = req.activeStore;
+      }
+    }
+
     const asset = await Asset.create({
       name: normName,
       model_number,
@@ -1085,8 +1099,8 @@ router.post('/', protect, restrictViewer, async (req, res) => {
       rfid: rfid || '',
       qr_code: qr_code || '',
       uniqueId,
-      store: req.activeStore || store,
-      status: status || 'New',
+      store: finalStoreId,
+      status: status || 'In Store',
       condition: condition || 'New',
       location: normLocation || '',
       quantity: qty,
@@ -1100,7 +1114,7 @@ router.post('/', protect, restrictViewer, async (req, res) => {
       role: req.user.role,
       action: 'Create Asset',
       details: `Created asset ${name} (SN: ${serial_number}) qty=${qty}`,
-      store: req.activeStore || store
+      store: finalStoreId
     });
 
     res.status(201).json(asset);

@@ -21,6 +21,9 @@ const Portal = () => {
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreFileName, setRestoreFileName] = useState('');
+  const [restoreFile, setRestoreFile] = useState(null);
+  const [backupValidation, setBackupValidation] = useState(null);
+  const [validatingBackup, setValidatingBackup] = useState(false);
   const [bulkFiles, setBulkFiles] = useState([]);
   const [uploadProgress, setUploadProgress] = useState({});
   const [bulkConflicts, setBulkConflicts] = useState([]);
@@ -32,6 +35,25 @@ const Portal = () => {
   const [bulkSummary, setBulkSummary] = useState(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [lastBackupTime, setLastBackupTime] = useState(null);
+  const [backupArtifacts, setBackupArtifacts] = useState([]);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+  const [creatingFullBackup, setCreatingFullBackup] = useState(false);
+  const [emergencyRestoreLoading, setEmergencyRestoreLoading] = useState(false);
+  const [restoringBackupId, setRestoringBackupId] = useState('');
+  const [cloudConfig, setCloudConfig] = useState({
+    enabled: false,
+    provider: 's3',
+    bucket: '',
+    region: '',
+    endpoint: '',
+    accessKeyId: '',
+    secretAccessKey: '',
+    forcePathStyle: false,
+    url: '',
+    serviceRoleKey: ''
+  });
+  const [cloudLoading, setCloudLoading] = useState(false);
+  const [cloudSaving, setCloudSaving] = useState(false);
   const [emailStoreId, setEmailStoreId] = useState('');
   const [emailConfig, setEmailConfig] = useState({
     smtpHost: '',
@@ -151,6 +173,57 @@ const Portal = () => {
     loadEmailConfig();
   }, [user?.role, emailStoreId, user?.email]);
 
+  const fetchBackupArtifacts = async () => {
+    if (user?.role !== 'Super Admin') return;
+    try {
+      setBackupsLoading(true);
+      const res = await api.get('/system/backups?limit=100');
+      setBackupArtifacts(Array.isArray(res.data) ? res.data : []);
+    } catch (error) {
+      console.error('Failed to load backups:', error);
+    } finally {
+      setBackupsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user?.role !== 'Super Admin') return;
+    fetchBackupArtifacts();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role]);
+
+  const fetchCloudBackupConfig = async () => {
+    if (user?.role !== 'Super Admin') return;
+    try {
+      setCloudLoading(true);
+      const res = await api.get('/system/backup-cloud-config');
+      setCloudConfig((prev) => ({ ...prev, ...(res.data || {}) }));
+    } catch (error) {
+      console.error('Failed to load cloud backup config:', error);
+    } finally {
+      setCloudLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user?.role !== 'Super Admin') return;
+    fetchCloudBackupConfig();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role]);
+
+  const saveCloudBackupConfig = async () => {
+    try {
+      setCloudSaving(true);
+      await api.put('/system/backup-cloud-config', cloudConfig);
+      alert('Cloud backup configuration saved.');
+      await fetchCloudBackupConfig();
+    } catch (error) {
+      alert('Save failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setCloudSaving(false);
+    }
+  };
+
   const handleSelectStore = (store) => {
     selectStore(store);
     // Use setTimeout to ensure state update propagates before navigation
@@ -232,22 +305,123 @@ const Portal = () => {
     }
   };
 
-  const handleRestoreFromFile = async (file) => {
+  const handleCreateFullBackup = async () => {
+    if (creatingFullBackup) return;
+    try {
+      setCreatingFullBackup(true);
+      const res = await api.post('/system/backups/create', { backupType: 'Full', trigger: 'manual' });
+      alert(res.data?.message || 'Full backup created successfully.');
+      await fetchBackupArtifacts();
+    } catch (error) {
+      alert('Create backup failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setCreatingFullBackup(false);
+    }
+  };
+
+  const handleDownloadBackupArtifact = async (backup) => {
+    try {
+      const response = await api.get(`/system/backups/${backup._id}/download`, { responseType: 'blob' });
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = backup.fileName || `${backup.name || 'backup'}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      alert('Download failed: ' + (error.response?.data?.message || error.message));
+    }
+  };
+
+  const handleDeleteBackupArtifact = async (backup) => {
+    if (!window.confirm(`Delete backup "${backup.fileName}"?`)) return;
+    try {
+      await api.delete(`/system/backups/${backup._id}`);
+      await fetchBackupArtifacts();
+    } catch (error) {
+      alert('Delete failed: ' + (error.response?.data?.message || error.message));
+    }
+  };
+
+  const handleRestoreBackupArtifact = async (backup) => {
+    if (!window.confirm('This will overwrite current system data. Continue?')) return;
+    try {
+      setRestoringBackupId(backup._id);
+      await api.post(`/system/backups/${backup._id}/restore`);
+      alert('Restore completed successfully. The system will reload.');
+      window.location.reload();
+    } catch (error) {
+      alert('Restore failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setRestoringBackupId('');
+    }
+  };
+
+  const handleEmergencyRestore = async () => {
+    if (emergencyRestoreLoading) return;
+    if (!window.confirm('Emergency restore will restore the latest full backup immediately. Continue?')) return;
+    try {
+      setEmergencyRestoreLoading(true);
+      await api.post('/system/backups/emergency-restore');
+      alert('Emergency restore completed. The system will reload.');
+      window.location.reload();
+    } catch (error) {
+      alert('Emergency restore failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setEmergencyRestoreLoading(false);
+    }
+  };
+
+  const validateRestoreFile = async (file) => {
     if (!file) return;
-    if (restoreLoading) return;
     const { valid, errors } = validateBackupFiles([file]);
     if (errors.length > 0 || valid.length === 0) {
+      setRestoreFile(null);
+      setBackupValidation(null);
       alert(`File rejected:\n${errors.join('\n') || 'Invalid backup file.'}`);
+      return;
+    }
+
+    try {
+      setValidatingBackup(true);
+      const formData = new FormData();
+      formData.append('backup', valid[0]);
+      const res = await api.post('/system/backups/validate-upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setRestoreFile(valid[0]);
+      setRestoreFileName(valid[0].name || '');
+      setBackupValidation(res.data?.report || null);
+    } catch (error) {
+      setRestoreFile(null);
+      setBackupValidation(null);
+      alert('Validation failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setValidatingBackup(false);
+    }
+  };
+
+  const handleRestoreFromFile = async () => {
+    if (!restoreFile) {
+      alert('Please select and validate a backup file first.');
+      return;
+    }
+    if (restoreLoading) return;
+    if (backupValidation?.status === 'blocked') {
+      alert('This backup is blocked by compatibility checks. Use a compatible file.');
       return;
     }
     if (!window.confirm('Restoring will overwrite current data with the backup file. Continue?')) return;
 
     const formData = new FormData();
-    formData.append('backup', valid[0]);
+    formData.append('backup', restoreFile);
 
     try {
       setRestoreLoading(true);
-      await api.post('/system/restore-from-file', formData, {
+      await api.post('/system/backups/upload-restore', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       alert('Restore completed successfully. The system will reload.');
@@ -260,14 +434,15 @@ const Portal = () => {
     }
   };
 
-  const allowedBackupTypes = ['application/json', 'text/plain'];
+  const allowedBackupTypes = ['application/json', 'text/plain', 'application/zip', 'application/x-zip-compressed', 'multipart/x-zip'];
   const maxBackupFileSize = 1024 * 1024 * 1024;
 
   const validateBackupFiles = (files) => {
     const valid = [];
     const errors = [];
     files.forEach((file) => {
-      const byName = file.name.toLowerCase().endsWith('.json');
+      const lowerName = file.name.toLowerCase();
+      const byName = lowerName.endsWith('.json') || lowerName.endsWith('.zip');
       const byMime = allowedBackupTypes.includes(file.type) || file.type === '';
       if (!byName && !byMime) {
         errors.push(`${file.name}: invalid type`);
@@ -906,7 +1081,7 @@ const Portal = () => {
       {/* Reset Database Modal */}
       {showResetModal && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 transition-opacity">
-          <div className="bg-white rounded-2xl p-0 max-w-md w-full shadow-2xl overflow-hidden animate-scale-in">
+          <div className="bg-white rounded-2xl p-0 max-w-6xl w-[95vw] max-h-[92vh] shadow-2xl overflow-hidden animate-scale-in">
             {/* Modal Header */}
             <div className="bg-red-50 p-6 border-b border-red-100 flex justify-between items-start">
               <div className="flex items-center gap-3">
@@ -926,7 +1101,7 @@ const Portal = () => {
               </button>
             </div>
             
-            <div className="p-6">
+            <div className="p-6 overflow-y-auto max-h-[calc(92vh-120px)]">
               <div className="bg-yellow-50 border border-yellow-100 rounded-lg p-4 mb-6">
                  <p className="text-sm text-yellow-800 leading-relaxed">
                    <strong>Warning:</strong> This action will permanently delete all transactional data (Assets, Requests, Purchase Orders) for the selected scope. <br/><br/>
@@ -935,8 +1110,8 @@ const Portal = () => {
                  </p>
               </div>
 
-              <div className="space-y-5">
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3 xl:col-span-8">
                   <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
                     <Database size={16} className="text-slate-600" />
                     Backup & Restore
@@ -952,6 +1127,17 @@ const Portal = () => {
                   </div>
                   <div className="flex flex-col gap-3">
                     <button
+                      onClick={handleCreateFullBackup}
+                      disabled={creatingFullBackup}
+                      className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm ${
+                        creatingFullBackup
+                          ? 'bg-indigo-300 text-indigo-800 cursor-not-allowed'
+                          : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      }`}
+                    >
+                      {creatingFullBackup ? 'Creating Full Backup…' : 'Create Full Backup'}
+                    </button>
+                    <button
                       onClick={handleDownloadBackup}
                       disabled={backupLoading}
                       className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm ${
@@ -962,16 +1148,29 @@ const Portal = () => {
                     >
                       {backupLoading ? 'Preparing backup…' : 'Download Backup File'}
                     </button>
-                    <label className="flex flex-col gap-2 text-xs text-slate-600">
-                      <span className="font-semibold text-slate-800">Restore From Backup File</span>
+                    <button
+                      onClick={handleEmergencyRestore}
+                      disabled={emergencyRestoreLoading}
+                      className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm ${
+                        emergencyRestoreLoading
+                          ? 'bg-red-300 text-red-800 cursor-not-allowed'
+                          : 'bg-red-600 text-white hover:bg-red-700'
+                      }`}
+                    >
+                      {emergencyRestoreLoading ? 'Emergency Restore…' : 'Emergency Restore (Latest Full)'}
+                    </button>
+                    <label className="flex flex-col gap-2 text-xs text-slate-600 border border-slate-200 rounded-lg p-3 bg-white">
+                      <span className="font-semibold text-slate-800">Upload Backup File From USB / Computer</span>
                       <input
                         type="file"
-                        accept="application/json,.json,text/plain"
+                        accept="application/zip,.zip,application/json,.json,text/plain"
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (file) {
                             setRestoreFileName(file.name);
-                            handleRestoreFromFile(file);
+                            setRestoreFile(null);
+                            setBackupValidation(null);
+                            validateRestoreFile(file);
                             e.target.value = '';
                           }
                         }}
@@ -979,11 +1178,174 @@ const Portal = () => {
                       />
                       {restoreFileName && (
                         <span className="text-[11px] text-slate-500">
-                          Selected: {restoreFileName} {restoreLoading ? '(restoring…) ' : ''}
+                          Selected: {restoreFileName} {validatingBackup ? '(validating...)' : restoreLoading ? '(restoring...)' : ''}
                         </span>
                       )}
+                      {backupValidation && (
+                        <div
+                          className={`text-[11px] rounded p-2 border ${
+                            backupValidation.status === 'safe'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                              : backupValidation.status === 'warning'
+                                ? 'bg-amber-50 text-amber-700 border-amber-100'
+                                : 'bg-red-50 text-red-700 border-red-100'
+                          }`}
+                        >
+                          <div className="font-semibold uppercase">Compatibility: {backupValidation.status}</div>
+                          <div>
+                            Source: {backupValidation?.version?.sourceVersion || 'unknown'} | Current: {backupValidation?.version?.currentVersion || 'unknown'}
+                          </div>
+                          <div>
+                            Format: {backupValidation?.format || '-'} | Type: {backupValidation?.backupType || '-'}
+                          </div>
+                          {backupValidation?.version?.reason && <div>{backupValidation.version.reason}</div>}
+                          {Array.isArray(backupValidation?.issues) && backupValidation.issues.length > 0 && (
+                            <div>Issues: {backupValidation.issues.join(' | ')}</div>
+                          )}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleRestoreFromFile}
+                        disabled={!restoreFile || restoreLoading || validatingBackup || backupValidation?.status === 'blocked'}
+                        className="inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {restoreLoading ? 'Restoring...' : 'Restore This Backup'}
+                      </button>
                     </label>
-
+                    <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
+                      <table className="min-w-full text-[11px]">
+                        <thead className="bg-slate-50">
+                          <tr className="text-left text-slate-600">
+                            <th className="px-2 py-1">Backup Name</th>
+                            <th className="px-2 py-1">Date</th>
+                            <th className="px-2 py-1">Size</th>
+                            <th className="px-2 py-1">Type</th>
+                            <th className="px-2 py-1">App Version</th>
+                            <th className="px-2 py-1">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {backupsLoading && (
+                            <tr><td className="px-2 py-2 text-slate-500" colSpan={6}>Loading backups...</td></tr>
+                          )}
+                          {!backupsLoading && backupArtifacts.length === 0 && (
+                            <tr><td className="px-2 py-2 text-slate-500" colSpan={6}>No backups found.</td></tr>
+                          )}
+                          {!backupsLoading && backupArtifacts.map((b) => (
+                            <tr key={b._id} className="border-t border-slate-100">
+                              <td className="px-2 py-1 text-slate-800">{b.fileName || b.name}</td>
+                              <td className="px-2 py-1 text-slate-600">{new Date(b.createdAt).toLocaleString()}</td>
+                              <td className="px-2 py-1 text-slate-600">{((b.sizeBytes || 0) / (1024 * 1024)).toFixed(2)} MB</td>
+                              <td className="px-2 py-1 text-slate-600">{b.backupType || '-'}</td>
+                              <td className="px-2 py-1 text-slate-600">{b.appVersion || '-'}</td>
+                              <td className="px-2 py-1">
+                                <div className="flex gap-2">
+                                  <button onClick={() => handleDownloadBackupArtifact(b)} className="text-indigo-600 hover:underline">Download</button>
+                                  <button
+                                    onClick={() => handleRestoreBackupArtifact(b)}
+                                    disabled={restoringBackupId === b._id}
+                                    className="text-emerald-600 hover:underline disabled:opacity-50"
+                                  >
+                                    {restoringBackupId === b._id ? 'Restoring...' : 'Restore'}
+                                  </button>
+                                  <button onClick={() => handleDeleteBackupArtifact(b)} className="text-red-600 hover:underline">Delete</button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                      <div className="text-xs font-semibold text-slate-800">Cloud Backup (Disaster Recovery)</div>
+                      {cloudLoading ? (
+                        <div className="text-[11px] text-slate-500">Loading cloud settings...</div>
+                      ) : (
+                        <>
+                          <label className="inline-flex items-center gap-2 text-[11px] text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(cloudConfig.enabled)}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, enabled: e.target.checked }))}
+                            />
+                            Enable cloud backup sync
+                          </label>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <select
+                              value={cloudConfig.provider || 's3'}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, provider: e.target.value }))}
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            >
+                              <option value="s3">AWS S3</option>
+                              <option value="r2">Cloudflare R2</option>
+                              <option value="supabase">Supabase Storage</option>
+                            </select>
+                            <input
+                              value={cloudConfig.bucket || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, bucket: e.target.value }))}
+                              placeholder="Bucket"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                            <input
+                              value={cloudConfig.region || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, region: e.target.value }))}
+                              placeholder="Region"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                            <input
+                              value={cloudConfig.endpoint || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, endpoint: e.target.value }))}
+                              placeholder="Endpoint (optional for S3, required for R2)"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                            <input
+                              value={cloudConfig.accessKeyId || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, accessKeyId: e.target.value }))}
+                              placeholder="Access Key ID"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                            <input
+                              value={cloudConfig.secretAccessKey || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, secretAccessKey: e.target.value }))}
+                              placeholder="Secret Access Key"
+                              type="password"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                            <input
+                              value={cloudConfig.url || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, url: e.target.value }))}
+                              placeholder="Supabase URL"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                            <input
+                              value={cloudConfig.serviceRoleKey || ''}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, serviceRoleKey: e.target.value }))}
+                              placeholder="Supabase Service Role Key"
+                              type="password"
+                              className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white"
+                            />
+                          </div>
+                          <label className="inline-flex items-center gap-2 text-[11px] text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(cloudConfig.forcePathStyle)}
+                              onChange={(e) => setCloudConfig((p) => ({ ...p, forcePathStyle: e.target.checked }))}
+                            />
+                            Force path-style addressing (recommended for R2/compatible)
+                          </label>
+                          <div>
+                            <button
+                              onClick={saveCloudBackupConfig}
+                              disabled={cloudSaving}
+                              className="px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 text-white disabled:opacity-50"
+                            >
+                              {cloudSaving ? 'Saving...' : 'Save Cloud Backup Settings'}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
                     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-slate-800">Bulk Backup Upload (Super Admin)</span>
@@ -1089,6 +1451,7 @@ const Portal = () => {
                     </div>
                   </div>
                 </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-5 xl:col-span-4 h-fit">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Select Target Scope</label>
                   <div className="relative">
@@ -1170,6 +1533,7 @@ const Portal = () => {
                       </>
                     )}
                   </button>
+                </div>
                 </div>
               </div>
             </div>

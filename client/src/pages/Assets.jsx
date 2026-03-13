@@ -749,6 +749,13 @@ const Assets = () => {
         ...addForm,
         product_name: selectedProduct
       };
+      const selectedLocation = stores.find(
+        (s) => String(s?.name || '').toLowerCase() === String(payload.location || '').toLowerCase()
+      );
+      if (selectedLocation?._id) {
+        // Keep asset ownership aligned with selected location for accurate per-location counts.
+        payload.store = selectedLocation._id;
+      }
       
       // Remove empty store to prevent CastError
       if (!payload.store) {

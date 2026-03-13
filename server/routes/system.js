@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
+const unzipper = require('unzipper');
 const { protect, admin, superAdmin } = require('../middleware/authMiddleware');
 const User = require('../models/User');
 const Asset = require('../models/Asset');
@@ -17,10 +18,20 @@ const Pass = require('../models/Pass');
 const Permit = require('../models/Permit');
 const AssetCategory = require('../models/AssetCategory');
 const EmailLog = require('../models/EmailLog');
+const BackupArtifact = require('../models/BackupArtifact');
+const BackupLog = require('../models/BackupLog');
 const bcrypt = require('bcryptjs');
 const { backupDatabase } = require('../backup_db');
 const Setting = require('../models/Setting');
 const { sendStoreEmail, buildTransport } = require('../utils/storeEmail');
+const {
+  BACKUP_ROOT,
+  createBackupArtifact,
+  restoreBackupArtifact,
+  restoreFromUploadedZip,
+  createBackupLog
+} = require('../utils/backupRecovery');
+const appPackage = require('../../package.json');
 
 const maxBackupUploadMb = Number.parseInt(process.env.MAX_BACKUP_UPLOAD_MB || '1024', 10);
 const MAX_BACKUP_UPLOAD_BYTES = Math.max(10, maxBackupUploadMb) * 1024 * 1024;
@@ -34,6 +45,21 @@ const backupDiskStorage = multer.diskStorage({
   filename: (req, file, cb) => {
     const safeName = String(file.originalname || 'backup.json').replace(/[^a-zA-Z0-9._-]/g, '_');
     cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safeName}`);
+  }
+});
+
+const backupZipUpload = multer({
+  storage: backupDiskStorage,
+  limits: {
+    fileSize: MAX_BACKUP_UPLOAD_BYTES
+  },
+  fileFilter: (req, file, cb) => {
+    const lower = String(file.originalname || '').toLowerCase();
+    const okType = lower.endsWith('.zip') || lower.endsWith('.json') || file.mimetype === 'application/zip' || file.mimetype === 'application/json' || file.mimetype === 'text/plain';
+    if (!okType) {
+      return cb(new Error(`Invalid file type for ${file.originalname}. Allowed: .zip, .json`));
+    }
+    cb(null, true);
   }
 });
 
@@ -132,6 +158,157 @@ const getBackupAssetsFromPayload = (payload) => {
 
 const getBackupCollectionsFromPayload = (payload) => {
   return normalizeBackupCollections(payload);
+};
+
+const parseMajorVersion = (version) => {
+  const v = String(version || '').trim();
+  const major = Number.parseInt(v.split('.')[0], 10);
+  return Number.isFinite(major) ? major : null;
+};
+
+const buildVersionCompatibility = (sourceVersion) => {
+  const currentVersion = appPackage.version || 'unknown';
+  const sourceMajor = parseMajorVersion(sourceVersion);
+  const currentMajor = parseMajorVersion(currentVersion);
+  if (sourceMajor === null || currentMajor === null) {
+    return {
+      currentVersion,
+      sourceVersion: sourceVersion || 'unknown',
+      status: 'warning',
+      reason: 'Could not parse semantic versions; proceed with caution.'
+    };
+  }
+  if (sourceMajor > currentMajor) {
+    return {
+      currentVersion,
+      sourceVersion: sourceVersion || 'unknown',
+      status: 'blocked',
+      reason: 'Backup is from a newer major app version and cannot be safely restored.'
+    };
+  }
+  if (sourceMajor < currentMajor) {
+    return {
+      currentVersion,
+      sourceVersion: sourceVersion || 'unknown',
+      status: 'warning',
+      reason: 'Backup is from an older major app version. Compatibility migration may be required.'
+    };
+  }
+  return {
+    currentVersion,
+    sourceVersion: sourceVersion || 'unknown',
+    status: 'safe',
+    reason: 'Major app versions match.'
+  };
+};
+
+const summarizeCollections = (collections = {}) => {
+  const names = [
+    'users',
+    'stores',
+    'assets',
+    'requests',
+    'activityLogs',
+    'purchaseOrders',
+    'vendors',
+    'passes',
+    'permits',
+    'assetCategories'
+  ];
+  const out = {};
+  names.forEach((name) => {
+    out[name] = Array.isArray(collections[name]) ? collections[name].length : 0;
+  });
+  return out;
+};
+
+const validateJsonBackupPayload = (payload) => {
+  const collections = getBackupCollectionsFromPayload(payload);
+  const counts = summarizeCollections(collections);
+  const totalRecords = Object.values(counts).reduce((a, b) => a + b, 0);
+  const sourceVersion = payload?.meta?.app_version || payload?.meta?.appVersion || 'unknown';
+  const version = buildVersionCompatibility(sourceVersion);
+  let status = version.status;
+  const issues = [];
+  if (totalRecords === 0) {
+    status = 'blocked';
+    issues.push('Backup contains zero records across all tracked collections.');
+  }
+  if (!payload?.collections && !payload?.users && !payload?.assets && !payload?.stores) {
+    status = 'blocked';
+    issues.push('Backup does not match supported JSON backup shapes.');
+  }
+  return {
+    ok: status !== 'blocked',
+    status,
+    format: 'json',
+    backupType: payload?.meta?.backup_type || payload?.meta?.backupType || 'unknown',
+    version,
+    issues,
+    summary: {
+      totalRecords,
+      collections: counts
+    }
+  };
+};
+
+const validateZipBackupFile = async (zipFilePath) => {
+  const zip = await unzipper.Open.file(zipFilePath);
+  const files = new Set(zip.files.map((f) => f.path));
+  const hasMeta = files.has('backup/meta.json');
+  const hasDatabaseNdjson = files.has('backup/database.ndjson');
+  const hasFilesDir = Array.from(files).some((f) => f.startsWith('backup/files/'));
+  const issues = [];
+  let status = 'safe';
+  let meta = {};
+  const escalate = (next) => {
+    if (next === 'blocked') {
+      status = 'blocked';
+      return;
+    }
+    if (next === 'warning' && status !== 'blocked') {
+      status = 'warning';
+    }
+  };
+
+  if (!hasDatabaseNdjson) {
+    escalate('blocked');
+    issues.push('Missing backup/database.ndjson in zip.');
+  }
+  if (!hasMeta) {
+    escalate('warning');
+    issues.push('Missing backup/meta.json. Version compatibility cannot be fully verified.');
+  } else {
+    const metaEntry = zip.files.find((f) => f.path === 'backup/meta.json');
+    try {
+      meta = JSON.parse((await metaEntry.buffer()).toString('utf8').replace(/^\uFEFF/, ''));
+    } catch {
+      escalate('warning');
+      issues.push('backup/meta.json exists but could not be parsed.');
+    }
+  }
+  if (!hasFilesDir) {
+    escalate('warning');
+    issues.push('No backup/files directory found. Uploaded media/documents may not be restored.');
+  }
+
+  const sourceVersion = meta?.app_version || meta?.appVersion || 'unknown';
+  const version = buildVersionCompatibility(sourceVersion);
+  escalate(version.status);
+
+  return {
+    ok: status !== 'blocked',
+    status,
+    format: 'zip',
+    backupType: meta?.backup_type || meta?.backupType || 'unknown',
+    version,
+    issues,
+    summary: {
+      containsDatabase: hasDatabaseNdjson,
+      containsFiles: hasFilesDir,
+      fileCount: files.size
+    }
+  };
 };
 
 const cleanupUploadedBackupFile = async (file) => {
@@ -475,6 +652,248 @@ router.get('/backup-file', protect, superAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error generating backup file:', error);
     res.status(500).json({ message: error.message || 'Failed to generate backup file' });
+  }
+});
+
+// @desc    Create backup artifact (zip) and store metadata
+// @route   POST /api/system/backups/create
+// @access  Private/SuperAdmin
+router.post('/backups/create', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  try {
+    const requestedType = String(req.body?.backupType || 'Full').toLowerCase();
+    const backupType = requestedType === 'incremental' ? 'Incremental' : (requestedType === 'auto' ? 'Auto' : 'Full');
+    const trigger = String(req.body?.trigger || 'manual');
+    const artifact = await createBackupArtifact({
+      backupType,
+      trigger,
+      user: req.user
+    });
+    res.status(201).json({
+      message: `${backupType} backup created successfully`,
+      backup: artifact
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to create backup' });
+  }
+});
+
+// @desc    List backup artifacts
+// @route   GET /api/system/backups
+// @access  Private/SuperAdmin
+router.get('/backups', protect, superAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(Number.parseInt(String(req.query.limit || '100'), 10) || 100, 500);
+    const backups = await BackupArtifact.find({}).sort({ createdAt: -1 }).limit(limit).lean();
+    res.json(backups);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to list backups' });
+  }
+});
+
+// @desc    Download backup artifact
+// @route   GET /api/system/backups/:id/download
+// @access  Private/SuperAdmin
+router.get('/backups/:id/download', protect, superAdmin, async (req, res) => {
+  try {
+    const backup = await BackupArtifact.findById(req.params.id).lean();
+    if (!backup) return res.status(404).json({ message: 'Backup not found' });
+    if (!backup.filePath || !fs.existsSync(backup.filePath)) {
+      return res.status(404).json({ message: 'Backup file does not exist on server' });
+    }
+    res.download(backup.filePath, backup.fileName);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to download backup' });
+  }
+});
+
+// @desc    Delete backup artifact
+// @route   DELETE /api/system/backups/:id
+// @access  Private/SuperAdmin
+router.delete('/backups/:id', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  try {
+    const backup = await BackupArtifact.findById(req.params.id);
+    if (!backup) return res.status(404).json({ message: 'Backup not found' });
+    if (backup.filePath && fs.existsSync(backup.filePath)) {
+      await fs.promises.unlink(backup.filePath);
+    }
+    await BackupArtifact.deleteOne({ _id: backup._id });
+    await createBackupLog({
+      action: 'backup_deleted',
+      backupId: backup._id,
+      backupName: backup.name,
+      user: req.user,
+      details: `Backup deleted: ${backup.fileName}`
+    });
+    res.json({ message: 'Backup deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to delete backup' });
+  }
+});
+
+// @desc    Restore from backup artifact
+// @route   POST /api/system/backups/:id/restore
+// @access  Private/SuperAdmin
+router.post('/backups/:id/restore', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  try {
+    const backup = await BackupArtifact.findById(req.params.id);
+    if (!backup) return res.status(404).json({ message: 'Backup not found' });
+    if (!backup.filePath || !fs.existsSync(backup.filePath)) {
+      return res.status(404).json({ message: 'Backup file does not exist on server' });
+    }
+    await BackupArtifact.updateOne({ _id: backup._id }, { $set: { status: 'restoring' } });
+    await restoreBackupArtifact({ backupArtifact: backup, user: req.user, createSafetyBackup: true });
+    await BackupArtifact.updateOne({ _id: backup._id }, { $set: { status: 'ready' } });
+    res.json({ message: 'System restore completed successfully' });
+  } catch (error) {
+    await BackupArtifact.updateOne({ _id: req.params.id }, { $set: { status: 'failed' } }).catch(() => {});
+    res.status(500).json({ message: error.message || 'Restore failed' });
+  }
+});
+
+// @desc    Upload zip/json backup and restore
+// @route   POST /api/system/backups/upload-restore
+// @access  Private/SuperAdmin
+router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, handleUpload(backupZipUpload), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Backup file is required' });
+  }
+  try {
+    const lower = String(req.file.originalname || '').toLowerCase();
+    if (lower.endsWith('.zip') || req.file.mimetype === 'application/zip') {
+      await restoreFromUploadedZip({ zipPath: req.file.path, user: req.user });
+      return res.json({ message: 'System restore completed successfully' });
+    }
+    // Fallback: keep legacy JSON restore compatibility via existing route behavior
+    const payload = await parseUploadedBackupPayload(req.file);
+    const collections = getBackupCollectionsFromPayload(payload);
+    await User.deleteMany({});
+    await Store.deleteMany({});
+    await Asset.deleteMany({});
+    await Request.deleteMany({});
+    await ActivityLog.deleteMany({});
+    await PurchaseOrder.deleteMany({});
+    await Vendor.deleteMany({});
+    await Pass.deleteMany({});
+    await Permit.deleteMany({});
+    await AssetCategory.deleteMany({});
+    if (collections.users?.length) await User.insertMany(collections.users, { ordered: false });
+    if (collections.stores?.length) await Store.insertMany(collections.stores, { ordered: false });
+    if (collections.assets?.length) await Asset.insertMany(collections.assets, { ordered: false });
+    if (collections.requests?.length) await Request.insertMany(collections.requests, { ordered: false });
+    if (collections.activityLogs?.length) await ActivityLog.insertMany(collections.activityLogs, { ordered: false });
+    if (collections.purchaseOrders?.length) await PurchaseOrder.insertMany(collections.purchaseOrders, { ordered: false });
+    if (collections.vendors?.length) await Vendor.insertMany(collections.vendors, { ordered: false });
+    if (collections.passes?.length) await Pass.insertMany(collections.passes, { ordered: false });
+    if (collections.permits?.length) await Permit.insertMany(collections.permits, { ordered: false });
+    if (collections.assetCategories?.length) await AssetCategory.insertMany(collections.assetCategories, { ordered: false });
+    return res.json({ message: 'Legacy JSON restore completed successfully' });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Restore failed' });
+  } finally {
+    await cleanupUploadedBackupFile(req.file);
+  }
+});
+
+// @desc    Validate uploaded backup compatibility (pre-restore)
+// @route   POST /api/system/backups/validate-upload
+// @access  Private/SuperAdmin
+router.post('/backups/validate-upload', protect, superAdmin, heavyOpsLimiter, handleUpload(backupZipUpload), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Backup file is required' });
+  }
+  try {
+    const lower = String(req.file.originalname || '').toLowerCase();
+    let report;
+    if (lower.endsWith('.zip') || req.file.mimetype === 'application/zip') {
+      report = await validateZipBackupFile(req.file.path);
+    } else {
+      const payload = await parseUploadedBackupPayload(req.file);
+      report = validateJsonBackupPayload(payload);
+    }
+    return res.json({
+      message: report.ok ? 'Backup validation completed' : 'Backup validation failed',
+      report
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Failed to validate backup file' });
+  } finally {
+    await cleanupUploadedBackupFile(req.file);
+  }
+});
+
+// @desc    Emergency restore from latest full backup
+// @route   POST /api/system/backups/emergency-restore
+// @access  Private/SuperAdmin
+router.post('/backups/emergency-restore', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  try {
+    const latestFull = await BackupArtifact.findOne({ backupType: 'Full', status: 'ready' }).sort({ createdAt: -1 });
+    if (!latestFull) return res.status(404).json({ message: 'No full backup found' });
+    await restoreBackupArtifact({ backupArtifact: latestFull, user: req.user, createSafetyBackup: true });
+    res.json({ message: 'Emergency restore completed', backupId: latestFull._id });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Emergency restore failed' });
+  }
+});
+
+// @desc    Backup operation logs
+// @route   GET /api/system/backup-logs
+// @access  Private/SuperAdmin
+router.get('/backup-logs', protect, superAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(Number.parseInt(String(req.query.limit || '100'), 10) || 100, 500);
+    const logs = await BackupLog.find({}).sort({ createdAt: -1 }).limit(limit).lean();
+    res.json(logs);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to fetch backup logs' });
+  }
+});
+
+// @desc    Get cloud backup configuration
+// @route   GET /api/system/backup-cloud-config
+// @access  Private/SuperAdmin
+router.get('/backup-cloud-config', protect, superAdmin, async (req, res) => {
+  try {
+    const doc = await Setting.findOne({ key: 'backupCloudConfig' }).lean();
+    const value = doc?.value || {};
+    res.json({
+      ...value,
+      // Never expose raw secrets to client
+      secretAccessKey: value.secretAccessKey ? '********' : '',
+      serviceRoleKey: value.serviceRoleKey ? '********' : ''
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to load cloud backup config' });
+  }
+});
+
+// @desc    Update cloud backup configuration
+// @route   PUT /api/system/backup-cloud-config
+// @access  Private/SuperAdmin
+router.put('/backup-cloud-config', protect, superAdmin, async (req, res) => {
+  try {
+    const existing = await Setting.findOne({ key: 'backupCloudConfig' }).lean();
+    const previous = existing?.value || {};
+    const payload = req.body || {};
+    const merged = {
+      enabled: Boolean(payload.enabled),
+      provider: payload.provider || '',
+      bucket: payload.bucket || '',
+      region: payload.region || '',
+      endpoint: payload.endpoint || '',
+      accessKeyId: payload.accessKeyId || previous.accessKeyId || '',
+      secretAccessKey: payload.secretAccessKey && payload.secretAccessKey !== '********' ? payload.secretAccessKey : (previous.secretAccessKey || ''),
+      forcePathStyle: Boolean(payload.forcePathStyle),
+      url: payload.url || previous.url || '',
+      serviceRoleKey: payload.serviceRoleKey && payload.serviceRoleKey !== '********' ? payload.serviceRoleKey : (previous.serviceRoleKey || '')
+    };
+    await Setting.updateOne(
+      { key: 'backupCloudConfig' },
+      { $set: { value: merged, updatedAt: new Date() } },
+      { upsert: true }
+    );
+    res.json({ message: 'Cloud backup config updated' });
+  } catch (error) {
+    res.status(400).json({ message: error.message || 'Failed to update cloud config' });
   }
 });
 

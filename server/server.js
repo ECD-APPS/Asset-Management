@@ -12,7 +12,9 @@ const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const cookieParser = require('cookie-parser');
 const csrf = require('csurf');
+const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
+const { createBackupArtifact } = require('./utils/backupRecovery');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -315,6 +317,7 @@ app.get('*', (req, res) => {
 
 let backupJobStarted = false;
 let mongod = null;
+let backupSchedulerStarted = false;
 
 // Connect to MongoDB
 const connectDB = async () => {
@@ -370,6 +373,46 @@ const connectDB = async () => {
       runBackup();
       setInterval(runBackup, oneDayMs);
     }, 5 * 60 * 1000);
+  }
+
+  if (!backupSchedulerStarted) {
+    backupSchedulerStarted = true;
+    const enableScheduler = String(process.env.ENABLE_BACKUP_SCHEDULER || 'true').toLowerCase() === 'true';
+    if (enableScheduler) {
+      // Every 6 hours incremental backup
+      cron.schedule('0 */6 * * *', async () => {
+        try {
+          await createBackupArtifact({ backupType: 'Incremental', trigger: 'scheduled', user: null });
+        } catch (err) {
+          console.error('Scheduled incremental backup failed:', err.message || err);
+        }
+      });
+      // Daily backup at 02:00
+      cron.schedule('0 2 * * *', async () => {
+        try {
+          await createBackupArtifact({ backupType: 'Auto', trigger: 'scheduled', user: null });
+        } catch (err) {
+          console.error('Scheduled daily backup failed:', err.message || err);
+        }
+      });
+      // Weekly full backup (Sunday 03:00)
+      cron.schedule('0 3 * * 0', async () => {
+        try {
+          await createBackupArtifact({ backupType: 'Full', trigger: 'scheduled', user: null });
+        } catch (err) {
+          console.error('Scheduled weekly full backup failed:', err.message || err);
+        }
+      });
+      // Monthly archive full backup (day 1 at 04:00)
+      cron.schedule('0 4 1 * *', async () => {
+        try {
+          await createBackupArtifact({ backupType: 'Full', trigger: 'scheduled', user: null });
+        } catch (err) {
+          console.error('Scheduled monthly archive backup failed:', err.message || err);
+        }
+      });
+      console.log('Backup scheduler started (6h, daily, weekly, monthly).');
+    }
   }
 };
 

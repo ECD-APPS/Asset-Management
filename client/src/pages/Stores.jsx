@@ -184,7 +184,7 @@ const Stores = () => {
                     <span className="font-bold text-lg">{store.name}</span>
                   </div>
                   <div className="mt-1 text-sm text-gray-600">
-                    Total available in store: <span className="font-semibold">{store.availableAssetCount ?? 0}</span>
+                    Total available at location: <span className="font-semibold">{store.availableAssetCount ?? 0}</span>
                   </div>
                   <div className="mt-2 text-xs text-indigo-600 font-medium">Click to view all assets in this location</div>
                   {user?.role !== 'Viewer' && (

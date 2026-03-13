@@ -113,76 +113,54 @@ router.get('/', protect, async (req, res) => {
     }
 
     if (req.query.includeAssetTotals === 'true' && stores.length > 0) {
-      const match = {};
-      const storeIds = stores
-        .map((s) => String(s._id))
-        .filter((id) => mongoose.Types.ObjectId.isValid(id))
-        .map((id) => new mongoose.Types.ObjectId(id));
-      if (storeIds.length > 0) {
-        match.store = { $in: storeIds };
-      }
+      const locationNames = Array.from(
+        new Set(
+          stores
+            .map((s) => normalizeName(s?.name).toLowerCase())
+            .filter(Boolean)
+        )
+      );
 
-      const grouped = await Asset.aggregate([
-        { $match: match },
-        {
-          $project: {
-            store: 1,
-            disposed: { $ifNull: ['$disposed', false] },
-            statusLower: { $toLower: { $ifNull: ['$status', ''] } },
-            condLower: { $toLower: { $ifNull: ['$condition', ''] } },
-            assigned_to: 1,
-            assigned_to_external: 1,
-            qty: {
-              $cond: [
-                { $and: [{ $ne: ['$quantity', null] }, { $gt: ['$quantity', 0] }] },
-                '$quantity',
-                1
-              ]
+      const totalsByLocation = {};
+      const qtyExpr = {
+        $cond: [
+          { $and: [{ $ne: ['$quantity', null] }, { $gt: ['$quantity', 0] }] },
+          '$quantity',
+          1
+        ]
+      };
+
+      if (locationNames.length > 0) {
+        const locationRegexes = locationNames.map((name) => new RegExp(`^${escapeRegex(name)}$`, 'i'));
+        const groupedByLocation = await Asset.aggregate([
+          {
+            $match: {
+              disposed: { $ne: true },
+              location: { $in: locationRegexes }
+            }
+          },
+          {
+            $group: {
+              _id: { $toLower: { $trim: { input: { $ifNull: ['$location', ''] } } } },
+              available: { $sum: qtyExpr }
             }
           }
-        },
-        {
-          $group: {
-            _id: '$store',
-            available: {
-              $sum: {
-                $cond: [
-                  {
-                    $or: [
-                      { $eq: ['$disposed', true] },
-                      { $eq: ['$statusLower', 'in use'] },
-                      { $eq: ['$statusLower', 'missing'] },
-                      { $eq: ['$condLower', 'faulty'] },
-                      { $ifNull: ['$assigned_to', false] },
-                      {
-                        $and: [
-                          { $ifNull: ['$assigned_to_external.name', false] },
-                          { $ne: ['$assigned_to_external.name', ''] }
-                        ]
-                      }
-                    ]
-                  },
-                  0,
-                  '$qty'
-                ]
-              }
-            }
-          }
+        ]);
+        for (const row of groupedByLocation) {
+          const available = Number(row?.available || 0);
+          if (available <= 0) continue;
+          const loc = String(row?._id || '');
+          totalsByLocation[loc] = (totalsByLocation[loc] || 0) + available;
         }
-      ]);
-
-      const totalsByStore = {};
-      for (const row of grouped) {
-        const available = Number(row?.available || 0);
-        if (available <= 0) continue;
-        const storeId = String(row?._id || '');
-        totalsByStore[storeId] = (totalsByStore[storeId] || 0) + available;
       }
 
-      stores = stores.map((s) => ({
-        ...s,
-        availableAssetCount: totalsByStore[String(s._id)] || 0
-      }));
+      stores = stores.map((s) => {
+        const byLocation = totalsByLocation[normalizeName(s?.name).toLowerCase()];
+        return {
+          ...s,
+          availableAssetCount: byLocation || 0
+        };
+      });
     }
 
     if (usePagination) {
