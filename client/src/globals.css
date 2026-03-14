@@ -34,23 +34,26 @@
   }
 
   :root[data-theme='ocean'] {
-    --bg-primary: 241 248 255;
+    --bg-primary: 242 247 255;
     --bg-secondary: 255 255 255;
     --bg-elevated: 255 255 255;
-    --text-main: 15 23 42;
-    --text-muted: 100 116 139;
-    --border-color: 191 219 254;
-    --accent-color: 2 132 199;
+    --text-main: 17 24 39;
+    --text-muted: 88 102 126;
+    --border-color: 199 210 254;
+    --accent-color: 37 99 235;
     --accent-contrast: 255 255 255;
-    --ring-color: 14 165 233;
-    --shadow-color: 2 132 199;
-    --page-grad-start: 239 246 255;
-    --page-grad-end: 224 242 254;
-    --page-glow: 56 189 248;
-    --sidebar-bg: 8 47 73;
-    --sidebar-text: 241 245 249;
-    --sidebar-border: 14 165 233;
+    --ring-color: 79 70 229;
+    --shadow-color: 79 70 229;
+    --page-grad-start: 238 245 255;
+    --page-grad-end: 232 240 255;
+    --page-glow: 99 102 241;
+    --sidebar-bg: 51 65 85;
+    --sidebar-text: 255 255 255;
+    --sidebar-border: 226 232 240;
     --header-bg: 239 246 255;
+    --card-opacity: 0.98;
+    --card-blur: 2px;
+    --sidebar-gloss-alpha: 0.4;
   }
 
   :root[data-theme='emerald'] {
@@ -288,6 +291,7 @@
 
   .bg-app-sidebar {
     background:
+      linear-gradient(180deg, rgb(255 255 255 / calc(var(--sidebar-gloss-alpha) * 0.88)) 0%, transparent 34%),
       radial-gradient(900px 280px at -10% 0%, rgb(var(--sidebar-border) / 0.3), transparent 55%),
       radial-gradient(650px 240px at 80% -15%, rgb(var(--sidebar-border) / var(--sidebar-gloss-alpha)), transparent 62%),
       linear-gradient(165deg, rgb(var(--sidebar-bg) / 0.98), rgb(var(--sidebar-bg) / 0.9));
@@ -296,6 +300,8 @@
 
   .text-app-sidebar {
     color: rgb(var(--sidebar-text));
+    font-weight: 600;
+    text-shadow: 0 1px 1px rgb(0 0 0 / 0.28);
   }
 
   .border-app-sidebar {

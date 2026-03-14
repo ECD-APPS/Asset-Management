@@ -619,6 +619,18 @@ router.get('/:id([0-9a-fA-F]{24})', protect, async (req, res) => {
     if (!asset) {
       return res.status(404).json({ message: 'Asset not found' });
     }
+    if (req.user?.role !== 'Super Admin') {
+      const scopedStoreId = getScopedStoreId(req);
+      if (!scopedStoreId) {
+        return res.status(403).json({ message: 'Asset is outside your store scope' });
+      }
+      const scopedStoreIds = await getStoreIds(scopedStoreId);
+      const scopedSet = new Set(scopedStoreIds.map((id) => String(id)));
+      const assetStoreId = String(asset.store?._id || asset.store || '');
+      if (!scopedSet.has(assetStoreId)) {
+        return res.status(403).json({ message: 'Asset is outside your store scope' });
+      }
+    }
     res.json(asset);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1209,7 +1221,21 @@ router.post('/bulk-update', protect, admin, async (req, res) => {
     let prodName = updates.product_name ? String(updates.product_name) : '';
     if (prodName) data.product_name = capitalizeWords(prodName);
 
-    const result = await Asset.updateMany({ _id: { $in: ids } }, { $set: data });
+    const match = { _id: { $in: ids } };
+    if (req.user?.role !== 'Super Admin') {
+      const scopedStoreId = getScopedStoreId(req);
+      if (!scopedStoreId) {
+        return res.status(403).json({ message: 'Store context is required for bulk updates' });
+      }
+      const scopedStoreIds = await getStoreIds(scopedStoreId);
+      match.store = { $in: scopedStoreIds };
+      const scopedCount = await Asset.countDocuments(match);
+      if (scopedCount !== ids.length) {
+        return res.status(403).json({ message: 'One or more assets are outside your store scope' });
+      }
+    }
+
+    const result = await Asset.updateMany(match, { $set: data });
 
     await ActivityLog.create({
       user: req.user.name,
@@ -1220,7 +1246,7 @@ router.post('/bulk-update', protect, admin, async (req, res) => {
       store: req.activeStore
     });
 
-    const updated = await Asset.find({ _id: { $in: ids } })
+    const updated = await Asset.find(match)
       .populate('store', 'name')
       .lean();
 
@@ -1240,8 +1266,22 @@ router.post('/bulk-delete', protect, admin, async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ message: 'No asset IDs provided' });
     }
-    const toDelete = await Asset.find({ _id: { $in: ids } }).lean();
-    const result = await Asset.deleteMany({ _id: { $in: ids } });
+    const match = { _id: { $in: ids } };
+    if (req.user?.role !== 'Super Admin') {
+      const scopedStoreId = getScopedStoreId(req);
+      if (!scopedStoreId) {
+        return res.status(403).json({ message: 'Store context is required for bulk deletes' });
+      }
+      const scopedStoreIds = await getStoreIds(scopedStoreId);
+      match.store = { $in: scopedStoreIds };
+      const scopedCount = await Asset.countDocuments(match);
+      if (scopedCount !== ids.length) {
+        return res.status(403).json({ message: 'One or more assets are outside your store scope' });
+      }
+    }
+
+    const toDelete = await Asset.find(match).lean();
+    const result = await Asset.deleteMany(match);
 
     // Log activity summary
     await ActivityLog.create({
@@ -1277,9 +1317,14 @@ router.post('/split', protect, restrictViewer, async (req, res) => {
       return res.status(404).json({ message: 'Asset not found' });
     }
 
-    // RBAC: Check store access
-    if (req.activeStore && asset.store && asset.store.toString() !== req.activeStore.toString()) {
-      return res.status(403).json({ message: 'Access denied to this store asset' });
+    // RBAC: Check store access (active store + its child stores)
+    if (req.activeStore) {
+      const scopedStoreIds = await getStoreIds(req.activeStore);
+      const scopedStoreSet = new Set(scopedStoreIds.map((id) => String(id)));
+      const assetStoreId = asset.store ? String(asset.store) : '';
+      if (!scopedStoreSet.has(assetStoreId)) {
+        return res.status(403).json({ message: 'Access denied to this store asset' });
+      }
     }
 
     if (asset.quantity <= qtyToSplit) {
@@ -3227,7 +3272,16 @@ router.delete('/:id', protect, admin, async (req, res) => {
 // @access  Private/Admin
 router.get('/activity-logs', protect, admin, async (req, res) => {
   try {
-    const logs = await ActivityLog.find().sort({ createdAt: -1 }).limit(100);
+    const query = {};
+    if (req.user?.role !== 'Super Admin') {
+      const scopedStoreId = getScopedStoreId(req);
+      if (!scopedStoreId) {
+        return res.status(403).json({ message: 'Store context is required to view activity logs' });
+      }
+      const scopedStoreIds = await getStoreIds(scopedStoreId);
+      query.store = { $in: scopedStoreIds };
+    }
+    const logs = await ActivityLog.find(query).sort({ createdAt: -1 }).limit(100);
     res.json(logs);
   } catch (error) {
     console.error('Error in GET /activity-logs:', error);
@@ -3241,7 +3295,16 @@ router.get('/activity-logs', protect, admin, async (req, res) => {
 router.get('/recent-activity', protect, admin, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const pipeline = [
+    const pipeline = [];
+    if (req.user?.role !== 'Super Admin') {
+      const scopedStoreId = getScopedStoreId(req);
+      if (!scopedStoreId) {
+        return res.status(403).json({ message: 'Store context is required to view recent activity' });
+      }
+      const scopedStoreIds = await getStoreIds(scopedStoreId);
+      pipeline.push({ $match: { store: { $in: scopedStoreIds } } });
+    }
+    pipeline.push(
       { $unwind: '$history' },
       { $sort: { 'history.date': -1 } },
       { $limit: limit },
@@ -3276,7 +3339,7 @@ router.get('/recent-activity', protect, admin, async (req, res) => {
           updatedAt: 1
         }
       }
-    ];
+    );
     const events = await Asset.aggregate(pipeline);
     res.json(events);
   } catch (error) {

@@ -10,9 +10,11 @@
     "dev:3000": "PORT=3000 NODE_ENV=production node server/server.js",
     "check:cycles": "madge --circular --extensions js,jsx,ts,tsx client/src && madge --circular --extensions js,jsx,ts,tsx server",
     "install:all": "npm install && cd server && npm install && cd ../client && npm install",
-    "build:prod": "npm ci --omit=dev && cd client && npm ci --omit=dev && npm run build",
+    "build:prod": "npm ci --omit=dev && npm ci --omit=dev --prefix server && cd client && npm ci --omit=dev && npm run build",
     "start:prod": "NODE_ENV=production node server/server.js",
-    "start:prod:3000": "PORT=3000 NODE_ENV=production node server/server.js"
+    "start:prod:3000": "PORT=3000 NODE_ENV=production node server/server.js",
+    "check:regression": "bash scripts/regression-checklist.sh",
+    "check:smoke": "bash scripts/api-smoke-dev.sh"
   },
   "engines": {
     "node": ">=18.0.0"

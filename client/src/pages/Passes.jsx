@@ -120,7 +120,7 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
             </div>
             <div className="p-2 border-b border-slate-400 flex bg-white">
                <span className="font-bold w-32">REQUESTED BY:</span>
-               <span>{pass.requested_by || pass.issued_to.name}</span>
+               <span>{pass.requested_by || pass.issued_to?.name || '-'}</span>
             </div>
             <div className="p-2 border-b border-slate-400 flex bg-slate-50">
                <span className="font-bold w-32">PROVIDED BY:</span>
@@ -128,7 +128,7 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
             </div>
             <div className="p-2 border-b border-slate-400 flex bg-white">
                <span className="font-bold w-32">COLLECTED BY:</span>
-               <span>{pass.collected_by || pass.issued_to.name}</span>
+               <span>{pass.collected_by || pass.issued_to?.name || '-'}</span>
             </div>
             <div className="p-2 flex bg-slate-50">
                <span className="font-bold w-32">APPROVED BY:</span>
@@ -161,7 +161,7 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
               </tr>
             </thead>
             <tbody>
-              {pass.assets.map((item, i) => (
+              {(pass.assets || []).map((item, i) => (
                 <tr key={i} className="text-black">
                   <td className="border border-black p-2">{i + 1}</td>
                   <td className="border border-black p-2">{item.model || '-'}</td>
@@ -278,7 +278,7 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
                 </div>
                 <div className="p-2 border-b border-slate-400 flex bg-white">
                    <span className="font-bold w-32">REQUESTED BY:</span>
-                   <span>{pass.requested_by || pass.issued_to.name}</span>
+                   <span>{pass.requested_by || pass.issued_to?.name || '-'}</span>
                 </div>
                 <div className="p-2 border-b border-slate-400 flex bg-slate-50">
                    <span className="font-bold w-32">PROVIDED BY:</span>
@@ -286,7 +286,7 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
                 </div>
                 <div className="p-2 border-b border-slate-400 flex bg-white">
                    <span className="font-bold w-32">COLLECTED BY:</span>
-                   <span>{pass.collected_by || pass.issued_to.name}</span>
+                   <span>{pass.collected_by || pass.issued_to?.name || '-'}</span>
                 </div>
                 <div className="p-2 flex bg-slate-50">
                    <span className="font-bold w-32">APPROVED BY:</span>
@@ -319,7 +319,7 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {pass.assets.map((item, i) => (
+                  {(pass.assets || []).map((item, i) => (
                     <tr key={i} className="text-black">
                       <td className="border border-black p-2">{i + 1}</td>
                       <td className="border border-black p-2">{item.model || '-'}</td>
@@ -454,7 +454,7 @@ const Passes = () => {
       provided_by: pass.provided_by || '',
       collected_by: pass.collected_by || '',
       approved_by: pass.approved_by || '',
-      assets: pass.assets.map(a => ({
+      assets: (pass.assets || []).map(a => ({
          name: a.name || '',
          model: a.model || '',
          serial_number: a.serial_number || '',
@@ -560,7 +560,7 @@ const Passes = () => {
 
     if (value.length >= 4) {
       try {
-        const { data } = await api.get(`/assets/search-serial?q=${value}`);
+        const { data } = await api.get('/assets/search-serial', { params: { q: value } });
         setSuggestions(prev => ({ ...prev, [index]: data }));
         setActiveSearchIndex(index);
       } catch (error) {

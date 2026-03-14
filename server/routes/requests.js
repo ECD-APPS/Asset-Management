@@ -5,6 +5,21 @@ const Store = require('../models/Store');
 const xlsx = require('xlsx');
 const { protect, admin, adminOrViewer, restrictViewer } = require('../middleware/authMiddleware');
 const sendEmail = require('../utils/sendEmail');
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const getScopedStoreId = (req) => String(req.activeStore || req.user?.assignedStore || '').trim();
+const getStoreIds = async (storeId) => {
+  if (!storeId) return [];
+  const children = await Store.find({ parentStore: storeId }).select('_id').lean();
+  return [storeId, ...children.map((c) => c._id)];
+};
+const canAccessRequest = async (req, requestStoreId) => {
+  if (req.user?.role === 'Super Admin') return true;
+  const scopedStoreId = getScopedStoreId(req);
+  if (!scopedStoreId) return false;
+  const storeIds = await getStoreIds(scopedStoreId);
+  const allowed = new Set(storeIds.map((id) => String(id)));
+  return allowed.has(String(requestStoreId || ''));
+};
 
 async function applyViewerStoreFilter(req, filter) {
   if (req.user?.role !== 'Viewer') {
@@ -42,12 +57,29 @@ async function applyViewerStoreFilter(req, filter) {
 router.post('/', protect, restrictViewer, async (req, res) => {
   try {
     const { item_name, quantity, description, store } = req.body;
+    const safeItemName = String(item_name || '').trim();
+    const safeDescription = String(description || '').trim();
+    const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+    if (!safeItemName) {
+      return res.status(400).json({ message: 'Item name is required' });
+    }
+
+    let targetStoreId = null;
+    if (req.user?.role === 'Super Admin') {
+      targetStoreId = store || req.activeStore || null;
+    } else {
+      targetStoreId = req.activeStore || req.user?.assignedStore || null;
+    }
+    if (!targetStoreId) {
+      return res.status(400).json({ message: 'Store context is required for request submission' });
+    }
+
     const request = await Request.create({
-      item_name,
-      quantity,
-      description,
+      item_name: safeItemName,
+      quantity: safeQuantity,
+      description: safeDescription,
       requester: req.user._id,
-      store
+      store: targetStoreId
     });
 
     // Notify admin on new request
@@ -60,10 +92,10 @@ router.post('/', protect, restrictViewer, async (req, res) => {
           <div style="font-family: system-ui, Arial, sans-serif">
             <h2>New Request Submitted</h2>
             <p><strong>Technician:</strong> ${req.user?.name || '-'} (${req.user?.email || '-'})</p>
-            <p><strong>Item:</strong> ${item_name}</p>
-            <p><strong>Quantity:</strong> ${quantity}</p>
-            <p><strong>Description:</strong> ${description || '-'}</p>
-            <p><strong>Store:</strong> ${store || '-'}</p>
+            <p><strong>Item:</strong> ${safeItemName}</p>
+            <p><strong>Quantity:</strong> ${safeQuantity}</p>
+            <p><strong>Description:</strong> ${safeDescription || '-'}</p>
+            <p><strong>Store:</strong> ${targetStoreId || '-'}</p>
             <p style="color: #6b7280; font-size: 12px">Expo Stores</p>
           </div>
         `
@@ -91,7 +123,8 @@ router.get('/', protect, adminOrViewer, async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
     if (q) {
-      const rx = new RegExp(q, 'i');
+      const qSafe = String(q).trim().slice(0, 120);
+      const rx = new RegExp(escapeRegex(qSafe), 'i');
       requests = requests.filter(r =>
         rx.test(r.requester?.name || '') ||
         rx.test(r.requester?.email || '') ||
@@ -111,11 +144,16 @@ router.put('/:id', protect, admin, async (req, res) => {
     if (!request) return res.status(404).json({ message: 'Request not found' });
     
     // Isolation Check
-    if (req.activeStore && request.store && request.store.toString() !== req.activeStore.toString()) {
+    if (!(await canAccessRequest(req, request.store))) {
       return res.status(404).json({ message: 'Request not found' });
     }
 
-    request.status = req.body.status || request.status;
+    const allowedStatuses = new Set(['Pending', 'Approved', 'Ordered', 'Rejected']);
+    const nextStatus = String(req.body?.status || request.status);
+    if (!allowedStatuses.has(nextStatus)) {
+      return res.status(400).json({ message: 'Invalid request status' });
+    }
+    request.status = nextStatus;
     await request.save();
 
     // Notify technician on status change
@@ -161,7 +199,8 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
       .sort({ updatedAt: -1 })
       .lean();
     if (q) {
-      const rx = new RegExp(q, 'i');
+      const qSafe = String(q).trim().slice(0, 120);
+      const rx = new RegExp(escapeRegex(qSafe), 'i');
       requests = requests.filter(r =>
         rx.test(r.requester?.name || '') ||
         rx.test(r.requester?.email || '') ||

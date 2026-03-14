@@ -59,12 +59,17 @@ const RecentActivity = () => {
                     <div className="text-xs text-gray-500">{e.role}</div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                    {(() => {
+                      const action = String(e?.action || '');
+                      return (
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                      ${e.action.includes('Return') ? 'bg-amber-100 text-amber-800' : 
-                        e.action.includes('Faulty') ? 'bg-red-100 text-red-800' : 
+                      ${action.includes('Return') ? 'bg-amber-100 text-amber-800' : 
+                        action.includes('Faulty') ? 'bg-red-100 text-red-800' : 
                         'bg-blue-100 text-blue-800'}`}>
-                      {e.action}
+                      {action || 'Unknown'}
                     </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-6 py-4 whitespace-normal">
                     <div className="text-sm text-gray-900">{e.details}</div>

@@ -25,11 +25,13 @@ const Stores = () => {
     try {
       setLoading(true);
       const params = new URLSearchParams({
-        parent: String(activeStoreId),
         includeAssetTotals: 'true',
         page: String(page),
         limit: String(pageSize)
       });
+      if (String(activeStoreId) !== 'all') {
+        params.set('parent', String(activeStoreId));
+      }
       if (debouncedSearch.trim()) {
         params.set('q', debouncedSearch.trim());
       }

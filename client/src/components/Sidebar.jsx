@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Box,
@@ -127,9 +127,11 @@ SidebarItem.propTypes = {
 const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
   const { user, logout, activeStore, branding } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const [openSubMenu, setOpenSubMenu] = useState({});
   const [productsTree, setProductsTree] = useState([]);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [showRadialMenu, setShowRadialMenu] = useState(false);
 
   useEffect(() => {
     const fetchProducts = async () => {
@@ -144,7 +146,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
     if (['Admin', 'Viewer', 'Super Admin'].includes(user?.role)) {
       fetchProducts();
     }
-  }, [user, location.pathname]);
+  }, [user?.role, activeStore?._id, activeStore]);
 
   const toggleSubMenu = (name) => {
     setOpenSubMenu((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -229,6 +231,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
   const filteredEvents = filteredItems.filter((item) => item.name === 'Events');
   const selectedTheme = branding?.theme || 'default';
   const isDefaultTheme = selectedTheme === 'default';
+  const isOceanTheme = selectedTheme === 'ocean';
 
   const toneMap = {
     default: {
@@ -239,11 +242,11 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
       activeStyle: { backgroundColor: 'rgb(255 165 0)', borderColor: 'rgb(255 165 0)' }
     },
     ocean: {
-      activeClass: 'text-sky-50 border shadow-sm font-medium',
-      inactiveRootClass: 'text-sky-100/95 hover:bg-sky-300/20 hover:text-white',
-      inactiveSubClass: 'text-sky-100/80 hover:bg-sky-300/18 hover:text-white',
-      indicatorClass: 'bg-sky-200',
-      activeStyle: { backgroundColor: 'rgba(14, 165, 233, 0.35)', borderColor: 'rgba(125, 211, 252, 0.6)' }
+      activeClass: 'text-white border shadow-sm font-bold',
+      inactiveRootClass: 'text-white/95 font-semibold hover:bg-white/16 hover:text-white',
+      inactiveSubClass: 'text-white/90 font-semibold hover:bg-white/14 hover:text-white',
+      indicatorClass: 'bg-white',
+      activeStyle: { backgroundColor: 'rgba(255, 255, 255, 0.2)', borderColor: 'rgba(255, 255, 255, 0.5)' }
     },
     emerald: {
       activeClass: 'text-emerald-50 border shadow-sm font-medium',
@@ -297,6 +300,26 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
   };
   const tone = toneMap[selectedTheme] || toneMap.default;
 
+  const findFirstPathForItem = (items, targetName) => {
+    const direct = items.find((entry) => entry.name === targetName);
+    if (!direct) return null;
+    if (direct.path) return direct.path;
+    if (Array.isArray(direct.subItems) && direct.subItems.length > 0) {
+      return direct.subItems[0]?.path || null;
+    }
+    return null;
+  };
+
+  const radialActions = [
+    { name: 'Dashboard', icon: <LayoutDashboard size={16} strokeWidth={1.8} />, path: findFirstPathForItem(filteredItems, 'Dashboard') },
+    { name: 'Assets', icon: <Box size={16} strokeWidth={1.8} />, path: findFirstPathForItem(filteredItems, 'Assets') },
+    { name: 'Members', icon: <Users size={16} strokeWidth={1.8} />, path: findFirstPathForItem(filteredItems, 'Add Members') },
+    { name: 'Locations', icon: <Store size={16} strokeWidth={1.8} />, path: findFirstPathForItem(filteredItems, 'Locations') },
+    { name: 'Tools', icon: <Wrench size={16} strokeWidth={1.8} />, path: findFirstPathForItem(filteredItems, 'Tools') },
+    { name: 'Events', icon: <Calendar size={16} strokeWidth={1.8} />, path: findFirstPathForItem(filteredItems, 'Events') },
+    { name: 'Logout', icon: <LogOut size={16} strokeWidth={1.8} />, action: () => logout() }
+  ].filter((action) => Boolean(action.path || action.action));
+
   const isActive = (itemPath) => {
     if (!itemPath) return false;
     if (itemPath.includes('?')) return location.pathname + location.search === itemPath;
@@ -330,19 +353,109 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
             <p className="mt-2 text-xs text-app-sidebar">{user?.name}</p>
           </div>
         ) : (
-          <div className="mt-9 flex justify-center">
-            <div className="inline-flex items-center justify-center rounded-xl border border-app-sidebar bg-white/10 p-2 shadow">
-              <img
-                src={branding?.logoUrl || '/logo.svg'}
-                alt="SCY Asset"
-                className="h-11 w-11 rounded-lg object-contain"
-              />
+          <div
+            className="mt-9 flex justify-center"
+            onMouseEnter={() => isOceanTheme && setShowRadialMenu(true)}
+            onMouseLeave={() => isOceanTheme && setShowRadialMenu(false)}
+          >
+            <div className="relative inline-flex items-center justify-center">
+              {isOceanTheme && (
+                <span
+                  className={`pointer-events-none absolute h-16 w-16 rounded-full bg-slate-200/30 blur-xl transition-all duration-500 ${
+                    showRadialMenu ? 'scale-110 opacity-100' : 'scale-75 opacity-0'
+                  }`}
+                />
+              )}
+              <div className="inline-flex items-center justify-center rounded-xl border border-app-sidebar bg-white/10 p-2 shadow">
+                <img
+                  src={branding?.logoUrl || '/logo.svg'}
+                  alt="SCY Asset"
+                  className="h-9 w-9 rounded-lg object-contain"
+                />
+              </div>
+
+              {isOceanTheme && (
+                <div
+                  className={`pointer-events-none absolute left-full top-1/2 z-40 ml-3 -translate-y-1/2 transition-all duration-500 ${
+                    showRadialMenu ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  {radialActions.map((action, idx) => {
+                    const count = Math.max(radialActions.length - 1, 1);
+                    const angleStart = -92;
+                    const angleStep = 184 / count;
+                    const angle = angleStart + angleStep * idx;
+                    const radius = 82;
+                    const x = Math.cos((angle * Math.PI) / 180) * radius;
+                    const y = Math.sin((angle * Math.PI) / 180) * radius;
+                    const isLogoutAction = action.name === 'Logout';
+
+                    return (
+                      <button
+                        key={action.name}
+                        type="button"
+                        className="group pointer-events-auto absolute flex h-11 w-11 items-center justify-center rounded-full border border-white/55 bg-gradient-to-b from-slate-300/65 via-slate-300/45 to-slate-500/35 text-white shadow-[0_10px_24px_-14px_rgba(2,6,23,0.95)] ring-1 ring-white/30 backdrop-blur-md transition hover:scale-110 hover:from-slate-200/75 hover:to-slate-500/45"
+                        style={{
+                          transform: showRadialMenu
+                            ? `translate(${x}px, ${y}px) scale(1)`
+                            : 'translate(0px, 0px) scale(0.6)',
+                          opacity: showRadialMenu ? 1 : 0,
+                          transition: 'transform 560ms cubic-bezier(0.22, 1, 0.36, 1), opacity 420ms ease',
+                          transitionDelay: showRadialMenu ? `${idx * 48}ms` : `${(radialActions.length - idx) * 24}ms`
+                        }}
+                        title={action.name}
+                        onClick={() => {
+                          if (action.action) {
+                            action.action();
+                            return;
+                          }
+                          if (action.path) {
+                            navigate(action.path);
+                            onClose && onClose();
+                          }
+                        }}
+                      >
+                        <span
+                          className="pointer-events-none absolute h-11 w-11 rounded-full bg-slate-100/20 blur-md"
+                          style={{
+                            opacity: showRadialMenu ? (isLogoutAction ? 0.35 : 0.75) : 0,
+                            transform: showRadialMenu
+                              ? `scale(${isLogoutAction ? 1.15 : 1.45})`
+                              : 'scale(0.65)',
+                            transition: 'transform 640ms cubic-bezier(0.22, 1, 0.36, 1), opacity 520ms ease',
+                            transitionDelay: showRadialMenu ? `${idx * 56 + 80}ms` : '0ms'
+                          }}
+                        />
+                        <span
+                          className={`pointer-events-none absolute h-12 w-12 rounded-full border border-white/35 ${
+                            showRadialMenu ? 'animate-ping' : ''
+                          }`}
+                          style={{
+                            opacity: showRadialMenu ? (isLogoutAction ? 0.08 : 0.22) : 0,
+                            animationDuration: isLogoutAction ? '2400ms' : '1800ms'
+                          }}
+                        />
+                        {action.icon}
+                        <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-md border border-white/40 bg-slate-700/85 px-2 py-1 text-[11px] font-semibold tracking-wide text-white opacity-0 shadow-[0_10px_20px_-16px_rgba(2,6,23,0.95)] transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100">
+                          {action.name}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
       </div>
 
       <nav className="flex-1 overflow-y-auto py-4">
+        {isCollapsed && isOceanTheme ? (
+          <div className="px-3 text-center text-[11px] font-semibold tracking-wide text-white/85">
+            Hover logo for quick menu
+          </div>
+        ) : (
+          <>
         <ul className="space-y-1.5 px-3">
           {mainNavItems.map((item) => (
             <li key={item.name}>
@@ -374,6 +487,8 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
             />
           </div>
         ))}
+          </>
+        )}
       </nav>
 
       <div className="border-t border-app-sidebar p-3 bg-black/10">
@@ -399,7 +514,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
 
         <button
           onClick={logout}
-          className={`flex w-full items-center rounded-xl px-3 py-2.5 text-sm text-rose-600 hover:bg-rose-50 ${isCollapsed ? 'justify-center' : 'gap-3'}`}
+          className={`flex w-full items-center rounded-xl px-3 py-2.5 text-sm ${selectedTheme === 'ocean' ? 'text-white font-bold hover:bg-white/16' : 'text-rose-600 hover:bg-rose-50'} ${isCollapsed ? 'justify-center' : 'gap-3'}`}
           title="Logout"
         >
           <LogOut size={18} strokeWidth={1.5} />

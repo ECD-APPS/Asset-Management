@@ -59,12 +59,17 @@ const SystemLogs = () => {
                     <div className="text-xs text-gray-500">{log.email}</div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                    {(() => {
+                      const action = String(log?.action || '');
+                      return (
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                      ${log.action.includes('Delete') ? 'bg-red-100 text-red-800' : 
-                        log.action.includes('Edit') ? 'bg-amber-100 text-amber-800' : 
+                      ${action.includes('Delete') ? 'bg-red-100 text-red-800' : 
+                        action.includes('Edit') ? 'bg-amber-100 text-amber-800' : 
                         'bg-blue-100 text-blue-800'}`}>
-                      {log.action}
+                      {action || 'Unknown'}
                     </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600">
                     {log.details}

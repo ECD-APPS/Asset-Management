@@ -112,13 +112,18 @@ router.get('/me', protect, async (req, res) => {
 // @route   POST /api/auth/verify-password
 // @access  Private
 router.post('/verify-password', protect, async (req, res) => {
-  const { password } = req.body;
-  const user = await User.findById(req.user.id);
-
-  if (user && (await bcrypt.compare(password, user.password))) {
-    res.json({ success: true });
-  } else {
+  try {
+    const password = String(req.body?.password || '');
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required' });
+    }
+    const user = await User.findById(req.user.id);
+    if (user && (await bcrypt.compare(password, user.password))) {
+      return res.json({ success: true });
+    }
     res.status(401).json({ message: 'Invalid password' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 

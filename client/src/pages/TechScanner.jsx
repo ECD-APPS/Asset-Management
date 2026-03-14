@@ -41,7 +41,7 @@ const TechScanner = () => {
     setMessage('');
     setShowAddForm(false);
     try {
-      const res = await api.get(`/assets/search?query=${query}`);
+      const res = await api.get('/assets/search', { params: { query } });
       if (res.data.length > 0) {
         setAsset(res.data[0]); // Take the first match
       } else {
@@ -105,7 +105,7 @@ const TechScanner = () => {
         setMessage('Asset reported faulty');
       }
       // Refresh asset
-      const res = await api.get(`/assets/search?query=${asset.serial_number}`);
+      const res = await api.get('/assets/search', { params: { query: asset.serial_number } });
       setAsset(res.data[0]);
     } catch (error) {
       setMessage(error.response?.data?.message || 'Action failed');
@@ -121,7 +121,7 @@ const TechScanner = () => {
     try {
       await api.post('/assets/return', { assetId: asset._id, condition: returnCondition, ticketNumber });
       setMessage(`Asset returned as ${returnCondition}`);
-      const res = await api.get(`/assets/search?query=${asset.serial_number}`);
+      const res = await api.get('/assets/search', { params: { query: asset.serial_number } });
       setAsset(res.data[0]);
     } catch (error) {
       setMessage(error.response?.data?.message || 'Return failed');

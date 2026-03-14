@@ -96,7 +96,7 @@ router.get('/', protect, adminOrViewer, async (req, res) => {
 // @desc    Get single PO
 // @route   GET /api/purchase-orders/:id
 // @access  Private/Admin
-router.get('/:id', protect, adminOrViewer, async (req, res) => {
+router.get('/:id([0-9a-fA-F]{24})', protect, adminOrViewer, async (req, res) => {
   try {
     const filter = { _id: req.params.id };
     await applyViewerStoreFilter(req, filter);

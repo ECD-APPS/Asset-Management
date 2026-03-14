@@ -12,7 +12,14 @@ import {
 
 const themeChartMap = {
   default: { primary: '#3b82f6', secondary: '#f59e0b', tertiary: '#8b5cf6' },
-  ocean: { primary: '#0284c7', secondary: '#0ea5e9', tertiary: '#22d3ee' },
+  ocean: {
+    primary: '#2563eb',
+    secondary: '#06b6d4',
+    tertiary: '#6366f1',
+    quaternary: '#7c3aed',
+    quinary: '#38bdf8',
+    gradientTargets: ['#60a5fa', '#22d3ee', '#818cf8', '#a78bfa', '#7dd3fc']
+  },
   emerald: { primary: '#059669', secondary: '#10b981', tertiary: '#34d399' },
   sunset: { primary: '#ea580c', secondary: '#f97316', tertiary: '#fb923c' },
   midnight: { primary: '#38bdf8', secondary: '#6366f1', tertiary: '#22d3ee' },
@@ -39,6 +46,10 @@ const barColorMap = {
   gray: 'bg-slate-500',
   violet: 'bg-violet-500'
 };
+
+const OCEAN_3D_PIE_COLORS = ['#ef4444', '#facc15', '#3b82f6', '#22c55e', '#8b5cf6'];
+const OCEAN_3D_PIE_GRADIENTS = ['#b91c1c', '#a16207', '#1d4ed8', '#15803d', '#6d28d9'];
+const OCEAN_BAR_COLORS = ['#ef4444', '#facc15', '#6b7280', '#3b82f6', '#111827'];
 
 const StatCard = ({ title, value, icon: Icon, color, subText, onClick }) => {
   const iconClasses = statColorMap[color] || statColorMap.blue;
@@ -72,38 +83,125 @@ StatCard.propTypes = {
   onClick: PropTypes.func
 };
 
-const buildPieConfig = ({ labels, values, colors, title, height = 280 }) => {
+const buildPieConfig = ({
+  labels,
+  values,
+  colors,
+  title,
+  height = 280,
+  vectorStyle = false,
+  gradientTargets = []
+}) => {
   const validValues = Array.isArray(values) ? values.map((n) => Number(n) || 0) : [];
   const total = validValues.reduce((sum, value) => sum + value, 0);
   const hasData = total > 0;
   const safeLabels = hasData ? labels : ['No Data'];
   const safeValues = hasData ? validValues : [1];
   const safeColors = hasData ? colors : ['#cbd5e1'];
+  const safeGradientTargets = hasData && gradientTargets.length ? gradientTargets : safeColors;
+  const baseStrokeColor = vectorStyle ? 'rgba(255,255,255,0.96)' : '#fff';
+  const baseLegendColor = vectorStyle ? '#1f2937' : '#475569';
   return {
     title,
     height,
+    type: 'donut',
     series: safeValues,
     options: {
-      chart: { type: 'donut', fontFamily: 'inherit' },
+      chart: {
+        type: 'donut',
+        fontFamily: 'inherit',
+        dropShadow: vectorStyle
+          ? { enabled: true, top: 8, left: 0, blur: 14, color: '#0f172a', opacity: 0.22 }
+          : { enabled: false }
+      },
       labels: safeLabels,
       colors: safeColors,
-      stroke: { width: 1, colors: ['#fff'] },
-      legend: { position: 'bottom' },
+      stroke: { width: vectorStyle ? 2 : 1, colors: [baseStrokeColor] },
+      legend: {
+        show: true,
+        position: 'bottom',
+        markers: { width: 10, height: 10, radius: 12 },
+        labels: { colors: baseLegendColor },
+        formatter: (seriesName, opts) => {
+          const value = opts.w.globals.series?.[opts.seriesIndex] || 0;
+          const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+          return `${seriesName}: ${value} (${pct}%)`;
+        }
+      },
       dataLabels: {
         enabled: hasData,
+        style: {
+          fontWeight: 700,
+          fontSize: vectorStyle ? '15px' : '13px',
+          colors: vectorStyle ? ['#ffffff'] : undefined
+        },
+        dropShadow: {
+          enabled: vectorStyle,
+          blur: vectorStyle ? 3 : 0,
+          opacity: vectorStyle ? 0.25 : 0
+        },
         formatter: (val) => `${Math.round(val)}%`
       },
-      tooltip: { y: { formatter: (value) => `${value}` } },
+      fill: vectorStyle
+        ? {
+            type: 'gradient',
+            gradient: {
+              shade: 'dark',
+              type: 'vertical',
+              shadeIntensity: 0.62,
+              gradientToColors: safeGradientTargets,
+              inverseColors: false,
+              opacityFrom: 1,
+              opacityTo: 0.82,
+              stops: [0, 55, 100]
+            }
+          }
+        : { type: 'solid' },
+      states: vectorStyle
+        ? {
+            hover: { filter: { type: 'lighten', value: 0.08 } },
+            active: { filter: { type: 'none' } }
+          }
+        : undefined,
+      tooltip: {
+        y: {
+          formatter: (value) => {
+            const pct = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
+            return `${value} assets (${pct}%)`;
+          }
+        }
+      },
       plotOptions: {
         pie: {
+          customScale: vectorStyle ? 0.96 : 1,
+          offsetY: 0,
+          expandOnClick: false,
           donut: {
-            size: '68%',
+            size: vectorStyle ? '62%' : '68%',
+            background: 'transparent',
             labels: {
               show: true,
+              name: {
+                show: vectorStyle,
+                color: '#475569'
+              },
+              value: {
+                show: vectorStyle,
+                color: '#0f172a',
+                fontWeight: 700,
+                formatter: (value) => `${Number(value || 0)}`
+              },
               total: {
                 show: true,
-                label: hasData ? 'Total' : 'No Data',
-                formatter: () => (hasData ? `${total}` : '-')
+                showAlways: vectorStyle,
+                label: vectorStyle ? 'Total Assets' : hasData ? 'Total' : 'No Data',
+                fontSize: vectorStyle ? '14px' : '16px',
+                fontWeight: vectorStyle ? 600 : 600,
+                color: vectorStyle ? '#0f172a' : '#334155',
+                formatter: () => {
+                  if (!hasData) return '-';
+                  return `${total}`;
+                }
               }
             }
           }
@@ -130,41 +228,54 @@ const DashboardCharts = ({ stats }) => {
 
   const selectedTheme = document?.documentElement?.dataset?.theme || 'default';
   const palette = themeChartMap[selectedTheme] || themeChartMap.default;
+  const useVectorPieStyle = selectedTheme === 'ocean';
+  const oceanPieColors = OCEAN_3D_PIE_COLORS;
+  const oceanPieGradients = OCEAN_3D_PIE_GRADIENTS;
   const inUseCount = safeOverview.inUse || 0;
   const notInUseCount = Math.max((safeOverview.total || 0) - inUseCount, 0);
 
   const utilizationPie = buildPieConfig({
     labels: ['In Use', 'Not In Use'],
     values: [inUseCount, notInUseCount],
-    colors: [palette.primary, palette.secondary],
+    colors: useVectorPieStyle ? oceanPieColors.slice(0, 2) : [palette.primary, palette.secondary],
     title: 'Asset Utilization',
-    height: 300
+    height: 300,
+    vectorStyle: useVectorPieStyle,
+    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 2) : []
   });
   const conditionPie = buildPieConfig({
     labels: ['New', 'Used', 'Faulty', 'Repaired'],
     values: [conditions?.New || 0, conditions?.Used || 0, conditions?.Faulty || 0, conditions?.Repaired || 0],
-    colors: ['#22c55e', '#3b82f6', '#ef4444', '#f59e0b'],
-    title: 'Condition Mix'
+    colors: useVectorPieStyle ? oceanPieColors.slice(0, 4) : ['#22c55e', '#3b82f6', '#ef4444', '#f59e0b'],
+    title: 'Condition Mix',
+    vectorStyle: useVectorPieStyle,
+    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 4) : []
   });
   const usagePie = buildPieConfig({
     labels: ['Installed', 'Used', 'Faulty', 'Other'],
     values: [usageBreakdown?.installed || 0, usageBreakdown?.used || 0, usageBreakdown?.faulty || 0, usageBreakdown?.other || 0],
-    colors: ['#2563eb', '#16a34a', '#dc2626', '#64748b'],
-    title: 'Usage Classification'
+    colors: useVectorPieStyle ? oceanPieColors.slice(0, 4) : ['#2563eb', '#16a34a', '#dc2626', '#64748b'],
+    title: 'Usage Classification',
+    vectorStyle: useVectorPieStyle,
+    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 4) : []
   });
   const topLocations = (locations || []).slice(0, 5);
   const locationPie = buildPieConfig({
     labels: topLocations.map((item) => item.name || 'Unknown'),
     values: topLocations.map((item) => item.value || 0),
-    colors: ['#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316', '#a3e635'],
-    title: 'Top Locations by Quantity'
+    colors: useVectorPieStyle ? oceanPieColors.slice(0, 5) : ['#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316', '#a3e635'],
+    title: 'Top Locations by Quantity',
+    vectorStyle: useVectorPieStyle,
+    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 5) : []
   });
   const topProducts = (products || []).slice(0, 5);
   const productPie = buildPieConfig({
     labels: topProducts.map((item) => item.name || 'Unknown'),
     values: topProducts.map((item) => item.value || 0),
-    colors: ['#6366f1', '#06b6d4', '#84cc16', '#fb7185', '#f59e0b'],
-    title: 'Top Products by Quantity'
+    colors: useVectorPieStyle ? oceanPieColors.slice(0, 5) : ['#6366f1', '#06b6d4', '#84cc16', '#fb7185', '#f59e0b'],
+    title: 'Top Products by Quantity',
+    vectorStyle: useVectorPieStyle,
+    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 5) : []
   });
 
   const navigateToAssets = (status) => {
@@ -175,17 +286,53 @@ const DashboardCharts = ({ stats }) => {
   };
 
   const barOptions = {
-    chart: { type: 'bar', toolbar: { show: false }, fontFamily: 'inherit' },
-    plotOptions: { bar: { borderRadius: 4, horizontal: true, barHeight: '60%' } },
+    chart: {
+      type: 'bar',
+      toolbar: { show: false },
+      fontFamily: 'inherit',
+      dropShadow: useVectorPieStyle
+        ? { enabled: true, top: 8, left: 0, blur: 12, color: '#334155', opacity: 0.24 }
+        : { enabled: false }
+    },
+    plotOptions: {
+      bar: {
+        borderRadius: useVectorPieStyle ? 8 : 4,
+        horizontal: false,
+        columnWidth: useVectorPieStyle ? '52%' : '45%',
+        distributed: useVectorPieStyle
+      }
+    },
     dataLabels: {
       enabled: true,
-      textAnchor: 'start',
-      style: { colors: ['#fff'] },
+      offsetY: -8,
+      style: { colors: [useVectorPieStyle ? '#374151' : '#fff'] },
       formatter: (val) => val || 0
     },
-    colors: [palette.primary],
+    colors: useVectorPieStyle ? OCEAN_BAR_COLORS : [palette.primary],
     xaxis: { categories: ['In Store', 'Faulty', 'Missing'] },
-    grid: { borderColor: '#e2e8f0', xaxis: { lines: { show: true } } }
+    yaxis: {
+      labels: {
+        style: { colors: useVectorPieStyle ? '#6b7280' : '#64748b' }
+      }
+    },
+    grid: {
+      borderColor: useVectorPieStyle ? 'rgba(148,163,184,0.35)' : '#e2e8f0',
+      xaxis: { lines: { show: false } },
+      yaxis: { lines: { show: true } }
+    },
+    fill: useVectorPieStyle
+      ? {
+          type: 'gradient',
+          gradient: {
+            shade: 'dark',
+            type: 'vertical',
+            shadeIntensity: 0.8,
+            opacityFrom: 1,
+            opacityTo: 0.68,
+            stops: [0, 55, 100]
+          }
+        }
+      : { type: 'solid' }
   };
   const barSeries = [{
     name: 'Inventory Status',
@@ -222,26 +369,26 @@ const DashboardCharts = ({ stats }) => {
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{utilizationPie.title}</h3>
-          <Chart options={utilizationPie.options} series={utilizationPie.series} type="donut" height={utilizationPie.height} />
+          <Chart options={utilizationPie.options} series={utilizationPie.series} type={utilizationPie.type} height={utilizationPie.height} />
         </div>
         <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{conditionPie.title}</h3>
-          <Chart options={conditionPie.options} series={conditionPie.series} type="donut" height={conditionPie.height} />
+          <Chart options={conditionPie.options} series={conditionPie.series} type={conditionPie.type} height={conditionPie.height} />
         </div>
         <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{usagePie.title}</h3>
-          <Chart options={usagePie.options} series={usagePie.series} type="donut" height={usagePie.height} />
+          <Chart options={usagePie.options} series={usagePie.series} type={usagePie.type} height={usagePie.height} />
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{locationPie.title}</h3>
-          <Chart options={locationPie.options} series={locationPie.series} type="donut" height={locationPie.height} />
+          <Chart options={locationPie.options} series={locationPie.series} type={locationPie.type} height={locationPie.height} />
         </div>
         <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{productPie.title}</h3>
-          <Chart options={productPie.options} series={productPie.series} type="donut" height={productPie.height} />
+          <Chart options={productPie.options} series={productPie.series} type={productPie.type} height={productPie.height} />
         </div>
         <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
           <h3 className="text-app-main font-bold mb-4">In Store vs Faulty vs Missing</h3>
