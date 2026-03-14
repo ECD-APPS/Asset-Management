@@ -16,7 +16,10 @@ const themeChartMap = {
   emerald: { primary: '#059669', secondary: '#10b981', tertiary: '#34d399' },
   sunset: { primary: '#ea580c', secondary: '#f97316', tertiary: '#fb923c' },
   midnight: { primary: '#38bdf8', secondary: '#6366f1', tertiary: '#22d3ee' },
-  mono: { primary: '#374151', secondary: '#6b7280', tertiary: '#9ca3af' }
+  mono: { primary: '#374151', secondary: '#6b7280', tertiary: '#9ca3af' },
+  glossy: { primary: '#4f46e5', secondary: '#6366f1', tertiary: '#818cf8' },
+  astraLight: { primary: '#4f46e5', secondary: '#6366f1', tertiary: '#a5b4fc' },
+  astraExecutive: { primary: '#4338ca', secondary: '#64748b', tertiary: '#94a3b8' }
 };
 
 const statColorMap = {

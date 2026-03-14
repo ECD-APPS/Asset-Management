@@ -586,7 +586,7 @@ router.post('/gatepass-logo', protect, superAdmin, gatePassLogoUpload.single('lo
 router.post('/theme', protect, admin, async (req, res) => {
   try {
     const { theme, storeId: inputStoreId } = req.body || {};
-    const allowed = ['default', 'ocean', 'emerald', 'sunset', 'midnight', 'mono'];
+    const allowed = ['default', 'ocean', 'emerald', 'sunset', 'midnight', 'mono', 'glossy', 'astraLight', 'astraExecutive'];
     if (!allowed.includes(theme)) {
       return res.status(400).json({ message: 'Invalid theme selected' });
     }

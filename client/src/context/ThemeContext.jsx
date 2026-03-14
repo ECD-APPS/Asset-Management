@@ -13,7 +13,10 @@ export const THEMES = [
   'emerald',
   'sunset',
   'midnight',
-  'mono'
+  'mono',
+  'glossy',
+  'astraLight',
+  'astraExecutive'
 ];
 
 const resolveTheme = (value) => (THEMES.includes(value) ? value : 'default');

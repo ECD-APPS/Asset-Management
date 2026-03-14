@@ -20,6 +20,11 @@
     --header-bg: 255 255 255;
     --shape-card: 14px;
     --shape-soft: 10px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 1;
+    --card-blur: 0px;
+    --sidebar-gloss-alpha: 0;
   }
 
   :root[data-theme='ocean'] {
@@ -39,6 +44,11 @@
     --header-bg: 239 246 255;
     --shape-card: 18px;
     --shape-soft: 12px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 1;
+    --card-blur: 0px;
+    --sidebar-gloss-alpha: 0;
   }
 
   :root[data-theme='emerald'] {
@@ -58,6 +68,11 @@
     --header-bg: 240 253 244;
     --shape-card: 16px;
     --shape-soft: 10px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 1;
+    --card-blur: 0px;
+    --sidebar-gloss-alpha: 0;
   }
 
   :root[data-theme='sunset'] {
@@ -77,6 +92,11 @@
     --header-bg: 255 247 237;
     --shape-card: 20px;
     --shape-soft: 12px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 1;
+    --card-blur: 0px;
+    --sidebar-gloss-alpha: 0;
   }
 
   :root[data-theme='midnight'] {
@@ -96,6 +116,11 @@
     --header-bg: 15 23 42;
     --shape-card: 14px;
     --shape-soft: 10px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 1;
+    --card-blur: 0px;
+    --sidebar-gloss-alpha: 0;
   }
 
   :root[data-theme='mono'] {
@@ -115,6 +140,83 @@
     --header-bg: 249 250 251;
     --shape-card: 8px;
     --shape-soft: 8px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 1;
+    --card-blur: 0px;
+    --sidebar-gloss-alpha: 0;
+  }
+
+  :root[data-theme='glossy'] {
+    --accent: 99 102 241;
+    --accent-soft: 224 231 255;
+    --bg-page: 248 250 252;
+    --bg-card: 255 255 255;
+    --text-main: 15 23 42;
+    --page-grad-start: 248 250 252;
+    --page-grad-end: 241 245 249;
+    --page-glow: 129 140 248;
+    --card-border: 226 232 240;
+    --card-shadow: 51 65 85;
+    --sidebar-bg: 255 255 255;
+    --sidebar-text: 30 41 59;
+    --sidebar-border: 224 231 255;
+    --header-bg: 255 255 255;
+    --shape-card: 18px;
+    --shape-soft: 12px;
+    --page-image: url('/expo-city-hero.png');
+    --page-image-overlay: none;
+    --card-opacity: 0.98;
+    --card-blur: 2px;
+    --sidebar-gloss-alpha: 0.12;
+  }
+
+  :root[data-theme='astraLight'] {
+    --accent: 79 70 229;
+    --accent-soft: 224 231 255;
+    --bg-page: 250 251 254;
+    --bg-card: 255 255 255;
+    --text-main: 15 23 42;
+    --page-grad-start: 250 251 254;
+    --page-grad-end: 243 246 255;
+    --page-glow: 165 180 252;
+    --card-border: 226 232 240;
+    --card-shadow: 71 85 105;
+    --sidebar-bg: 255 255 255;
+    --sidebar-text: 30 41 59;
+    --sidebar-border: 224 231 255;
+    --header-bg: 255 255 255;
+    --shape-card: 16px;
+    --shape-soft: 12px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 0.99;
+    --card-blur: 1px;
+    --sidebar-gloss-alpha: 0.08;
+  }
+
+  :root[data-theme='astraExecutive'] {
+    --accent: 79 70 229;
+    --accent-soft: 224 231 255;
+    --bg-page: 244 247 251;
+    --bg-card: 255 255 255;
+    --text-main: 15 23 42;
+    --page-grad-start: 244 247 251;
+    --page-grad-end: 226 232 240;
+    --page-glow: 129 140 248;
+    --card-border: 203 213 225;
+    --card-shadow: 51 65 85;
+    --sidebar-bg: 30 41 59;
+    --sidebar-text: 226 232 240;
+    --sidebar-border: 148 163 184;
+    --header-bg: 255 255 255;
+    --shape-card: 18px;
+    --shape-soft: 12px;
+    --page-image: none;
+    --page-image-overlay: none;
+    --card-opacity: 0.99;
+    --card-blur: 1px;
+    --sidebar-gloss-alpha: 0.12;
   }
 
   body {
@@ -136,15 +238,23 @@
 @layer utilities {
   .bg-app-page {
     background:
-      radial-gradient(1000px 500px at 100% -20%, rgb(var(--page-glow) / 0.16), transparent 60%),
+      linear-gradient(145deg, rgb(var(--bg-page) / 0.94), rgb(var(--bg-page) / 0.94)),
+      var(--page-image-overlay),
+      var(--page-image),
+      radial-gradient(1000px 500px at 100% -20%, rgb(var(--page-glow) / 0.14), transparent 60%),
       linear-gradient(145deg, rgb(var(--page-grad-start)), rgb(var(--page-grad-end)));
+    background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+    background-position: center, right 2rem top 1rem, center top, center, center;
+    background-size: cover, 280px 280px, cover, auto, auto;
   }
 
   .bg-app-card {
-    background-color: rgb(var(--bg-card));
+    background-color: rgb(var(--bg-card) / var(--card-opacity));
     border: 1px solid rgb(var(--card-border));
     box-shadow: 0 10px 30px -20px rgb(var(--card-shadow) / 0.45);
     border-radius: var(--shape-card);
+    backdrop-filter: blur(var(--card-blur));
+    -webkit-backdrop-filter: blur(var(--card-blur));
   }
 
   .border-app-card {
@@ -175,6 +285,7 @@
   .bg-app-sidebar {
     background:
       radial-gradient(900px 260px at -10% 0%, rgb(var(--sidebar-border) / 0.28), transparent 55%),
+      radial-gradient(650px 240px at 80% -15%, rgb(var(--sidebar-border) / var(--sidebar-gloss-alpha)), transparent 62%),
       linear-gradient(165deg, rgb(var(--sidebar-bg) / 0.98), rgb(var(--sidebar-bg) / 0.9));
   }
 

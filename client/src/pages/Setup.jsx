@@ -170,7 +170,10 @@ const Setup = () => {
     { value: 'emerald', label: 'Emerald Glow (Green)' },
     { value: 'sunset', label: 'Sunset Flow (Warm)' },
     { value: 'midnight', label: 'Midnight Neon (Dark)' },
-    { value: 'mono', label: 'Mono Pro (Minimal)' }
+    { value: 'mono', label: 'Mono Pro (Minimal)' },
+    { value: 'glossy', label: 'Astra Pro (Professional)' },
+    { value: 'astraLight', label: 'Astra Light Pro (Clean)' },
+    { value: 'astraExecutive', label: 'Astra Executive (Premium)' }
   ];
 
   const applyTheme = async (newTheme) => {

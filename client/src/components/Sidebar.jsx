@@ -272,6 +272,27 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
       inactiveSubClass: 'text-slate-100/80 hover:bg-slate-300/14 hover:text-white',
       indicatorClass: 'bg-slate-200',
       activeStyle: { backgroundColor: 'rgba(148, 163, 184, 0.24)', borderColor: 'rgba(203, 213, 225, 0.45)' }
+    },
+    glossy: {
+      activeClass: 'text-white border shadow-sm font-semibold',
+      inactiveRootClass: 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-700',
+      inactiveSubClass: 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700',
+      indicatorClass: 'bg-indigo-500',
+      activeStyle: { backgroundColor: 'rgb(79 70 229)', borderColor: 'rgb(79 70 229)' }
+    },
+    astraLight: {
+      activeClass: 'text-white border shadow-sm font-semibold',
+      inactiveRootClass: 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-700',
+      inactiveSubClass: 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700',
+      indicatorClass: 'bg-indigo-500',
+      activeStyle: { backgroundColor: 'rgb(79 70 229)', borderColor: 'rgb(79 70 229)' }
+    },
+    astraExecutive: {
+      activeClass: 'text-white border shadow-sm font-semibold',
+      inactiveRootClass: 'text-slate-200/90 hover:bg-slate-300/16 hover:text-white',
+      inactiveSubClass: 'text-slate-200/80 hover:bg-slate-300/14 hover:text-white',
+      indicatorClass: 'bg-slate-200',
+      activeStyle: { backgroundColor: 'rgba(79, 70, 229, 0.44)', borderColor: 'rgba(148, 163, 184, 0.55)' }
     }
   };
   const tone = toneMap[selectedTheme] || toneMap.default;
