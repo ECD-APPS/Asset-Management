@@ -117,8 +117,10 @@ const Setup = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canManageEmail, selectedStoreId, user?.role]);
 
+  const canManageNotificationPreferences = user?.role === 'Admin' || user?.role === 'Super Admin';
+
   useEffect(() => {
-    if (user?.role !== 'Admin') return;
+    if (!canManageNotificationPreferences) return;
 
     const loadPreferences = async () => {
       try {
@@ -139,7 +141,7 @@ const Setup = () => {
     };
 
     loadPreferences();
-  }, [user?.role]);
+  }, [canManageNotificationPreferences]);
 
   const handleEmailField = (field, value) => {
     setEmailConfig((prev) => ({ ...prev, [field]: value }));
@@ -573,7 +575,7 @@ const Setup = () => {
       )}
 
       {/* Store Admin Deletion Request */}
-      {user?.role === 'Admin' && (
+      {canManageNotificationPreferences && (
         <div className="mt-12 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
            <div className="flex items-center justify-between mb-6">
             <div className="flex items-center">
@@ -616,10 +618,10 @@ const Setup = () => {
         <div className="mt-12 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <div className="flex items-center mb-6">
             <Mail className="w-6 h-6 text-indigo-600 mr-2" />
-            <h2 className="text-xl font-bold text-gray-800">Email Notifications</h2>
+            <h2 className="text-xl font-bold text-gray-800">Notification Emails</h2>
           </div>
           {notifLoading ? (
-            <p className="text-sm text-gray-500">Loading notification preferences...</p>
+            <p className="text-sm text-gray-500">Loading notification settings...</p>
           ) : (
             <div className="space-y-4">
               <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3">
@@ -630,8 +632,8 @@ const Setup = () => {
                   onChange={(e) => updateNotificationPreferenceField('enabled', e.target.checked)}
                 />
                 <div>
-                  <p className="font-semibold text-gray-800">Enable Email Notifications</p>
-                  <p className="text-sm text-gray-500">Master switch for all notification emails.</p>
+                  <p className="font-semibold text-gray-800">Enable Notification Emails</p>
+                  <p className="text-sm text-gray-500">Main switch for all account notification emails.</p>
                 </div>
               </label>
               <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3">
@@ -642,8 +644,8 @@ const Setup = () => {
                   onChange={(e) => updateNotificationPreferenceField('notifyReceiver', e.target.checked)}
                 />
                 <div>
-                  <p className="font-semibold text-gray-800">Enable Notification to Receiver</p>
-                  <p className="text-sm text-gray-500">Notify assigned/receiving user on asset movement.</p>
+                  <p className="font-semibold text-gray-800">Notify Receiver</p>
+                  <p className="text-sm text-gray-500">Send email to assigned/receiving user for asset movement.</p>
                 </div>
               </label>
               <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3">
@@ -654,8 +656,8 @@ const Setup = () => {
                   onChange={(e) => updateNotificationPreferenceField('notifyIssuer', e.target.checked)}
                 />
                 <div>
-                  <p className="font-semibold text-gray-800">Enable Notification to Issuer</p>
-                  <p className="text-sm text-gray-500">Send confirmation emails to issuer/admin who performed the action.</p>
+                  <p className="font-semibold text-gray-800">Notify Issuer</p>
+                  <p className="text-sm text-gray-500">Send confirmation email to the admin/issuer.</p>
                 </div>
               </label>
               <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3">
@@ -666,8 +668,8 @@ const Setup = () => {
                   onChange={(e) => updateNotificationPreferenceField('notifyLineManager', e.target.checked)}
                 />
                 <div>
-                  <p className="font-semibold text-gray-800">Enable Notification to Line Manager</p>
-                  <p className="text-sm text-gray-500">Notify store-level manager for critical movement events.</p>
+                  <p className="font-semibold text-gray-800">Notify Line Manager</p>
+                  <p className="text-sm text-gray-500">Send email to line manager for critical events.</p>
                 </div>
               </label>
 
@@ -677,7 +679,7 @@ const Setup = () => {
                   disabled={notifSaving}
                   className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                 >
-                  {notifSaving ? 'Saving...' : 'Save Preferences'}
+                  {notifSaving ? 'Saving...' : 'Save Notification Settings'}
                 </button>
               </div>
             </div>
@@ -721,7 +723,7 @@ const Setup = () => {
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center">
               <Mail className="w-6 h-6 text-blue-600 mr-2" />
-              <h2 className="text-xl font-bold text-gray-800">Store Email Configuration</h2>
+              <h2 className="text-xl font-bold text-gray-800">Store Email Settings</h2>
             </div>
           </div>
 
@@ -783,12 +785,12 @@ const Setup = () => {
                 </div>
                 <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
                   <input type="checkbox" checked={emailConfig.enabled} onChange={(e) => handleEmailField('enabled', e.target.checked)} />
-                  Enable this store email configuration
+                  Enable store email settings
                 </label>
 
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3 items-end pt-2">
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1">Test Email Recipient</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Test Recipient</label>
                     <input className="w-full border border-gray-300 rounded-lg px-3 py-2" value={testEmail} onChange={(e) => setTestEmail(e.target.value)} />
                   </div>
                   <button onClick={handleTestEmail} disabled={testingEmail || !effectiveEmailStoreId} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2">
@@ -796,7 +798,7 @@ const Setup = () => {
                     {testingEmail ? 'Sending...' : 'Test Email'}
                   </button>
                   <button onClick={handleSaveEmailConfig} disabled={emailSaving || !effectiveEmailStoreId} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
-                    {emailSaving ? 'Saving...' : 'Save Configuration'}
+                    {emailSaving ? 'Saving...' : 'Save Email Settings'}
                   </button>
                 </div>
               </>

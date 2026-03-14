@@ -11,6 +11,11 @@ const { createClient: createSupabaseClient } = require('@supabase/supabase-js');
 const BackupArtifact = require('../models/BackupArtifact');
 const BackupLog = require('../models/BackupLog');
 const Setting = require('../models/Setting');
+const {
+  createImmutableManifestForArtifact,
+  appendJournalEntry,
+  withJournalCaptureSuspended
+} = require('./resilienceManager');
 
 const appPackage = require('../../package.json');
 
@@ -28,6 +33,93 @@ const ALLOWED_ENV_EXPORT = [
   'MAX_BACKUP_UPLOAD_MB',
   'CORS_ORIGIN'
 ];
+
+const OBJECT_ID_FIELD_NAMES = new Set([
+  '_id',
+  'store',
+  'assignedStore',
+  'parentStore',
+  'createdBy',
+  'updatedBy',
+  'performedBy',
+  'approvedBy',
+  'rejectedBy',
+  'user',
+  'vendor',
+  'product',
+  'category',
+  'request',
+  'pass',
+  'permit',
+  'asset'
+]);
+
+const OBJECT_ID_EXCLUDE_NAMES = new Set([
+  'uniqueId',
+  'asset_id',
+  'serial_number',
+  'asset_tag',
+  'rfid',
+  'qr_code'
+]);
+const NUMERIC_FIELD_NAMES = new Set([
+  '__v',
+  'quantity',
+  'price',
+  'amount',
+  'cost',
+  'unitPrice',
+  'unit_price',
+  'total'
+]);
+
+const shouldCoerceToObjectId = (key = '', parentKey = '') => {
+  if (!key && !parentKey) return false;
+  if (OBJECT_ID_EXCLUDE_NAMES.has(key)) return false;
+  if (OBJECT_ID_FIELD_NAMES.has(key)) return true;
+  if (/_id$/i.test(key)) return true;
+  if (/Id$/.test(key) && !/uniqueId$/i.test(key)) return true;
+  if (/Ids$/.test(parentKey) && !/uniqueIds$/i.test(parentKey)) return true;
+  return false;
+};
+
+const coerceDocObjectIds = (value, key = '', parentKey = '') => {
+  if (Array.isArray(value)) {
+    return value.map((item) => coerceDocObjectIds(item, '', key || parentKey));
+  }
+  if (value && typeof value === 'object') {
+    // Canonical EJSON wrappers from legacy/new backup files.
+    if (Object.prototype.hasOwnProperty.call(value, '$oid')) {
+      const oid = String(value.$oid || '');
+      if (mongoose.Types.ObjectId.isValid(oid)) return new mongoose.Types.ObjectId(oid);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, '$date')) {
+      const d = value.$date;
+      if (typeof d === 'string' || typeof d === 'number') return new Date(d);
+      if (d && typeof d === 'object' && Object.prototype.hasOwnProperty.call(d, '$numberLong')) {
+        return new Date(Number(d.$numberLong));
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(value, '$numberInt')) return Number(value.$numberInt);
+    if (Object.prototype.hasOwnProperty.call(value, '$numberLong')) return Number(value.$numberLong);
+    if (Object.prototype.hasOwnProperty.call(value, '$numberDouble')) return Number(value.$numberDouble);
+    if (Object.prototype.hasOwnProperty.call(value, '$numberDecimal')) return Number(value.$numberDecimal);
+    // Legacy wrapper seen in historical backups: { value: 1 } for numeric fields.
+    if (Object.keys(value).length === 1 && Object.prototype.hasOwnProperty.call(value, 'value') && NUMERIC_FIELD_NAMES.has(key)) {
+      const n = Number(value.value);
+      return Number.isFinite(n) ? n : value.value;
+    }
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = coerceDocObjectIds(v, k, key || parentKey);
+    }
+    return out;
+  }
+  if (typeof value === 'string' && shouldCoerceToObjectId(key, parentKey) && mongoose.Types.ObjectId.isValid(value)) {
+    return new mongoose.Types.ObjectId(value);
+  }
+  return value;
+};
 
 const ensureDir = async (dirPath) => {
   await fsp.mkdir(dirPath, { recursive: true });
@@ -92,7 +184,8 @@ const exportCollectionsNdjson = async ({ outputFilePath, incrementalSince }) => 
     let count = 0;
     while (await cursor.hasNext()) {
       const doc = await cursor.next();
-      stream.write(`${JSON.stringify({ collection: collectionName, doc })}\n`);
+      // Preserve BSON types (ObjectId/Date) for accurate restore.
+      stream.write(`${JSON.stringify({ collection: collectionName, doc: JSON.parse(mongoose.mongo.BSON.EJSON.stringify(doc, { relaxed: false })) })}\n`);
       count += 1;
     }
     summary[collectionName] = count;
@@ -272,6 +365,7 @@ const createBackupArtifact = async ({
       user,
       details: `Backup ${backupType} created (${Math.round(stat.size / 1024)} KB)`
     });
+    await createImmutableManifestForArtifact(artifact).catch(() => {});
 
     try {
       await syncToCloud({ filePath: zipPath, backupFileName: fileName, backupId: artifact._id });
@@ -309,26 +403,83 @@ const parseNdjsonDatabase = async (filePath) => {
   const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
   const grouped = new Map();
   for (const line of lines) {
-    const entry = JSON.parse(line);
+    const entry = mongoose.mongo.BSON.EJSON.parse(line, { relaxed: false });
     const col = String(entry.collection || '').trim();
     if (!col) continue;
     if (!grouped.has(col)) grouped.set(col, []);
-    grouped.get(col).push(entry.doc);
+    grouped.get(col).push(coerceDocObjectIds(entry.doc));
   }
   return grouped;
 };
 
+const parseJsonDatabase = async (filePath) => {
+  const raw = await fsp.readFile(filePath, 'utf8');
+  const parsed = mongoose.mongo.BSON.EJSON.parse(String(raw || '').replace(/^\uFEFF/, '') || '{}', { relaxed: false });
+  const grouped = new Map();
+
+  // Newer compatibility format: [{ collection, doc }, ...]
+  if (Array.isArray(parsed)) {
+    for (const entry of parsed) {
+      const col = String(entry?.collection || '').trim();
+      if (!col || !entry?.doc || typeof entry.doc !== 'object') continue;
+      if (!grouped.has(col)) grouped.set(col, []);
+      grouped.get(col).push(coerceDocObjectIds(entry.doc));
+    }
+    return grouped;
+  }
+
+  // Common backup JSON shapes:
+  // 1) { collections: { users: [...], assets: [...] } }
+  // 2) { users: [...], assets: [...], ... }
+  const collections = (parsed && typeof parsed.collections === 'object' && parsed.collections)
+    ? parsed.collections
+    : parsed;
+
+  if (collections && typeof collections === 'object') {
+    for (const [collectionName, docs] of Object.entries(collections)) {
+      if (!Array.isArray(docs)) continue;
+      grouped.set(collectionName, docs.filter((doc) => doc && typeof doc === 'object').map((doc) => coerceDocObjectIds(doc)));
+    }
+  }
+
+  return grouped;
+};
+
 const restoreFromExtractedBackup = async (extractedDir) => {
-  const backupDir = path.join(extractedDir, 'backup');
-  const databaseFile = path.join(backupDir, 'database.ndjson');
+  const backupDirCandidate = path.join(extractedDir, 'backup');
+  const rootCandidate = extractedDir;
+  const backupDir = fs.existsSync(path.join(backupDirCandidate, 'database.ndjson'))
+    || fs.existsSync(path.join(backupDirCandidate, 'database.json'))
+    ? backupDirCandidate
+    : rootCandidate;
+  const databaseNdjsonFile = path.join(backupDir, 'database.ndjson');
+  const databaseJsonFile = path.join(backupDir, 'database.json');
   const filesSource = path.join(backupDir, 'files');
   const settingsFile = path.join(backupDir, 'settings.json');
 
-  if (!fs.existsSync(databaseFile)) {
-    throw new Error('Backup file is invalid: database.ndjson is missing');
+  if (!fs.existsSync(databaseNdjsonFile) && !fs.existsSync(databaseJsonFile)) {
+    throw new Error('Backup file is invalid: database export is missing (database.ndjson or database.json)');
   }
 
-  const grouped = await parseNdjsonDatabase(databaseFile);
+  const grouped = fs.existsSync(databaseNdjsonFile)
+    ? await parseNdjsonDatabase(databaseNdjsonFile)
+    : await parseJsonDatabase(databaseJsonFile);
+  const applyRestoreWithoutTransaction = async () => {
+    for (const [collectionName] of grouped.entries()) {
+      await mongoose.connection.db.collection(collectionName).deleteMany({});
+    }
+    for (const [collectionName, docs] of grouped.entries()) {
+      if (!docs.length) continue;
+      await mongoose.connection.db.collection(collectionName).insertMany(docs, { ordered: false });
+    }
+  };
+
+  const isTransactionNotSupported = (error) => {
+    const msg = String(error?.message || '').toLowerCase();
+    return msg.includes('transaction numbers are only allowed on a replica set member or mongos')
+      || msg.includes('replica set');
+  };
+
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -340,6 +491,9 @@ const restoreFromExtractedBackup = async (extractedDir) => {
         await mongoose.connection.db.collection(collectionName).insertMany(docs, { session, ordered: false });
       }
     });
+  } catch (error) {
+    if (!isTransactionNotSupported(error)) throw error;
+    await applyRestoreWithoutTransaction();
   } finally {
     await session.endSession();
   }
@@ -387,7 +541,9 @@ const restoreBackupArtifact = async ({ backupArtifact, user, createSafetyBackup 
     }
 
     extractDir = await extractBackupZip(backupArtifact.filePath);
-    await restoreFromExtractedBackup(extractDir);
+    await withJournalCaptureSuspended(async () => {
+      await restoreFromExtractedBackup(extractDir);
+    });
     await createBackupLog({
       action: 'backup_restored',
       backupId: backupArtifact._id,
@@ -395,6 +551,16 @@ const restoreBackupArtifact = async ({ backupArtifact, user, createSafetyBackup 
       user,
       details: `Restore completed${safetyBackup ? ` with safety backup ${safetyBackup.fileName}` : ''}`
     });
+    await appendJournalEntry({
+      opType: 'restore',
+      collectionName: 'system',
+      actor: user,
+      metadata: {
+        mode: 'artifact-restore',
+        backupId: String(backupArtifact?._id || ''),
+        backupName: backupArtifact?.fileName || backupArtifact?.name || ''
+      }
+    }).catch(() => {});
     return { ok: true, safetyBackupId: safetyBackup?._id || null };
   } catch (error) {
     await createBackupLog({

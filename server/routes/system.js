@@ -31,6 +31,21 @@ const {
   restoreFromUploadedZip,
   createBackupLog
 } = require('../utils/backupRecovery');
+const ResilienceJob = require('../models/ResilienceJob');
+const {
+  previewRestoreToTime,
+  restoreToTimestamp,
+  syncShadowDatabase,
+  promoteShadowToPrimary,
+  failbackFromBackup,
+  verifyLatestBackupRestore,
+  createResilienceJob,
+  updateResilienceJob,
+  getResilienceStatus,
+  appendJournalEntry,
+  computeChecksum,
+  writeUploadChecksum
+} = require('../utils/resilienceManager');
 const appPackage = require('../../package.json');
 
 const maxBackupUploadMb = Number.parseInt(process.env.MAX_BACKUP_UPLOAD_MB || '1024', 10);
@@ -255,9 +270,15 @@ const validateJsonBackupPayload = (payload) => {
 const validateZipBackupFile = async (zipFilePath) => {
   const zip = await unzipper.Open.file(zipFilePath);
   const files = new Set(zip.files.map((f) => f.path));
-  const hasMeta = files.has('backup/meta.json');
-  const hasDatabaseNdjson = files.has('backup/database.ndjson');
-  const hasFilesDir = Array.from(files).some((f) => f.startsWith('backup/files/'));
+  const hasPath = (p) => files.has(p);
+  const findPath = (candidates = []) => candidates.find((p) => hasPath(p)) || '';
+  const metaPath = findPath(['backup/meta.json', 'meta.json']);
+  const ndjsonPath = findPath(['backup/database.ndjson', 'database.ndjson']);
+  const jsonPath = findPath(['backup/database.json', 'database.json']);
+  const hasMeta = Boolean(metaPath);
+  const hasDatabaseNdjson = Boolean(ndjsonPath);
+  const hasDatabaseJson = Boolean(jsonPath);
+  const hasFilesDir = Array.from(files).some((f) => f.startsWith('backup/files/') || f.startsWith('files/'));
   const issues = [];
   let status = 'safe';
   let meta = {};
@@ -271,20 +292,23 @@ const validateZipBackupFile = async (zipFilePath) => {
     }
   };
 
-  if (!hasDatabaseNdjson) {
+  if (!hasDatabaseNdjson && !hasDatabaseJson) {
     escalate('blocked');
-    issues.push('Missing backup/database.ndjson in zip.');
+    issues.push('Missing database export in zip (expected database.ndjson or database.json).');
+  } else if (!hasDatabaseNdjson && hasDatabaseJson) {
+    escalate('warning');
+    issues.push('Using legacy database.json backup format. Restore is supported with compatibility mode.');
   }
   if (!hasMeta) {
     escalate('warning');
-    issues.push('Missing backup/meta.json. Version compatibility cannot be fully verified.');
+    issues.push('Missing meta.json. Version compatibility cannot be fully verified.');
   } else {
-    const metaEntry = zip.files.find((f) => f.path === 'backup/meta.json');
+    const metaEntry = zip.files.find((f) => f.path === metaPath);
     try {
       meta = JSON.parse((await metaEntry.buffer()).toString('utf8').replace(/^\uFEFF/, ''));
     } catch {
       escalate('warning');
-      issues.push('backup/meta.json exists but could not be parsed.');
+      issues.push('meta.json exists but could not be parsed.');
     }
   }
   if (!hasFilesDir) {
@@ -304,7 +328,8 @@ const validateZipBackupFile = async (zipFilePath) => {
     version,
     issues,
     summary: {
-      containsDatabase: hasDatabaseNdjson,
+      containsDatabase: hasDatabaseNdjson || hasDatabaseJson,
+      databaseFormat: hasDatabaseNdjson ? 'ndjson' : (hasDatabaseJson ? 'json' : 'none'),
       containsFiles: hasFilesDir,
       fileCount: files.size
     }
@@ -333,7 +358,13 @@ const brandingDir = path.join(__dirname, '../uploads/branding');
 if (!fs.existsSync(brandingDir)) {
   fs.mkdirSync(brandingDir, { recursive: true });
 }
-const allowedMime = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
+const allowedMime = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/svg+xml',
+  'image/webp'
+]);
 const createBrandingUpload = (prefix) => {
   const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, brandingDir),
@@ -348,8 +379,11 @@ const createBrandingUpload = (prefix) => {
     storage,
     limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
     fileFilter: (req, file, cb) => {
-      if (!allowedMime.has(file.mimetype)) {
-        return cb(new Error('Invalid file type. Allowed: PNG, JPG, SVG'));
+      const mime = String(file.mimetype || '').toLowerCase();
+      const ext = path.extname(String(file.originalname || '')).toLowerCase();
+      const allowedExt = new Set(['.png', '.jpg', '.jpeg', '.svg', '.webp']);
+      if (!allowedMime.has(mime) && !allowedExt.has(ext)) {
+        return cb(new Error('Invalid file type. Allowed: PNG, JPG/JPEG, SVG, WEBP'));
       }
       cb(null, true);
     }
@@ -362,6 +396,7 @@ const gatePassLogoUpload = createBrandingUpload('gatepass-logo');
 let RESET_LOCK = false;
 const RESTORE_SCANS = new Map();
 const SCAN_TTL_MS = 30 * 60 * 1000;
+const UPLOAD_SESSIONS = new Map();
 
 const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
 const toPlain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject() : doc);
@@ -758,10 +793,16 @@ router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, han
     return res.status(400).json({ message: 'Backup file is required' });
   }
   try {
+    const checksum = await computeChecksum(req.file.path);
+    await writeUploadChecksum({
+      checksum,
+      fileName: req.file.originalname || req.file.filename,
+      sizeBytes: req.file.size || 0
+    });
     const lower = String(req.file.originalname || '').toLowerCase();
     if (lower.endsWith('.zip') || req.file.mimetype === 'application/zip') {
       await restoreFromUploadedZip({ zipPath: req.file.path, user: req.user });
-      return res.json({ message: 'System restore completed successfully' });
+      return res.json({ message: 'System restore completed successfully', checksum });
     }
     // Fallback: keep legacy JSON restore compatibility via existing route behavior
     const payload = await parseUploadedBackupPayload(req.file);
@@ -786,7 +827,7 @@ router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, han
     if (collections.passes?.length) await Pass.insertMany(collections.passes, { ordered: false });
     if (collections.permits?.length) await Permit.insertMany(collections.permits, { ordered: false });
     if (collections.assetCategories?.length) await AssetCategory.insertMany(collections.assetCategories, { ordered: false });
-    return res.json({ message: 'Legacy JSON restore completed successfully' });
+    return res.json({ message: 'Legacy JSON restore completed successfully', checksum });
   } catch (error) {
     return res.status(500).json({ message: error.message || 'Restore failed' });
   } finally {
@@ -1617,6 +1658,268 @@ router.post('/cancel-reset', protect, superAdmin, async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
+
+// @desc    Get resilience status snapshot
+// @route   GET /api/system/resilience/status
+// @access  Private/SuperAdmin
+router.get('/resilience/status', protect, superAdmin, async (req, res) => {
+  try {
+    const status = await getResilienceStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to load resilience status' });
+  }
+});
+
+// @desc    Preview restore-to-time impact
+// @route   POST /api/system/resilience/restore-to-time/preview
+// @access  Private/SuperAdmin
+router.post('/resilience/restore-to-time/preview', protect, superAdmin, async (req, res) => {
+  try {
+    const ts = String(req.body?.targetTimestamp || '').trim();
+    if (!ts) return res.status(400).json({ message: 'targetTimestamp is required' });
+    const targetDate = new Date(ts);
+    if (Number.isNaN(targetDate.getTime())) return res.status(400).json({ message: 'Invalid targetTimestamp' });
+    const preview = await previewRestoreToTime(targetDate);
+    res.json(preview);
+  } catch (error) {
+    res.status(400).json({ message: error.message || 'Failed to preview restore-to-time' });
+  }
+});
+
+// @desc    Apply restore-to-time
+// @route   POST /api/system/resilience/restore-to-time/apply
+// @access  Private/SuperAdmin
+router.post('/resilience/restore-to-time/apply', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  let job = null;
+  try {
+    const ts = String(req.body?.targetTimestamp || '').trim();
+    if (!ts) return res.status(400).json({ message: 'targetTimestamp is required' });
+    const targetDate = new Date(ts);
+    if (Number.isNaN(targetDate.getTime())) return res.status(400).json({ message: 'Invalid targetTimestamp' });
+
+    job = await createResilienceJob({
+      jobType: 'restore_to_time',
+      actor: req.user,
+      metadata: { targetTimestamp: targetDate.toISOString() }
+    });
+    await updateResilienceJob(job._id, { phase: 'validating', status: 'running' });
+    const preview = await previewRestoreToTime(targetDate);
+    await updateResilienceJob(job._id, { phase: 'restoring', metadata: { ...job.metadata, preview } });
+    const result = await restoreToTimestamp({ targetDate, user: req.user });
+    await updateResilienceJob(job._id, { phase: 'verifying' });
+    await verifyLatestBackupRestore().catch(() => {});
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date() });
+    res.json({ message: 'Restore-to-time completed', jobId: job._id, result });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'Restore-to-time failed' });
+  }
+});
+
+// @desc    Sync shadow database
+// @route   POST /api/system/resilience/shadow/sync
+// @access  Private/SuperAdmin
+router.post('/resilience/shadow/sync', protect, superAdmin, async (req, res) => {
+  let job = null;
+  try {
+    const fullResync = Boolean(req.body?.fullResync);
+    job = await createResilienceJob({
+      jobType: 'shadow_sync',
+      actor: req.user,
+      metadata: { fullResync }
+    });
+    await updateResilienceJob(job._id, { phase: 'syncing' });
+    const shadow = await syncShadowDatabase({ fullResync, actor: req.user });
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date() });
+    res.json({ message: fullResync ? 'Full shadow resync completed' : 'Shadow incremental sync completed', shadow, jobId: job._id });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'Shadow sync failed' });
+  }
+});
+
+// @desc    Promote shadow DB to primary
+// @route   POST /api/system/resilience/shadow/promote
+// @access  Private/SuperAdmin
+router.post('/resilience/shadow/promote', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  let job = null;
+  try {
+    const confirm = String(req.body?.confirm || '').trim().toUpperCase();
+    if (confirm !== 'PROMOTE') {
+      return res.status(400).json({ message: 'Confirmation token required: PROMOTE' });
+    }
+    job = await createResilienceJob({ jobType: 'shadow_promote', actor: req.user });
+    await updateResilienceJob(job._id, { phase: 'restoring' });
+    await promoteShadowToPrimary({ actor: req.user });
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date() });
+    res.json({ message: 'Shadow promoted to primary successfully', jobId: job._id });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'Shadow promotion failed' });
+  }
+});
+
+// @desc    Failback from selected/latest backup
+// @route   POST /api/system/resilience/shadow/failback
+// @access  Private/SuperAdmin
+router.post('/resilience/shadow/failback', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  let job = null;
+  try {
+    const backupId = req.body?.backupId || null;
+    job = await createResilienceJob({ jobType: 'shadow_failback', actor: req.user, metadata: { backupId } });
+    await updateResilienceJob(job._id, { phase: 'restoring' });
+    const restored = await failbackFromBackup({ backupId, actor: req.user });
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date() });
+    res.json({ message: 'Failback completed successfully', backupId: restored?._id || null, jobId: job._id });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'Failback failed' });
+  }
+});
+
+// @desc    Run latest backup verification now
+// @route   POST /api/system/resilience/verify-latest
+// @access  Private/SuperAdmin
+router.post('/resilience/verify-latest', protect, superAdmin, async (req, res) => {
+  let job = null;
+  try {
+    job = await createResilienceJob({ jobType: 'verify_backup', actor: req.user });
+    await updateResilienceJob(job._id, { phase: 'verifying' });
+    const result = await verifyLatestBackupRestore();
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date() });
+    res.json({ message: 'Backup verification completed', result, jobId: job._id });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'Backup verification failed' });
+  }
+});
+
+// @desc    List resilience jobs
+// @route   GET /api/system/resilience/jobs
+// @access  Private/SuperAdmin
+router.get('/resilience/jobs', protect, superAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(Number.parseInt(String(req.query.limit || '30'), 10) || 30, 200);
+    const jobs = await ResilienceJob.find({}).sort({ startedAt: -1 }).limit(limit).lean();
+    res.json(jobs);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to fetch resilience jobs' });
+  }
+});
+
+// @desc    Add manual resilience marker entry
+// @route   POST /api/system/resilience/marker
+// @access  Private/SuperAdmin
+router.post('/resilience/marker', protect, superAdmin, async (req, res) => {
+  try {
+    const label = String(req.body?.label || '').trim() || `marker-${Date.now()}`;
+    const entry = await appendJournalEntry({
+      opType: 'marker',
+      collectionName: 'system',
+      actor: req.user,
+      metadata: {
+        label,
+        note: String(req.body?.note || '')
+      }
+    });
+    res.json({ message: 'Marker added', marker: entry });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to add marker' });
+  }
+});
+
+// @desc    Start resumable upload session
+// @route   POST /api/system/backups/upload-session/start
+// @access  Private/SuperAdmin
+router.post('/backups/upload-session/start', protect, superAdmin, async (req, res) => {
+  const fileName = String(req.body?.fileName || '').trim();
+  const totalChunks = Number.parseInt(String(req.body?.totalChunks || '0'), 10);
+  const totalSize = Number.parseInt(String(req.body?.totalSize || '0'), 10);
+  if (!fileName || !Number.isFinite(totalChunks) || totalChunks <= 0) {
+    return res.status(400).json({ message: 'fileName and totalChunks are required' });
+  }
+  const sessionId = cryptoRandomId();
+  const tempPath = path.join(backupUploadTempDir, `${sessionId}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}.part`);
+  UPLOAD_SESSIONS.set(sessionId, {
+    sessionId,
+    fileName,
+    totalChunks,
+    totalSize: Number.isFinite(totalSize) ? totalSize : 0,
+    tempPath,
+    received: new Set(),
+    createdAt: Date.now()
+  });
+  fs.writeFileSync(tempPath, '');
+  res.json({ sessionId });
+});
+
+// @desc    Upload chunk for resumable backup upload
+// @route   POST /api/system/backups/upload-session/chunk
+// @access  Private/SuperAdmin
+router.post('/backups/upload-session/chunk', protect, superAdmin, multer({ storage: multer.memoryStorage() }).single('chunk'), async (req, res) => {
+  try {
+    const sessionId = String(req.body?.sessionId || '').trim();
+    const chunkIndex = Number.parseInt(String(req.body?.chunkIndex || '-1'), 10);
+    const session = UPLOAD_SESSIONS.get(sessionId);
+    if (!session) return res.status(404).json({ message: 'Upload session not found' });
+    if (!req.file?.buffer) return res.status(400).json({ message: 'Chunk file is required' });
+    if (chunkIndex < 0 || chunkIndex >= session.totalChunks) {
+      return res.status(400).json({ message: 'Invalid chunk index' });
+    }
+    if (session.received.has(chunkIndex)) return res.json({ ok: true, duplicate: true });
+    fs.appendFileSync(session.tempPath, req.file.buffer);
+    session.received.add(chunkIndex);
+    res.json({ ok: true, received: session.received.size, totalChunks: session.totalChunks });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Chunk upload failed' });
+  }
+});
+
+// @desc    Complete resumable upload and return checksum
+// @route   POST /api/system/backups/upload-session/complete
+// @access  Private/SuperAdmin
+router.post('/backups/upload-session/complete', protect, superAdmin, async (req, res) => {
+  try {
+    const sessionId = String(req.body?.sessionId || '').trim();
+    const expectedChecksum = String(req.body?.checksum || '').trim().toLowerCase();
+    const session = UPLOAD_SESSIONS.get(sessionId);
+    if (!session) return res.status(404).json({ message: 'Upload session not found' });
+    if (session.received.size !== session.totalChunks) {
+      return res.status(400).json({ message: 'Upload incomplete: missing chunks' });
+    }
+    const finalName = `${Date.now()}-${session.fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const finalPath = path.join(backupUploadTempDir, finalName);
+    fs.renameSync(session.tempPath, finalPath);
+    const checksum = await computeChecksum(finalPath);
+    if (expectedChecksum && expectedChecksum !== checksum.toLowerCase()) {
+      fs.unlinkSync(finalPath);
+      UPLOAD_SESSIONS.delete(sessionId);
+      return res.status(400).json({ message: 'Checksum mismatch for uploaded file' });
+    }
+    await writeUploadChecksum({
+      checksum,
+      fileName: session.fileName,
+      sizeBytes: fs.statSync(finalPath).size
+    });
+    UPLOAD_SESSIONS.delete(sessionId);
+    res.json({ ok: true, filePath: finalPath, checksum, fileName: session.fileName });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to finalize upload session' });
+  }
+});
+
+const cryptoRandomId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 
 // @desc    Get all stores
 // @route   GET /api/system/stores

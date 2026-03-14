@@ -372,10 +372,22 @@ const Assets = () => {
     }
   };
 
+  const allowedStatusFilters = new Set(['In Store', 'In Use', 'Missing']);
+  const normalizeUrlStatusFilter = (rawStatus) => {
+    const value = String(rawStatus || '').trim();
+    if (!value) return { status: '', condition: '' };
+    if (allowedStatusFilters.has(value)) return { status: value, condition: '' };
+    // Backward compatibility: older links use status=Faulty while UI filter is condition-based.
+    if (value.toLowerCase() === 'faulty') return { status: '', condition: 'Faulty' };
+    return { status: '', condition: '' };
+  };
+
   // Sync category & status params from URL
   useEffect(() => {
+    const normalized = normalizeUrlStatusFilter(statusParam);
     setFilterProductName(productParam || '');
-    setFilterStatus(statusParam || '');
+    setFilterStatus(normalized.status);
+    setFilterCondition(normalized.condition);
     setFilterLocation(locationParam || '');
     setFilterStoreId(storeParam || '');
     if (actionParam === 'add') setShowAddModal(true);
@@ -1313,7 +1325,17 @@ const Assets = () => {
           />
           <select
             value={filterLocation}
-            onChange={(e) => setFilterLocation(e.target.value)}
+            onChange={(e) => {
+              const nextLocation = e.target.value;
+              setFilterLocation(nextLocation);
+              if (!nextLocation) {
+                // If user explicitly chooses "All Locations", clear hidden location-originated store filter too.
+                setFilterStoreId('');
+                if (location.search) {
+                  navigate('/assets', { replace: true });
+                }
+              }
+            }}
             className="h-10 px-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
           >
             <option value="">All Locations</option>

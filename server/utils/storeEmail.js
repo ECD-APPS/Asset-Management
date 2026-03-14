@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const Store = require('../models/Store');
 const EmailLog = require('../models/EmailLog');
+const User = require('../models/User');
 
 const resolveStoreId = (storeRef) => {
   if (!storeRef) return null;
@@ -74,6 +75,30 @@ const buildTransport = (cfg) => {
   });
 };
 
+const parseRecipients = (to) => Array.from(
+  new Set(
+    String(to || '')
+      .split(',')
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean)
+  )
+);
+
+const filterRecipientsByNotificationPreference = async (recipients = []) => {
+  if (!Array.isArray(recipients) || recipients.length === 0) return [];
+  const users = await User.find({ email: { $in: recipients } })
+    .select('email notificationPreferences.enabled')
+    .lean();
+  const byEmail = new Map(users.map((u) => [String(u.email || '').toLowerCase(), u]));
+  return recipients.filter((email) => {
+    const user = byEmail.get(String(email || '').toLowerCase());
+    // If the recipient is not a platform account, keep existing behavior.
+    if (!user) return true;
+    const enabled = user.notificationPreferences?.enabled;
+    return enabled !== false;
+  });
+};
+
 const sendStoreEmail = async ({ storeId, to, subject, text, html, forceConfig, context = '' }) => {
   const cfg = forceConfig || (await getStoreEmailConfig(storeId)) || getFallbackConfig();
   if (!cfg) {
@@ -87,13 +112,26 @@ const sendStoreEmail = async ({ storeId, to, subject, text, html, forceConfig, c
     });
     return { skipped: true, reason: 'SMTP not configured for store or global fallback' };
   }
-  try {
-    const transporter = buildTransport(cfg);
-    const from = `${cfg.fromName} <${cfg.fromEmail}>`;
-    const info = await transporter.sendMail({ from, to, subject, text, html });
+  const parsedRecipients = parseRecipients(to);
+  const filteredRecipients = await filterRecipientsByNotificationPreference(parsedRecipients);
+  if (filteredRecipients.length === 0) {
     await EmailLog.create({
       store: resolveStoreId(storeId),
       to,
+      subject,
+      status: 'skipped',
+      reason: 'All recipients have disabled email notifications',
+      context
+    });
+    return { skipped: true, reason: 'All recipients have disabled email notifications' };
+  }
+  try {
+    const transporter = buildTransport(cfg);
+    const from = `${cfg.fromName} <${cfg.fromEmail}>`;
+    const info = await transporter.sendMail({ from, to: filteredRecipients.join(','), subject, text, html });
+    await EmailLog.create({
+      store: resolveStoreId(storeId),
+      to: filteredRecipients.join(','),
       subject,
       status: 'sent',
       providerMessageId: info.messageId || '',

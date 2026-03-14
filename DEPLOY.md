@@ -40,7 +40,7 @@ openssl rand -hex 32
 ./deploy.sh safe-release
 ```
 
-This runs prechecks, creates pre-deploy backup (if app is running), deploys, and verifies API + web health.
+This runs prechecks, creates pre-deploy backup + journal marker (if app is running), deploys, runs shadow-sync and backup verification checks, then verifies API + web health.
 
 ### Option B: Makefile
 
@@ -73,6 +73,12 @@ Or run automated verification:
 
 ```bash
 ./deploy.sh verify
+```
+
+Run resilience verification only:
+
+```bash
+make verify-resilience-prod
 ```
 
 ## 4) Regular Update Deployment

@@ -10,6 +10,8 @@ client/dist
 server/node_modules
 server/logs
 server/backups
+server/uploads
+server/storage
 backups
 logs
 *.zip

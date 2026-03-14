@@ -33,6 +33,8 @@ services:
       MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/expo}
       LOCAL_FALLBACK_MONGO_URI: ${LOCAL_FALLBACK_MONGO_URI:-mongodb://mongo:27017/expo}
       ALLOW_INMEMORY_FALLBACK: ${ALLOW_INMEMORY_FALLBACK:-false}
+      SHADOW_DB_NAME: ${SHADOW_DB_NAME:-expo_shadow}
+      ENABLE_BACKUP_SCHEDULER: ${ENABLE_BACKUP_SCHEDULER:-true}
       PORT: ${PORT:-5000}
       NODE_ENV: ${NODE_ENV:-production}
       JWT_SECRET: ${JWT_SECRET:-change_this_to_a_secure_random_string}
@@ -48,6 +50,7 @@ services:
     volumes:
       - app_uploads:/app/server/uploads
       - app_backups:/app/server/backups
+      - app_storage:/app/server/storage
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5000/api/healthz', (r)=>process.exit(r.statusCode===200?0:1)).on('error', ()=>process.exit(1));"]
       interval: 15s
@@ -86,3 +89,4 @@ volumes:
   mongo_data:
   app_uploads:
   app_backups:
+  app_storage:

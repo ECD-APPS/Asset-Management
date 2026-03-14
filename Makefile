@@ -5,7 +5,7 @@ ENV_FILE ?= .env.docker
 COMPOSE_FILES := -f docker-compose.yml -f docker-compose.prod.yml
 COMPOSE := docker compose
 
-.PHONY: help validate-prod build-prod up-prod down-prod restart-prod logs-prod ps-prod pull-prod deploy-prod safe-release-prod verify-prod rollback-help-prod
+.PHONY: help validate-prod build-prod up-prod down-prod restart-prod logs-prod ps-prod pull-prod deploy-prod safe-release-prod verify-prod verify-resilience-prod rollback-help-prod
 
 help:
 	@echo "Available targets:"
@@ -20,6 +20,7 @@ help:
 	@echo "  make deploy-prod    - Validate, build, and start"
 	@echo "  make safe-release-prod - Precheck, backup, deploy, verify"
 	@echo "  make verify-prod    - Verify API/Web health endpoints"
+	@echo "  make verify-resilience-prod - Run shadow sync + backup verification checks"
 	@echo "  make rollback-help-prod - Show rollback helper commands"
 
 validate-prod:
@@ -57,6 +58,9 @@ safe-release-prod:
 
 verify-prod:
 	@./deploy.sh verify
+
+verify-resilience-prod:
+	@docker compose --env-file "$(ENV_FILE)" -p "$(PROJECT_NAME)" $(COMPOSE_FILES) exec -T app node -e "const mongoose=require('mongoose'); const {syncShadowDatabase,verifyLatestBackupRestore}=require('./utils/resilienceManager'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await syncShadowDatabase({fullResync:false,actor:null}); await verifyLatestBackupRestore(); await mongoose.disconnect();})();"
 
 rollback-help-prod:
 	@./deploy.sh rollback-help

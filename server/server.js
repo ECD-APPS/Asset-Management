@@ -15,6 +15,12 @@ const csrf = require('csurf');
 const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
 const { createBackupArtifact } = require('./utils/backupRecovery');
+const {
+  startCommandJournaling,
+  syncShadowDatabase,
+  verifyLatestBackupRestore,
+  getResilienceStatus
+} = require('./utils/resilienceManager');
 const serverPackage = require('./package.json');
 
 // Routes
@@ -118,10 +124,18 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.get('/healthz', async (req, res) => {
   const state = mongoose.connection.readyState; // 1=connected
   const ok = state === 1;
+  const resilience = await getResilienceStatus().catch(() => ({
+    shadow: { lag: null },
+    verification: { status: 'unknown' }
+  }));
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     db_connected: ok,
     db_mode: runtimeDbMode,
+    resilience: {
+      shadow_lag: resilience?.shadow?.lag ?? null,
+      verification_status: resilience?.verification?.status || 'unknown'
+    },
     uptime_s: Math.round(process.uptime()),
     timestamp: new Date().toISOString()
   });
@@ -134,10 +148,18 @@ app.get('/readyz', async (req, res) => {
 app.get('/api/healthz', async (req, res) => {
   const state = mongoose.connection.readyState; // 1=connected
   const ok = state === 1;
+  const resilience = await getResilienceStatus().catch(() => ({
+    shadow: { lag: null },
+    verification: { status: 'unknown' }
+  }));
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     db_connected: ok,
     db_mode: runtimeDbMode,
+    resilience: {
+      shadow_lag: resilience?.shadow?.lag ?? null,
+      verification_status: resilience?.verification?.status || 'unknown'
+    },
     uptime_s: Math.round(process.uptime()),
     timestamp: new Date().toISOString()
   });
@@ -369,6 +391,7 @@ const connectDB = async () => {
     await connectWithUri(mongoUri);
   }
   console.log('MongoDB Connected to:', mongoUri);
+  startCommandJournaling();
 
   // Always enforce required operational accounts on startup so updates/deploys
   // cannot break default credentials.
@@ -434,6 +457,22 @@ const connectDB = async () => {
           await createBackupArtifact({ backupType: 'Full', trigger: 'scheduled', user: null });
         } catch (err) {
           console.error('Scheduled monthly archive backup failed:', err.message || err);
+        }
+      });
+      // Shadow sync every 5 minutes
+      cron.schedule('*/5 * * * *', async () => {
+        try {
+          await syncShadowDatabase({ fullResync: false, actor: null });
+        } catch (err) {
+          console.error('Scheduled shadow sync failed:', err.message || err);
+        }
+      });
+      // Daily automated restore verification
+      cron.schedule('30 2 * * *', async () => {
+        try {
+          await verifyLatestBackupRestore();
+        } catch (err) {
+          console.error('Scheduled backup verification failed:', err.message || err);
         }
       });
       console.log('Backup scheduler started (6h, daily, weekly, monthly).');

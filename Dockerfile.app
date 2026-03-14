@@ -12,7 +12,8 @@ RUN groupadd --gid 10001 appuser \
 COPY --from=deps /app/server/node_modules ./node_modules
 COPY server/ ./
 # Ensure runtime directories exist and are writable
-RUN mkdir -p /app/server/uploads /app/server/backups && chown -R appuser:appuser /app
+RUN mkdir -p /app/server/uploads /app/server/backups /app/server/storage/backups /app/server/storage/tmp /app/server/storage/immutable-backups \
+  && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 5000
 HEALTHCHECK --interval=20s --timeout=5s --start-period=30s --retries=10 CMD node -e "require('http').get('http://127.0.0.1:5000/api/healthz', (r)=>process.exit(r.statusCode===200?0:1)).on('error', ()=>process.exit(1));"

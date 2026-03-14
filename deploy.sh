@@ -64,18 +64,37 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 EOF
 }
 
+run_in_app_container_node() {
+  local script="$1"
+  compose exec -T app node -e "$script"
+}
+
 create_pre_deploy_backup_if_possible() {
   if [[ "${PRE_DEPLOY_BACKUP,,}" != "true" ]]; then
     return 0
   fi
   if compose ps --services --filter "status=running" | grep -q "^app$"; then
     echo "Creating pre-deploy full backup from running app container..."
-    compose exec -T app node -e "const mongoose=require('mongoose'); const {createBackupArtifact}=require('./utils/backupRecovery'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await createBackupArtifact({backupType:'Full', trigger:'pre-update', user:null}); await mongoose.disconnect();})();" || {
+    run_in_app_container_node "const mongoose=require('mongoose'); const {createBackupArtifact}=require('./utils/backupRecovery'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await createBackupArtifact({backupType:'Full', trigger:'pre-update', user:null}); await mongoose.disconnect();})();" || {
       echo "Warning: pre-deploy backup failed. Deployment will continue." >&2
     }
   else
     echo "No running app container detected. Skipping pre-deploy backup."
   fi
+}
+
+create_pre_deploy_journal_marker() {
+  if compose ps --services --filter "status=running" | grep -q "^app$"; then
+    echo "Creating pre-deploy journal marker..."
+    run_in_app_container_node "const mongoose=require('mongoose'); const {appendJournalEntry}=require('./utils/resilienceManager'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await appendJournalEntry({opType:'marker', collectionName:'system', metadata:{label:'pre-deploy', ts:new Date().toISOString()}}); await mongoose.disconnect();})();" || {
+      echo "Warning: pre-deploy journal marker failed. Deployment will continue." >&2
+    }
+  fi
+}
+
+post_deploy_resilience_checks() {
+  echo "Running post-deploy resilience checks..."
+  run_in_app_container_node "const mongoose=require('mongoose'); const {syncShadowDatabase,verifyLatestBackupRestore,getResilienceStatus}=require('./utils/resilienceManager'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await syncShadowDatabase({fullResync:false,actor:null}); await verifyLatestBackupRestore(); const s=await getResilienceStatus(); if((s?.verification?.status||'unknown')==='failed'){ throw new Error('Latest backup verification failed'); } await mongoose.disconnect();})();"
 }
 
 verify_health() {
@@ -117,9 +136,11 @@ case "$ACTION" in
     ;;
   safe-release)
     create_pre_deploy_backup_if_possible
+    create_pre_deploy_journal_marker
     record_release_metadata
     echo "Starting safe release deployment..."
     compose up -d --build --remove-orphans
+    post_deploy_resilience_checks
     if ! verify_health; then
       echo "Safe release verification failed. Use rollback helper below." >&2
       print_rollback_help

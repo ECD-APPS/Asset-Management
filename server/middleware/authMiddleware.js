@@ -42,6 +42,15 @@ const protect = async (req, res, next) => {
     }
     req.user = await User.findById(session.user).select('-password');
     if (!req.user) {
+      // Backup compatibility fallback:
+      // some legacy restores can persist _id as string while sessions keep ObjectId.
+      const legacyUser = await User.collection.findOne({ _id: String(session.user) });
+      if (legacyUser) {
+        delete legacyUser.password;
+        req.user = legacyUser;
+      }
+    }
+    if (!req.user) {
       return res.status(401).json({ message: 'User not found' });
     }
     if (req.user.role === 'Super Admin' || req.user.role === 'Viewer') {
