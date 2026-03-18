@@ -71,6 +71,13 @@ check_cmd node
 check_cmd npm
 check_cmd curl
 
+NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
+if [[ "$NODE_MAJOR" -lt 20 ]]; then
+  fail "Node.js 20+ is required. Current: $(node -v)"
+else
+  ok "Node.js version is compatible: $(node -v)"
+fi
+
 if [[ "$ROLE" == "app" ]]; then
   print_header "App VM Readiness"
   check_cmd pm2

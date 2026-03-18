@@ -1,8 +1,40 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Truck, FileText, Box, CheckSquare, RefreshCw, Trash2, Database, AlertTriangle, Mail, Send, Palette } from 'lucide-react';
+import { Truck, FileText, Box, CheckSquare, RefreshCw, Trash2, Database, AlertTriangle, Mail, Send, Palette, SlidersHorizontal, ArrowUp, ArrowDown, Plus } from 'lucide-react';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+
+const DEFAULT_ASSET_COLUMNS = [
+  { id: 'uniqueId', label: 'Unique ID', key: 'uniqueId', visible: true, builtin: true },
+  { id: 'name', label: 'Name', key: 'name', visible: true, builtin: true },
+  { id: 'model', label: 'Model Number', key: 'model_number', visible: true, builtin: true },
+  { id: 'serial', label: 'Serial Number', key: 'serial_number', visible: true, builtin: true },
+  { id: 'serialLast4', label: 'Serial Last 4', key: 'serial_last_4', visible: true, builtin: true },
+  { id: 'ticket', label: 'Ticket', key: 'ticket_number', visible: true, builtin: true },
+  { id: 'poNumber', label: 'PO Number', key: 'po_number', visible: true, builtin: true },
+  { id: 'mac', label: 'MAC Address', key: 'mac_address', visible: true, builtin: true },
+  { id: 'rfid', label: 'RFID', key: 'rfid', visible: true, builtin: true },
+  { id: 'qr', label: 'QR Code', key: 'qr_code', visible: true, builtin: true },
+  { id: 'manufacturer', label: 'Manufacturer', key: 'manufacturer', visible: true, builtin: true },
+  { id: 'condition', label: 'Condition', key: 'condition', visible: true, builtin: true },
+  { id: 'status', label: 'Status', key: 'status', visible: true, builtin: true },
+  { id: 'prevStatus', label: 'Prev Status', key: 'previous_status', visible: true, builtin: true },
+  { id: 'store', label: 'Store', key: 'store.name', visible: true, builtin: true },
+  { id: 'location', label: 'Location', key: 'location', visible: true, builtin: true },
+  { id: 'quantity', label: 'Quantity', key: 'quantity', visible: true, builtin: true },
+  { id: 'vendor', label: 'Vendor', key: 'vendor_name', visible: true, builtin: true },
+  { id: 'source', label: 'Source', key: 'source', visible: true, builtin: true },
+  { id: 'deliveredBy', label: 'Delivered By', key: 'delivered_by_name', visible: true, builtin: true },
+  { id: 'deliveredAt', label: 'Delivered At', key: 'delivered_at', visible: true, builtin: true },
+  { id: 'assignedTo', label: 'Assigned To', key: 'assigned_to.name', visible: true, builtin: true },
+  { id: 'dateTime', label: 'Date & Time', key: 'updatedAt', visible: true, builtin: true },
+  { id: 'price', label: 'Price', key: 'price', visible: true, builtin: true },
+  { id: 'action', label: 'Action', key: 'action', visible: true, builtin: true }
+];
+
+const buildDefaultColumnsConfig = () => ({
+  columns: DEFAULT_ASSET_COLUMNS.map((column) => ({ ...column }))
+});
 
 const Setup = () => {
   const { user, branding, refreshBranding } = useAuth();
@@ -41,12 +73,16 @@ const Setup = () => {
   const [bulkLocationInput, setBulkLocationInput] = useState('');
   const [bulkLocationLoading, setBulkLocationLoading] = useState(false);
   const [bulkLocationResult, setBulkLocationResult] = useState(null);
+  const [assetColumnsConfig, setAssetColumnsConfig] = useState(buildDefaultColumnsConfig);
+  const [assetColumnsLoading, setAssetColumnsLoading] = useState(false);
+  const [assetColumnsSaving, setAssetColumnsSaving] = useState(false);
 
   const resolveUserStoreId = () => {
     const raw = user?.assignedStore;
     if (!raw) return '';
     return typeof raw === 'string' ? raw : raw?._id || '';
   };
+  const effectiveEmailStoreId = user?.role === 'Super Admin' ? selectedStoreId : resolveUserStoreId();
 
   useEffect(() => {
     if (isMainAdmin) {
@@ -147,7 +183,6 @@ const Setup = () => {
   const handleEmailField = (field, value) => {
     setEmailConfig((prev) => ({ ...prev, [field]: value }));
   };
-  const effectiveEmailStoreId = user?.role === 'Super Admin' ? selectedStoreId : resolveUserStoreId();
 
   const updateNotificationPreferenceField = (field, value) => {
     setNotificationPreferences((prev) => ({ ...prev, [field]: value }));
@@ -162,6 +197,111 @@ const Setup = () => {
       alert('Failed to save notification preferences: ' + (error.response?.data?.message || error.message));
     } finally {
       setNotifSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canManageNotificationPreferences) return;
+    if (!effectiveEmailStoreId) return;
+    let cancelled = false;
+    const loadAssetColumnsConfig = async () => {
+      try {
+        setAssetColumnsLoading(true);
+        const res = await api.get('/system/assets-columns-config', { params: { storeId: effectiveEmailStoreId } });
+        if (cancelled) return;
+        const nextConfig = res.data?.config || buildDefaultColumnsConfig();
+        const nextColumns = Array.isArray(nextConfig.columns) ? nextConfig.columns : buildDefaultColumnsConfig().columns;
+        setAssetColumnsConfig({
+          columns: nextColumns.map((column, idx) => ({
+            id: String(column?.id || `custom_${idx}`),
+            label: String(column?.label || `Column ${idx + 1}`),
+            key: String(column?.key || ''),
+            visible: column?.visible !== false,
+            builtin: Boolean(column?.builtin)
+          }))
+        });
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to load asset columns config:', error);
+        }
+      } finally {
+        if (!cancelled) setAssetColumnsLoading(false);
+      }
+    };
+    loadAssetColumnsConfig();
+    return () => { cancelled = true; };
+  }, [canManageNotificationPreferences, effectiveEmailStoreId]);
+
+  const moveAssetColumn = (index, direction) => {
+    setAssetColumnsConfig((prev) => {
+      const nextColumns = [...prev.columns];
+      const target = direction === 'up' ? index - 1 : index + 1;
+      if (target < 0 || target >= nextColumns.length) return prev;
+      const temp = nextColumns[index];
+      nextColumns[index] = nextColumns[target];
+      nextColumns[target] = temp;
+      return { ...prev, columns: nextColumns };
+    });
+  };
+
+  const updateAssetColumnField = (id, field, value) => {
+    setAssetColumnsConfig((prev) => ({
+      ...prev,
+      columns: (prev.columns || []).map((column) => (
+        column.id === id ? { ...column, [field]: value } : column
+      ))
+    }));
+  };
+
+  const toggleAssetColumnVisibility = (id, checked) => {
+    updateAssetColumnField(id, 'visible', checked);
+  };
+
+  const addAssetColumn = () => {
+    const stamp = Date.now().toString(36);
+    setAssetColumnsConfig((prev) => ({
+      ...prev,
+      columns: [
+        ...(prev.columns || []),
+        { id: `custom_${stamp}`, label: 'New Column', key: 'name', visible: true, builtin: false }
+      ]
+    }));
+  };
+
+  const deleteAssetColumn = (id) => {
+    setAssetColumnsConfig((prev) => ({
+      ...prev,
+      columns: (prev.columns || []).filter((column) => column.id !== id)
+    }));
+  };
+
+  const resetAssetColumnsConfig = () => {
+    setAssetColumnsConfig(buildDefaultColumnsConfig());
+  };
+
+  const saveAssetColumnsConfig = async () => {
+    if (!effectiveEmailStoreId) {
+      alert('Store context is required.');
+      return;
+    }
+    try {
+      setAssetColumnsSaving(true);
+      await api.put('/system/assets-columns-config', {
+        storeId: effectiveEmailStoreId,
+        config: {
+          columns: (assetColumnsConfig.columns || []).map((column) => ({
+            id: String(column.id || '').trim(),
+            label: String(column.label || '').trim(),
+            key: String(column.key || '').trim(),
+            visible: column.visible !== false
+          }))
+        }
+      });
+      alert('Asset columns configuration saved.');
+    } catch (error) {
+      alert('Failed to save asset columns config: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setAssetColumnsSaving(false);
     }
   };
 
@@ -618,7 +758,7 @@ const Setup = () => {
         </div>
       )}
 
-      {user?.role === 'Admin' && (
+      {canManageNotificationPreferences && (
         <div className="mt-12 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <div className="flex items-center mb-6">
             <Mail className="w-6 h-6 text-indigo-600 mr-2" />
@@ -687,6 +827,107 @@ const Setup = () => {
                 </button>
               </div>
             </div>
+          )}
+        </div>
+      )}
+
+      {canManageNotificationPreferences && (
+        <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          <div className="flex items-center mb-4">
+            <SlidersHorizontal className="w-6 h-6 text-indigo-600 mr-2" />
+            <h2 className="text-xl font-bold text-gray-800">Assets Columns Customization</h2>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            Choose and reorder the columns you want to see in Assets table (for this store).
+          </p>
+          {assetColumnsLoading ? (
+            <p className="text-sm text-gray-500">Loading columns configuration...</p>
+          ) : (
+            <>
+              <div className="max-h-72 overflow-auto border border-gray-200 rounded-lg divide-y">
+                {(assetColumnsConfig.columns || []).map((column, idx) => {
+                  return (
+                    <div key={column.id} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center px-3 py-2">
+                      <label className="flex items-center gap-2 text-sm text-gray-700 md:col-span-3">
+                        <input
+                          type="checkbox"
+                          checked={column.visible !== false}
+                          onChange={(e) => toggleAssetColumnVisibility(column.id, e.target.checked)}
+                        />
+                        <span>Visible</span>
+                      </label>
+                      <input
+                        value={column.label}
+                        onChange={(e) => updateAssetColumnField(column.id, 'label', e.target.value)}
+                        className="md:col-span-3 border border-gray-300 rounded px-2 py-1 text-sm"
+                        placeholder="Column label"
+                      />
+                      <input
+                        value={column.key}
+                        onChange={(e) => updateAssetColumnField(column.id, 'key', e.target.value)}
+                        className="md:col-span-4 border border-gray-300 rounded px-2 py-1 text-sm font-mono"
+                        placeholder="asset key (e.g. model_number)"
+                      />
+                      <div className="flex items-center gap-1 md:col-span-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={() => moveAssetColumn(idx, 'up')}
+                          disabled={idx === 0}
+                          className="p-1 rounded border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                          title="Move up"
+                        >
+                          <ArrowUp size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveAssetColumn(idx, 'down')}
+                          disabled={idx === (assetColumnsConfig.columns || []).length - 1}
+                          className="p-1 rounded border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                          title="Move down"
+                        >
+                          <ArrowDown size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteAssetColumn(column.id)}
+                          className="p-1 rounded border border-red-200 text-red-600 hover:bg-red-50"
+                          title="Delete column"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-4 flex flex-wrap justify-between gap-2">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={addAssetColumn}
+                    className="inline-flex items-center gap-1 px-3 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 text-sm"
+                  >
+                    <Plus size={14} />
+                    Add Column
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetAssetColumnsConfig}
+                    className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm"
+                  >
+                    Reset Default
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={saveAssetColumnsConfig}
+                  disabled={assetColumnsSaving}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm"
+                >
+                  {assetColumnsSaving ? 'Saving...' : 'Save Columns Layout'}
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}

@@ -8,6 +8,7 @@ const AdminRequests = () => {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
+  const [updatingId, setUpdatingId] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -34,14 +35,17 @@ const AdminRequests = () => {
   useEffect(() => { load(); }, [load]);
 
   const updateStatus = async (id, s) => {
+    if (!id || updatingId) return;
     // Optimistic UI update so the label changes immediately
     setRequests(prev => prev.map(r => r._id === id ? { ...r, status: s, updatedAt: new Date().toISOString() } : r));
     try {
+      setUpdatingId(id);
       await api.put(`/requests/${id}`, { status: s });
     } catch (err) {
       // If API fails, reload to reflect actual state
       console.error(err);
     } finally {
+      setUpdatingId('');
       load();
     }
   };
@@ -130,9 +134,27 @@ const AdminRequests = () => {
                         <span className="text-red-600 font-semibold">Rejected</span>
                       ) : (
                         <div className="flex gap-2">
-                          <button onClick={() => updateStatus(r._id, 'Approved')} className="text-green-600">Approve</button>
-                          <button onClick={() => updateStatus(r._id, 'Ordered')} className="text-amber-600">Mark Ordered</button>
-                          <button onClick={() => updateStatus(r._id, 'Rejected')} className="text-red-600">Reject</button>
+                          <button
+                            disabled={Boolean(updatingId)}
+                            onClick={() => updateStatus(r._id, 'Approved')}
+                            className={`text-green-600 ${updatingId ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            {updatingId === r._id ? 'Updating...' : 'Approve'}
+                          </button>
+                          <button
+                            disabled={Boolean(updatingId)}
+                            onClick={() => updateStatus(r._id, 'Ordered')}
+                            className={`text-amber-600 ${updatingId ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            Mark Ordered
+                          </button>
+                          <button
+                            disabled={Boolean(updatingId)}
+                            onClick={() => updateStatus(r._id, 'Rejected')}
+                            className={`text-red-600 ${updatingId ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            Reject
+                          </button>
                         </div>
                       )}
                     </td>

@@ -1,4 +1,4 @@
-import { createContext, useState, useEffect, useContext, useCallback } from 'react';
+import { createContext, useState, useEffect, useContext, useCallback, useMemo } from 'react';
 import api from '../api/axios';
 import PropTypes from 'prop-types';
 
@@ -163,7 +163,7 @@ export const AuthProvider = ({ children }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStore, user?._id, loading]);
 
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     setGlobalLoading(true);
     try {
       const response = await api.post('/auth/login', { email, password });
@@ -187,9 +187,9 @@ export const AuthProvider = ({ children }) => {
     } finally {
       setGlobalLoading(false);
     }
-  };
+  }, [normalizeStoreSelection]);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     setGlobalLoading(true);
     try {
       await api.post('/auth/logout');
@@ -201,15 +201,19 @@ export const AuthProvider = ({ children }) => {
     setUser(null);
     setActiveStore(null);
     setGlobalLoading(false);
-  };
+  }, []);
 
-  const selectStore = (store) => {
+  const selectStore = useCallback((store) => {
     const normalizedStore = normalizeStoreSelection(store);
     setActiveStore(normalizedStore);
     localStorage.setItem('activeStore', JSON.stringify(normalizedStore));
-  };
+  }, [normalizeStoreSelection]);
 
-  const value = {
+  const refreshBranding = useCallback(async () => {
+    await fetchBranding();
+  }, [fetchBranding]);
+
+  const value = useMemo(() => ({
     user,
     activeStore,
     login,
@@ -218,10 +222,8 @@ export const AuthProvider = ({ children }) => {
     loading,
     globalLoading,
     branding,
-    refreshBranding: async () => {
-      await fetchBranding();
-    }
-  };
+    refreshBranding
+  }), [user, activeStore, login, logout, loading, globalLoading, branding, refreshBranding]);
   
   return (
     <AuthContext.Provider value={value}>

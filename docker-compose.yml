@@ -38,13 +38,13 @@ services:
       PORT: ${PORT:-5000}
       NODE_ENV: ${NODE_ENV:-production}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
-      JWT_SECRET: ${JWT_SECRET:-change_this_to_a_secure_random_string}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       SESSION_MAX_AGE_MS: ${SESSION_MAX_AGE_MS:-2592000000}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
-      COOKIE_SECRET: ${COOKIE_SECRET:-change_me_to_random_32_bytes}
+      COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:5000}
-      EMERGENCY_RESET_SECRET: ${EMERGENCY_RESET_SECRET:-emergency_unlock}
+      EMERGENCY_RESET_SECRET: ${EMERGENCY_RESET_SECRET:?EMERGENCY_RESET_SECRET is required}
       ENABLE_CSRF: ${ENABLE_CSRF:-true}
       TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
       MAX_BACKUP_UPLOAD_MB: ${MAX_BACKUP_UPLOAD_MB:-1024}

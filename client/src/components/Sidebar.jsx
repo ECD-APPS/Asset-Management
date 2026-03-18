@@ -146,7 +146,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
     if (['Admin', 'Viewer', 'Super Admin'].includes(user?.role)) {
       fetchProducts();
     }
-  }, [user?.role, activeStore?._id, activeStore]);
+  }, [user?.role, activeStore?._id]);
 
   const toggleSubMenu = (name) => {
     setOpenSubMenu((prev) => ({ ...prev, [name]: !prev[name] }));

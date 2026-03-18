@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import PurchaseOrders from './PurchaseOrders';
 import api from '../api/axios';
 import ImportAssetsModal from '../components/ImportAssetsModal';
@@ -15,6 +15,7 @@ const ReceiveProcess = () => {
   const [showRecentAssets, setShowRecentAssets] = useState(false);
   const [activityLoading, setActivityLoading] = useState(false);
   const [assetsLoading, setAssetsLoading] = useState(false);
+  const [returnActionAssetId, setReturnActionAssetId] = useState('');
   const [filterForm, setFilterForm] = useState({
     query: '',
     serial: '',
@@ -25,21 +26,27 @@ const ReceiveProcess = () => {
     dateTo: ''
   });
   const [assetFilters, setAssetFilters] = useState(null);
+  const assetsReqSeq = useRef(0);
+  const importsReqSeq = useRef(0);
+  const pendingReqSeq = useRef(0);
 
 
   const fetchPendingReturns = useCallback(async () => {
+    const seq = ++pendingReqSeq.current;
     setLoading(true);
     try {
       const res = await api.get('/assets/return-pending');
+      if (seq !== pendingReqSeq.current) return;
       setPendingReturns(res.data || []);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (seq === pendingReqSeq.current) setLoading(false);
     }
   }, []);
 
   const fetchRecentAssets = useCallback(async (overrideFilters) => {
+    const seq = ++assetsReqSeq.current;
     setAssetsLoading(true);
     try {
       const params = { limit: 50 };
@@ -60,21 +67,24 @@ const ReceiveProcess = () => {
         if (filters.dateTo) params.date_to = filters.dateTo;
       }
       const res = await api.get('/assets', { params });
+      if (seq !== assetsReqSeq.current) return;
       setRecentAssets(res.data.items || []);
     } catch (err) {
       console.error(err);
     } finally {
-      setAssetsLoading(false);
+      if (seq === assetsReqSeq.current) setAssetsLoading(false);
     }
   }, [activeTab, assetFilters]);
 
   const fetchRecentImports = useCallback(async () => {
+    const seq = ++importsReqSeq.current;
     setActivityLoading(true);
     try {
       const params = { limit: 20 };
       if (activeTab === 'contractor') params.source = 'Contractor';
       
       const res = await api.get('/assets/recent-activity', { params });
+      if (seq !== importsReqSeq.current) return;
       // Filter for import-related activities
       const imports = res.data.filter(log => 
         log.action === 'Bulk Force Import' || 
@@ -85,7 +95,7 @@ const ReceiveProcess = () => {
     } catch (err) {
       console.error(err);
     } finally {
-      setActivityLoading(false);
+      if (seq === importsReqSeq.current) setActivityLoading(false);
     }
   }, [activeTab]);
 
@@ -102,20 +112,28 @@ const ReceiveProcess = () => {
   }, [activeTab, showRecentAssets, fetchPendingReturns, fetchRecentImports, fetchRecentAssets]);
 
   const handleApproveReturn = async (assetId) => {
+    if (!assetId || returnActionAssetId) return;
     try {
+      setReturnActionAssetId(assetId);
       await api.post('/assets/return-approve', { assetId });
       fetchPendingReturns();
     } catch (err) {
       console.error(err);
+    } finally {
+      setReturnActionAssetId('');
     }
   };
 
   const handleRejectReturn = async (assetId) => {
+    if (!assetId || returnActionAssetId) return;
     try {
+      setReturnActionAssetId(assetId);
       await api.post('/assets/return-reject', { assetId });
       fetchPendingReturns();
     } catch (err) {
       console.error(err);
+    } finally {
+      setReturnActionAssetId('');
     }
   };
 
@@ -679,13 +697,15 @@ const ReceiveProcess = () => {
                           <div className="flex gap-3">
                             <button
                               onClick={() => handleApproveReturn(a._id)}
-                              className="text-green-600 hover:text-green-900 bg-green-50 px-3 py-1 rounded border border-green-200 hover:border-green-300 transition-all"
+                              disabled={Boolean(returnActionAssetId)}
+                              className={`px-3 py-1 rounded border transition-all ${returnActionAssetId ? 'text-slate-400 bg-slate-100 border-slate-200 cursor-not-allowed' : 'text-green-600 hover:text-green-900 bg-green-50 border-green-200 hover:border-green-300'}`}
                             >
                               Approve
                             </button>
                             <button
                               onClick={() => handleRejectReturn(a._id)}
-                              className="text-red-600 hover:text-red-900 bg-red-50 px-3 py-1 rounded border border-red-200 hover:border-red-300 transition-all"
+                              disabled={Boolean(returnActionAssetId)}
+                              className={`px-3 py-1 rounded border transition-all ${returnActionAssetId ? 'text-slate-400 bg-slate-100 border-slate-200 cursor-not-allowed' : 'text-red-600 hover:text-red-900 bg-red-50 border-red-200 hover:border-red-300'}`}
                             >
                               Reject
                             </button>

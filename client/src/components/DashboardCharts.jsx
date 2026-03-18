@@ -1,5 +1,6 @@
 import Chart from 'react-apexcharts';
 import PropTypes from 'prop-types';
+import { useMemo } from 'react';
 import {
   Box,
   CheckCircle,
@@ -211,10 +212,10 @@ const buildPieConfig = ({
   };
 };
 
-const DashboardCharts = ({ stats }) => {
+const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false }) => {
   if (!stats) return <div className="p-8 text-center text-gray-500">Loading dashboard data...</div>;
 
-  const { overview, growth, conditions, usageBreakdown, locations, products } = stats;
+  const { overview, growth, conditions, usageBreakdown, locations, products, maintenanceVendors } = stats;
   const safeOverview = overview || {
     total: 0,
     inUse: 0,
@@ -234,49 +235,130 @@ const DashboardCharts = ({ stats }) => {
   const inUseCount = safeOverview.inUse || 0;
   const notInUseCount = Math.max((safeOverview.total || 0) - inUseCount, 0);
 
-  const utilizationPie = buildPieConfig({
-    labels: ['In Use', 'Not In Use'],
-    values: [inUseCount, notInUseCount],
-    colors: useVectorPieStyle ? oceanPieColors.slice(0, 2) : [palette.primary, palette.secondary],
-    title: 'Asset Utilization',
-    height: 300,
-    vectorStyle: useVectorPieStyle,
-    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 2) : []
-  });
-  const conditionPie = buildPieConfig({
-    labels: ['New', 'Used', 'Faulty', 'Repaired'],
-    values: [conditions?.New || 0, conditions?.Used || 0, conditions?.Faulty || 0, conditions?.Repaired || 0],
-    colors: useVectorPieStyle ? oceanPieColors.slice(0, 4) : ['#22c55e', '#3b82f6', '#ef4444', '#f59e0b'],
-    title: 'Condition Mix',
-    vectorStyle: useVectorPieStyle,
-    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 4) : []
-  });
-  const usagePie = buildPieConfig({
-    labels: ['Installed', 'Used', 'Faulty', 'Other'],
-    values: [usageBreakdown?.installed || 0, usageBreakdown?.used || 0, usageBreakdown?.faulty || 0, usageBreakdown?.other || 0],
-    colors: useVectorPieStyle ? oceanPieColors.slice(0, 4) : ['#2563eb', '#16a34a', '#dc2626', '#64748b'],
-    title: 'Usage Classification',
-    vectorStyle: useVectorPieStyle,
-    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 4) : []
-  });
-  const topLocations = (locations || []).slice(0, 5);
-  const locationPie = buildPieConfig({
-    labels: topLocations.map((item) => item.name || 'Unknown'),
-    values: topLocations.map((item) => item.value || 0),
-    colors: useVectorPieStyle ? oceanPieColors.slice(0, 5) : ['#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316', '#a3e635'],
-    title: 'Top Locations by Quantity',
-    vectorStyle: useVectorPieStyle,
-    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 5) : []
-  });
-  const topProducts = (products || []).slice(0, 5);
-  const productPie = buildPieConfig({
-    labels: topProducts.map((item) => item.name || 'Unknown'),
-    values: topProducts.map((item) => item.value || 0),
-    colors: useVectorPieStyle ? oceanPieColors.slice(0, 5) : ['#6366f1', '#06b6d4', '#84cc16', '#fb7185', '#f59e0b'],
-    title: 'Top Products by Quantity',
-    vectorStyle: useVectorPieStyle,
-    gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 5) : []
-  });
+  const chartConfigs = useMemo(() => {
+    const utilizationPie = buildPieConfig({
+      labels: ['In Use', 'Not In Use'],
+      values: [inUseCount, notInUseCount],
+      colors: useVectorPieStyle ? oceanPieColors.slice(0, 2) : [palette.primary, palette.secondary],
+      title: 'Asset Utilization',
+      height: 300,
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 2) : []
+    });
+    const conditionPie = buildPieConfig({
+      labels: ['New', 'Used', 'Faulty', 'Repaired'],
+      values: [conditions?.New || 0, conditions?.Used || 0, conditions?.Faulty || 0, conditions?.Repaired || 0],
+      colors: useVectorPieStyle ? oceanPieColors.slice(0, 4) : ['#22c55e', '#3b82f6', '#ef4444', '#f59e0b'],
+      title: 'Condition Mix',
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 4) : []
+    });
+    const usagePie = buildPieConfig({
+      labels: ['Installed', 'Used', 'Faulty', 'Other'],
+      values: [usageBreakdown?.installed || 0, usageBreakdown?.used || 0, usageBreakdown?.faulty || 0, usageBreakdown?.other || 0],
+      colors: useVectorPieStyle ? oceanPieColors.slice(0, 4) : ['#2563eb', '#16a34a', '#dc2626', '#64748b'],
+      title: 'Usage Classification',
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 4) : []
+    });
+    const topLocations = (locations || []).slice(0, 5);
+    const locationPie = buildPieConfig({
+      labels: topLocations.map((item) => item.name || 'Unknown'),
+      values: topLocations.map((item) => item.value || 0),
+      colors: useVectorPieStyle ? oceanPieColors.slice(0, 5) : ['#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316', '#a3e635'],
+      title: 'Top Locations by Quantity',
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 5) : []
+    });
+    const topProducts = (products || []).slice(0, 5);
+    const productPie = buildPieConfig({
+      labels: topProducts.map((item) => item.name || 'Unknown'),
+      values: topProducts.map((item) => item.value || 0),
+      colors: useVectorPieStyle ? oceanPieColors.slice(0, 5) : ['#6366f1', '#06b6d4', '#84cc16', '#fb7185', '#f59e0b'],
+      title: 'Top Products by Quantity',
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? oceanPieGradients.slice(0, 5) : []
+    });
+    const maintenanceVendorPie = buildPieConfig({
+      labels: ['Siemens', 'G42', 'Other'],
+      values: [maintenanceVendors?.Siemens || 0, maintenanceVendors?.G42 || 0, maintenanceVendors?.Other || 0],
+      colors: useVectorPieStyle ? ['#3b82f6', '#f59e0b', '#64748b'] : ['#2563eb', '#f59e0b', '#94a3b8'],
+      title: 'Maintenance Vendor Mix',
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? ['#1d4ed8', '#b45309', '#334155'] : []
+    });
+    const barOptions = {
+      chart: {
+        type: 'bar',
+        toolbar: { show: false },
+        fontFamily: 'inherit',
+        dropShadow: useVectorPieStyle
+          ? { enabled: true, top: 8, left: 0, blur: 12, color: '#334155', opacity: 0.24 }
+          : { enabled: false }
+      },
+      plotOptions: {
+        bar: {
+          borderRadius: useVectorPieStyle ? 8 : 4,
+          horizontal: false,
+          columnWidth: useVectorPieStyle ? '52%' : '45%',
+          distributed: useVectorPieStyle
+        }
+      },
+      dataLabels: {
+        enabled: true,
+        offsetY: -8,
+        style: { colors: [useVectorPieStyle ? '#374151' : '#fff'] },
+        formatter: (val) => val || 0
+      },
+      colors: useVectorPieStyle ? OCEAN_BAR_COLORS : [palette.primary],
+      xaxis: { categories: ['In Store', 'Faulty', 'Missing'] },
+      yaxis: {
+        labels: {
+          style: { colors: useVectorPieStyle ? '#6b7280' : '#64748b' }
+        }
+      },
+      grid: {
+        borderColor: useVectorPieStyle ? 'rgba(148,163,184,0.35)' : '#e2e8f0',
+        xaxis: { lines: { show: false } },
+        yaxis: { lines: { show: true } }
+      },
+      fill: useVectorPieStyle
+        ? {
+            type: 'gradient',
+            gradient: {
+              shade: 'dark',
+              type: 'vertical',
+              shadeIntensity: 0.8,
+              opacityFrom: 1,
+              opacityTo: 0.68,
+              stops: [0, 55, 100]
+            }
+          }
+        : { type: 'solid' }
+    };
+    const barSeries = [{
+      name: 'Inventory Status',
+      data: [safeOverview.inStore || 0, safeOverview.faulty || 0, safeOverview.missing || 0]
+    }];
+    const growthOptions = {
+      chart: { type: 'area', toolbar: { show: false }, fontFamily: 'inherit', animations: { enabled: true } },
+      dataLabels: { enabled: false },
+      stroke: { curve: 'smooth', width: 2 },
+      xaxis: { categories: (growth || []).map((g) => g.name), axisBorder: { show: false }, axisTicks: { show: false } },
+      yaxis: { show: false },
+      grid: { show: false, padding: { left: 0, right: 0 } },
+      colors: [palette.primary],
+      fill: {
+        type: 'gradient',
+        gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1, stops: [0, 90, 100] }
+      },
+      tooltip: { y: { formatter: (val) => `${val} Assets` } }
+    };
+    const growthSeries = [{ name: 'New Assets', data: (growth || []).map((g) => g.value) }];
+    return { utilizationPie, conditionPie, usagePie, locationPie, productPie, maintenanceVendorPie, barOptions, barSeries, growthOptions, growthSeries };
+  }, [inUseCount, notInUseCount, useVectorPieStyle, oceanPieColors, oceanPieGradients, palette.primary, conditions, usageBreakdown, locations, products, maintenanceVendors, safeOverview.inStore, safeOverview.faulty, safeOverview.missing, growth]);
+  const { utilizationPie, conditionPie, usagePie, locationPie, productPie, maintenanceVendorPie, barOptions, barSeries, growthOptions, growthSeries } = chartConfigs;
+  const chartCardClass = 'bg-app-card p-6 rounded-2xl border border-app-card shadow-sm hover:shadow-md transition-all duration-300';
 
   const navigateToAssets = (status) => {
     const params = new URLSearchParams();
@@ -284,76 +366,6 @@ const DashboardCharts = ({ stats }) => {
     const query = params.toString();
     window.open(`/assets${query ? `?${query}` : ''}`, '_blank', 'noopener,noreferrer');
   };
-
-  const barOptions = {
-    chart: {
-      type: 'bar',
-      toolbar: { show: false },
-      fontFamily: 'inherit',
-      dropShadow: useVectorPieStyle
-        ? { enabled: true, top: 8, left: 0, blur: 12, color: '#334155', opacity: 0.24 }
-        : { enabled: false }
-    },
-    plotOptions: {
-      bar: {
-        borderRadius: useVectorPieStyle ? 8 : 4,
-        horizontal: false,
-        columnWidth: useVectorPieStyle ? '52%' : '45%',
-        distributed: useVectorPieStyle
-      }
-    },
-    dataLabels: {
-      enabled: true,
-      offsetY: -8,
-      style: { colors: [useVectorPieStyle ? '#374151' : '#fff'] },
-      formatter: (val) => val || 0
-    },
-    colors: useVectorPieStyle ? OCEAN_BAR_COLORS : [palette.primary],
-    xaxis: { categories: ['In Store', 'Faulty', 'Missing'] },
-    yaxis: {
-      labels: {
-        style: { colors: useVectorPieStyle ? '#6b7280' : '#64748b' }
-      }
-    },
-    grid: {
-      borderColor: useVectorPieStyle ? 'rgba(148,163,184,0.35)' : '#e2e8f0',
-      xaxis: { lines: { show: false } },
-      yaxis: { lines: { show: true } }
-    },
-    fill: useVectorPieStyle
-      ? {
-          type: 'gradient',
-          gradient: {
-            shade: 'dark',
-            type: 'vertical',
-            shadeIntensity: 0.8,
-            opacityFrom: 1,
-            opacityTo: 0.68,
-            stops: [0, 55, 100]
-          }
-        }
-      : { type: 'solid' }
-  };
-  const barSeries = [{
-    name: 'Inventory Status',
-    data: [safeOverview.inStore || 0, safeOverview.faulty || 0, safeOverview.missing || 0]
-  }];
-
-  const growthOptions = {
-    chart: { type: 'area', toolbar: { show: false }, fontFamily: 'inherit', animations: { enabled: true } },
-    dataLabels: { enabled: false },
-    stroke: { curve: 'smooth', width: 2 },
-    xaxis: { categories: (growth || []).map((g) => g.name), axisBorder: { show: false }, axisTicks: { show: false } },
-    yaxis: { show: false },
-    grid: { show: false, padding: { left: 0, right: 0 } },
-    colors: [palette.primary],
-    fill: {
-      type: 'gradient',
-      gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1, stops: [0, 90, 100] }
-    },
-    tooltip: { y: { formatter: (val) => `${val} Assets` } }
-  };
-  const growthSeries = [{ name: 'New Assets', data: (growth || []).map((g) => g.value) }];
 
   return (
     <div className="space-y-6">
@@ -367,37 +379,63 @@ const DashboardCharts = ({ stats }) => {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
+        <div className={`${chartCardClass} xl:col-span-4`}>
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{utilizationPie.title}</h3>
           <Chart options={utilizationPie.options} series={utilizationPie.series} type={utilizationPie.type} height={utilizationPie.height} />
         </div>
-        <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
+        <div className={`${chartCardClass} xl:col-span-4`}>
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{conditionPie.title}</h3>
           <Chart options={conditionPie.options} series={conditionPie.series} type={conditionPie.type} height={conditionPie.height} />
         </div>
-        <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
+        <div className={`${chartCardClass} xl:col-span-4`}>
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{usagePie.title}</h3>
           <Chart options={usagePie.options} series={usagePie.series} type={usagePie.type} height={usagePie.height} />
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
+        <div className={`${chartCardClass} xl:col-span-4`}>
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{locationPie.title}</h3>
           <Chart options={locationPie.options} series={locationPie.series} type={locationPie.type} height={locationPie.height} />
         </div>
-        <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
+        <div className={`${chartCardClass} xl:col-span-4`}>
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{productPie.title}</h3>
           <Chart options={productPie.options} series={productPie.series} type={productPie.type} height={productPie.height} />
         </div>
-        <div className="bg-app-card p-6 rounded-xl xl:col-span-4">
+        <div className={`${chartCardClass} xl:col-span-4`}>
           <h3 className="text-app-main font-bold mb-4">In Store vs Faulty vs Missing</h3>
           <Chart options={barOptions} series={barSeries} type="bar" height={300} />
         </div>
       </div>
 
+      {showMaintenanceVendorFeatures && (
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          <div className={`${chartCardClass} xl:col-span-4`}>
+            <h3 className="text-app-main font-bold mb-1 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{maintenanceVendorPie.title}</h3>
+            <p className="text-xs text-app-muted mb-3">Quick filter by vendor</p>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {['Siemens', 'G42'].map((vendor) => (
+                <button
+                  key={vendor}
+                  type="button"
+                  onClick={() => {
+                    const params = new URLSearchParams();
+                    params.set('maintenance_vendor', vendor);
+                    window.open(`/assets?${params.toString()}`, '_blank', 'noopener,noreferrer');
+                  }}
+                  className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  {vendor}
+                </button>
+              ))}
+            </div>
+            <Chart options={maintenanceVendorPie.options} series={maintenanceVendorPie.series} type={maintenanceVendorPie.type} height={maintenanceVendorPie.height} />
+          </div>
+        </div>
+      )}
+
       {(growth || []).length > 0 && (
-        <div className="bg-app-card p-6 rounded-xl">
+        <div className={chartCardClass}>
           <h3 className="text-app-main font-bold mb-4 flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-app-accent" />
             Asset Acquisition Trend (Last 6 Months)
@@ -412,7 +450,8 @@ const DashboardCharts = ({ stats }) => {
 };
 
 DashboardCharts.propTypes = {
-  stats: PropTypes.object
+  stats: PropTypes.object,
+  showMaintenanceVendorFeatures: PropTypes.bool
 };
 
 export default DashboardCharts;

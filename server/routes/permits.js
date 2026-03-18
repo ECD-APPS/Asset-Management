@@ -8,6 +8,10 @@ const fs = require('fs');
 
 // Multer Config
 const uploadRoot = path.join(__dirname, '../uploads');
+const sanitizeUploadName = (name) => String(name || 'file')
+  .split(path.sep).pop()
+  .replace(/[^a-zA-Z0-9._-]/g, '_')
+  .slice(0, 120);
 const storage = multer.diskStorage({
   destination(req, file, cb) {
     if (!fs.existsSync(uploadRoot)) {
@@ -16,7 +20,7 @@ const storage = multer.diskStorage({
     cb(null, uploadRoot);
   },
   filename(req, file, cb) {
-    cb(null, `permit-${Date.now()}-${file.originalname}`);
+    cb(null, `permit-${Date.now()}-${sanitizeUploadName(file.originalname)}`);
   },
 });
 
@@ -98,7 +102,8 @@ router.delete('/:id', protect, admin, async (req, res) => {
       }
 
       // Try to delete the file from filesystem
-      const filePath = path.join(__dirname, '..', permit.filePath);
+      const relativePermitPath = String(permit.filePath || '').replace(/^\/+/, '');
+      const filePath = path.join(__dirname, '..', relativePermitPath);
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }

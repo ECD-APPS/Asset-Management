@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 // Removed built-in categories seeder
 const seedStoresAndUsers = require('./utils/seedStoresAndUsers');
 const compression = require('compression');
@@ -11,7 +12,6 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const cookieParser = require('cookie-parser');
-const csrf = require('csurf');
 const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
 const { createBackupArtifact } = require('./utils/backupRecovery');
@@ -40,6 +40,7 @@ const systemRoutes = require('./routes/system');
 const toolRoutes = require('./routes/tools');
 const consumableRoutes = require('./routes/consumables');
 const { backupDatabase } = require('./backup_db');
+const { protect } = require('./middleware/authMiddleware');
 
 // Models for seeding
 const Store = require('./models/Store');
@@ -135,7 +136,13 @@ const allowedOrigins = allowedOrigin
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+const uploadsPublic = String(process.env.UPLOADS_PUBLIC || (isProd ? 'false' : 'true')).toLowerCase() === 'true';
+const uploadsStatic = express.static(path.join(__dirname, 'uploads'));
+if (uploadsPublic) {
+  app.use('/uploads', uploadsStatic);
+} else {
+  app.use('/uploads', protect, uploadsStatic);
+}
 
 // Health endpoints
 app.get('/healthz', async (req, res) => {
@@ -190,31 +197,55 @@ app.get('/api/readyz', async (req, res) => {
 const enableCsrf = String(process.env.ENABLE_CSRF || (isProd ? 'true' : 'false')).toLowerCase() === 'true';
 if (enableCsrf) {
   const sameSite = resolveSameSite();
-  const csrfProtection = csrf({
-    cookie: {
-      key: 'csrfSecret',
-      httpOnly: true,
-      sameSite,
-      secure: isProd,
-      path: '/',
-    }
-  });
-  app.use(csrfProtection);
-  // Expose token for client apps via non-HttpOnly cookie (read by Axios)
+  const csrfSecret = String(process.env.CSRF_SIGNING_SECRET || cookieSecret || 'dev-csrf-signing-secret');
+  const isUnsafeMethod = (method) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(method || '').toUpperCase());
+  const toB64Url = (buffer) => Buffer.from(buffer).toString('base64url');
+  const signNonce = (nonce) => toB64Url(
+    crypto.createHmac('sha256', csrfSecret).update(String(nonce || '')).digest()
+  );
+  const createCsrfToken = () => {
+    const nonce = toB64Url(crypto.randomBytes(32));
+    const sig = signNonce(nonce);
+    return `${nonce}.${sig}`;
+  };
+  const safeEqual = (a, b) => {
+    const left = Buffer.from(String(a || ''));
+    const right = Buffer.from(String(b || ''));
+    if (left.length !== right.length) return false;
+    return crypto.timingSafeEqual(left, right);
+  };
+  const verifyCsrfToken = (token) => {
+    const raw = String(token || '');
+    const [nonce, sig] = raw.split('.');
+    if (!nonce || !sig) return false;
+    return safeEqual(sig, signNonce(nonce));
+  };
   app.use((req, res, next) => {
-    try {
-      const secureCookie = shouldUseSecureCookie(req);
-      const token = req.csrfToken();
-      res.cookie('XSRF-TOKEN', token, {
-        httpOnly: false,
-        sameSite,
-        secure: secureCookie,
-        path: '/',
-      });
-    } catch (e) {
-      // If token generation fails for non-session endpoints, ignore
+    const secureCookie = shouldUseSecureCookie(req);
+    const cookieTokenRaw = String(req.cookies?.['XSRF-TOKEN'] || '');
+    const cookieToken = verifyCsrfToken(cookieTokenRaw) ? cookieTokenRaw : createCsrfToken();
+    req.csrfToken = () => cookieToken;
+    res.cookie('XSRF-TOKEN', cookieToken, {
+      httpOnly: false,
+      sameSite,
+      secure: secureCookie,
+      path: '/',
+    });
+
+    if (!isUnsafeMethod(req.method)) {
+      return next();
     }
-    next();
+    const submittedToken = String(
+      req.get('x-xsrf-token')
+      || req.get('x-csrf-token')
+      || req.body?._csrf
+      || req.query?._csrf
+      || ''
+    );
+    if (!verifyCsrfToken(cookieToken) || !verifyCsrfToken(submittedToken) || !safeEqual(cookieToken, submittedToken)) {
+      return res.status(403).json({ message: 'Invalid CSRF token' });
+    }
+    return next();
   });
 } else {
   // Dev bypass (no CSRF checks)
@@ -268,7 +299,7 @@ app.use('/api/consumables', consumableRoutes);
 const User = require('./models/User');
 const bcrypt = require('bcryptjs');
 const ActivityLog = require('./models/ActivityLog');
-const { protect, admin } = require('./middleware/authMiddleware');
+// auth middleware imported above (protect used for secured uploads)
 
 // Serve built client in production
 const clientDist = path.resolve(__dirname, '../client/dist');
@@ -276,6 +307,9 @@ const indexHtml = path.join(clientDist, 'index.html');
 
 if (String(process.env.ENABLE_DEBUG_ROUTES || '').toLowerCase() === 'true') {
   app.get('/debug-fs', (req, res) => {
+    if (isProd) {
+      return res.status(403).json({ message: 'Debug routes are disabled in production.' });
+    }
     const debugInfo = {
       cwd: process.cwd(),
       __dirname: __dirname,
@@ -424,7 +458,13 @@ const connectDB = async () => {
 
   // Ensure required operational accounts exist on startup without resetting
   // credentials for existing users.
-  await seedStoresAndUsers();
+  const defaultSeedToggle = isProd ? 'false' : 'true';
+  const shouldSeedDefaults = String(process.env.SEED_DEFAULTS || defaultSeedToggle).toLowerCase() === 'true';
+  if (shouldSeedDefaults) {
+    await seedStoresAndUsers();
+  } else {
+    console.log('Default account seeding skipped (SEED_DEFAULTS=false).');
+  }
   dropSerialUniqueIndex();
   dropStoreNameGlobalUniqueIndex();
 
@@ -525,19 +565,19 @@ mongoose.connection.on('error', (err) => {
 let serverInstance = null;
 
 const connectDBWithRetry = async () => {
-  const maxRetries = Number.parseInt(process.env.DB_CONNECT_MAX_RETRIES || (isProd ? '10' : '0'), 10);
+  const parsedRetries = Number.parseInt(process.env.DB_CONNECT_MAX_RETRIES || (isProd ? '10' : '20'), 10);
+  const maxRetries = Number.isFinite(parsedRetries) && parsedRetries > 0 ? parsedRetries : 20;
   let attempt = 0;
   let delayMs = 2000;
 
-  while (true) {
+  while (attempt < maxRetries) {
     try {
       await connectDB();
       return;
     } catch (err) {
       attempt += 1;
       console.error(`MongoDB Connection Error (attempt ${attempt}):`, err);
-      const shouldStop = maxRetries > 0 && attempt >= maxRetries;
-      if (shouldStop) {
+      if (attempt >= maxRetries) {
         throw err;
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -620,6 +660,22 @@ const seedAdmin = async () => {
   }
 };
 
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  const isMulterLimit = err?.code === 'LIMIT_FILE_SIZE';
+  const statusCode = Number(err.status || err.statusCode || (isMulterLimit ? 413 : 500));
+  const message = err?.code === 'LIMIT_FILE_SIZE'
+    ? 'Uploaded file is too large.'
+    : (err?.message || 'Internal server error');
+  if (statusCode >= 500) {
+    console.error('Unhandled API error:', err);
+  }
+  if (req.path.startsWith('/api/')) {
+    return res.status(statusCode).json({ message });
+  }
+  return res.status(statusCode).send(message);
+});
+
 // 404 Handler (Last Route)
 app.use((req, res) => {
   res.status(404).send('Not Found');
@@ -668,6 +724,7 @@ startServer().catch((error) => {
 
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason);
+  process.exit(1);
 });
 
 process.on('uncaughtException', (error) => {

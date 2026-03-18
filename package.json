@@ -17,7 +17,7 @@
     "check:smoke": "bash scripts/api-smoke-dev.sh"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0 <21"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

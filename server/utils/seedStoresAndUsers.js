@@ -72,7 +72,7 @@ const seedStoresAndUsers = async () => {
         role: 'Super Admin',
         assignedStore: null
       });
-      console.log(`Created Super Admin: ${superAdminEmail} / superadmin123`);
+      console.log(`Created Super Admin: ${superAdminEmail}`);
     } else {
       // If there are duplicate variants of this account, archive extras first.
       for (const candidate of superAdminMatches) {
@@ -113,7 +113,7 @@ const seedStoresAndUsers = async () => {
             role: 'Admin',
             assignedStore: store._id
           });
-          console.log(`Created ${adminData.name}: ${adminData.email} / ${adminData.password}`);
+          console.log(`Created ${adminData.name}: ${adminData.email}`);
         } else {
           for (const candidate of adminMatches) {
             if (String(candidate._id) !== String(adminUser._id)) {

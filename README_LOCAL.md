@@ -5,7 +5,7 @@ Use this guide when running the full stack on one Linux machine (no k3s).
 ## Prerequisites
 
 - Ubuntu/Linux machine
-- Node.js 18+
+- Node.js 20 LTS+
 - npm
 - MongoDB installed locally and running
 

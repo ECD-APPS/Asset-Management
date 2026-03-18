@@ -9,6 +9,7 @@ const TechRequest = () => {
   const [message, setMessage] = useState('');
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [hasUpdates, setHasUpdates] = useState(false);
   const lastSeenKey = useMemo(() => `req_last_seen_${user?._id || 'anon'}`, [user]);
 
@@ -45,9 +46,11 @@ const TechRequest = () => {
   }, [lastSeenKey]);
 
   const submit = async () => {
+    if (submitting) return;
     setMessage('');
     if (!form.item_name) { setMessage('Enter item name'); return; }
     try {
+      setSubmitting(true);
       await api.post('/requests', form);
       setMessage('Request submitted');
       setForm({ item_name: '', quantity: 1, description: '', store: '' });
@@ -55,6 +58,8 @@ const TechRequest = () => {
       setRequests(res.data);
     } catch (err) {
       setMessage(err.response?.data?.message || 'Failed to submit request');
+    } finally {
+      setSubmitting(false);
     }
   };
   
@@ -115,7 +120,13 @@ const TechRequest = () => {
           </select>
         </div>
         <div className="flex justify-end">
-          <button onClick={submit} className="bg-amber-600 hover:bg-amber-700 text-black px-4 py-2 rounded">Submit Request</button>
+          <button
+            onClick={submit}
+            disabled={submitting}
+            className={`text-black px-4 py-2 rounded ${submitting ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
+          >
+            {submitting ? 'Submitting...' : 'Submit Request'}
+          </button>
         </div>
         {message && <div className="text-center text-sm text-gray-600">{message}</div>}
       </div>

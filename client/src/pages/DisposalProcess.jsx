@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 const DisposalProcess = () => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [actionInFlight, setActionInFlight] = useState(false);
   const [activeTab, setActiveTab] = useState('faulty');
   const [autoRefresh, setAutoRefresh] = useState(true);
 
@@ -47,26 +48,34 @@ const DisposalProcess = () => {
   }, [autoRefresh, fetchAssets]);
 
   const handleMarkRepaired = async (assetId) => {
+    if (actionInFlight) return;
     if (!window.confirm('Mark this asset as repaired and available in store?')) return;
     
     try {
+      setActionInFlight(true);
       await api.put(`/assets/${assetId}`, { status: 'In Store', condition: 'Repaired' });
       fetchAssets(); // Refresh list
     } catch (err) {
       console.error(err);
       alert('Failed to update asset');
+    } finally {
+      setActionInFlight(false);
     }
   };
 
   const handleDispose = async (asset) => {
+    if (actionInFlight) return;
     const reason = window.prompt('Disposal reason (optional):', 'Not repairable');
     if (reason === null) return;
     try {
+      setActionInFlight(true);
       await api.post('/assets/dispose', { assetId: asset._id, reason });
       fetchAssets();
     } catch (err) {
       console.error(err);
       alert(err?.response?.data?.message || 'Failed to dispose asset');
+    } finally {
+      setActionInFlight(false);
     }
   };
 
@@ -193,13 +202,15 @@ const DisposalProcess = () => {
                         <div className="flex items-center gap-3">
                           <button
                             onClick={() => handleMarkRepaired(a._id)}
-                            className="text-emerald-700 hover:text-emerald-900 font-medium"
+                            disabled={actionInFlight}
+                            className={`font-medium ${actionInFlight ? 'text-slate-400 cursor-not-allowed' : 'text-emerald-700 hover:text-emerald-900'}`}
                           >
                             Mark as Repaired
                           </button>
                           <button
                             onClick={() => handleDispose(a)}
-                            className="text-red-600 hover:text-red-900 font-medium"
+                            disabled={actionInFlight}
+                            className={`font-medium ${actionInFlight ? 'text-slate-400 cursor-not-allowed' : 'text-red-600 hover:text-red-900'}`}
                           >
                             Dispose
                           </button>

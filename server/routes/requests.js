@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Request = require('../models/Request');
 const Store = require('../models/Store');
-const xlsx = require('xlsx');
+const ExcelJS = require('exceljs');
 const { protect, admin, adminOrViewer, restrictViewer } = require('../middleware/authMiddleware');
 const sendEmail = require('../utils/sendEmail');
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -222,12 +222,12 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
       r.createdAt,
       r.updatedAt
     ]));
-    const wb = xlsx.utils.book_new();
-    const ws = xlsx.utils.aoa_to_sheet([header, ...rows]);
-    ws['!cols'] = [{ wch: 24 },{ wch: 10 },{ wch: 32 },{ wch: 12 },{ wch: 16 },{ wch: 22 },{ wch: 26 },{ wch: 18 },{ wch: 18 },{ wch: 22 },{ wch: 22 }];
-    ws['!autofilter'] = { ref: 'A1:K1' };
-    xlsx.utils.book_append_sheet(wb, ws, 'REQUESTS');
-    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('REQUESTS');
+    ws.addRows([header, ...rows]);
+    ws.columns = [{ width: 24 },{ width: 10 },{ width: 32 },{ width: 12 },{ width: 16 },{ width: 22 },{ width: 26 },{ width: 18 },{ width: 18 },{ width: 22 },{ width: 22 }];
+    ws.autoFilter = 'A1:K1';
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
     res.setHeader('Content-Disposition', 'attachment; filename=REQUESTS_EXPORT.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);

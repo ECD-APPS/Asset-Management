@@ -147,10 +147,19 @@ router.get('/csrf-token', (req, res) => {
 // @route   GET /api/auth/emergency-reset-superadmin
 // @access  Restricted by env and secret
 router.get('/emergency-reset-superadmin', async (req, res) => {
-  const param = req.query?.secret;
+  const param = req.get('x-emergency-reset-secret') || req.query?.secret;
   const secret = process.env.EMERGENCY_RESET_SECRET;
+  const emergencyResetEnabled = String(process.env.ENABLE_EMERGENCY_RESET || 'false').toLowerCase() === 'true';
+  const rawIp = String(req.ip || '').replace('::ffff:', '');
+  const isLocalRequest = ['127.0.0.1', '::1'].includes(rawIp);
   if (process.env.NODE_ENV === 'production') {
     return res.status(403).json({ message: 'Forbidden in production.' });
+  }
+  if (!emergencyResetEnabled) {
+    return res.status(403).json({ message: 'Forbidden: emergency reset is disabled.' });
+  }
+  if (!isLocalRequest) {
+    return res.status(403).json({ message: 'Forbidden: local access only.' });
   }
   if (!secret || param !== secret) {
     return res.status(403).json({ message: 'Forbidden: Invalid secret key.' });
@@ -158,7 +167,7 @@ router.get('/emergency-reset-superadmin', async (req, res) => {
 
   try {
     const email = 'superadmin@expo.com';
-    const password = '123456';
+    const password = 'superadmin123';
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
@@ -168,11 +177,7 @@ router.get('/emergency-reset-superadmin', async (req, res) => {
       user.password = hashedPassword;
       user.role = 'Super Admin';
       await user.save();
-      return res.send(`
-        <h1>Success</h1>
-        <p>Super Admin password reset to: <strong>123456</strong></p>
-        <p><a href="/">Go to Login</a></p>
-      `);
+      return res.send('<h1>Success</h1><p>Super Admin account reset completed.</p><p><a href="/">Go to Login</a></p>');
     } else {
       await User.create({
         name: 'Super Admin',
@@ -181,11 +186,7 @@ router.get('/emergency-reset-superadmin', async (req, res) => {
         role: 'Super Admin',
         assignedStore: null
       });
-      return res.send(`
-        <h1>Success</h1>
-        <p>Super Admin account CREATED with password: <strong>123456</strong></p>
-        <p><a href="/">Go to Login</a></p>
-      `);
+      return res.send('<h1>Success</h1><p>Super Admin account was created.</p><p><a href="/">Go to Login</a></p>');
     }
   } catch (error) {
     console.error(error);

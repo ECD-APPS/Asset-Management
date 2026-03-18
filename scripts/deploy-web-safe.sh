@@ -20,6 +20,11 @@ BACKUP_PATH="${BACKUP_ROOT}/backup-${TIMESTAMP}"
 DIST_BACKUP="${BACKUP_PATH}/dist"
 NGINX_BACKUP="${BACKUP_PATH}/nginx-expo.conf"
 
+if [[ "$(node -p "process.versions.node.split('.')[0]")" -lt 20 ]]; then
+  echo "[ERROR] Node.js 20+ is required. Current: $(node -v)"
+  exit 1
+fi
+
 rollback() {
   echo "[ROLLBACK] Web deployment failed. Restoring previous web state..."
   if [[ -d "${DIST_BACKUP}" ]]; then
@@ -53,7 +58,7 @@ git pull --ff-only origin "${BRANCH}"
 
 echo "[INFO] Building frontend"
 cd "${APP_DIR}/client"
-npm install --no-audit --no-fund
+npm ci --no-audit --no-fund
 npm run build
 
 echo "[INFO] Deploying built files to ${DIST_DIR}"
@@ -64,7 +69,8 @@ rm -rf "${DIST_DIR}"
 mv "${DIST_DIR}.new" "${DIST_DIR}"
 
 echo "[INFO] Updating Nginx config"
-cp -a "${APP_DIR}/nginx.conf" "${NGINX_SITE}"
+APP_UPSTREAM="${APP_UPSTREAM:-127.0.0.1:5000}"
+sed "s#http://127.0.0.1:5000#http://${APP_UPSTREAM}#g" "${APP_DIR}/nginx.conf" > "${NGINX_SITE}"
 ln -sf "${NGINX_SITE}" /etc/nginx/sites-enabled/expo
 rm -f /etc/nginx/sites-enabled/default
 nginx -t

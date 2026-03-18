@@ -5,14 +5,17 @@ import { Activity } from 'lucide-react';
 const SystemLogs = () => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     const fetchLogs = async () => {
       try {
         const res = await api.get('/assets/activity-logs');
         setLogs(res.data);
+        setError('');
       } catch (error) {
         console.error('Error fetching activity logs:', error);
+        setError(error?.response?.data?.message || 'Failed to load system logs.');
       } finally {
         setLoading(false);
       }
@@ -37,6 +40,11 @@ const SystemLogs = () => {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        {error && (
+          <div className="border-b border-red-100 bg-red-50 px-6 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
         <div className="overflow-x-auto">
            <table className="min-w-full divide-y divide-gray-100">
             <thead className="bg-gray-50">

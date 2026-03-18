@@ -16,6 +16,11 @@ BRANCH="${BRANCH:-main}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_PATH="${BACKUP_ROOT}/backup-${TIMESTAMP}"
 
+if [[ "$(node -p "process.versions.node.split('.')[0]")" -lt 20 ]]; then
+  echo "[ERROR] Node.js 20+ is required. Current: $(node -v)"
+  exit 1
+fi
+
 rollback() {
   echo "[ROLLBACK] Deployment failed. Restoring previous app state..."
   if [[ -d "${BACKUP_PATH}" ]]; then
@@ -43,9 +48,9 @@ git checkout "${BRANCH}"
 git pull --ff-only origin "${BRANCH}"
 
 echo "[INFO] Installing dependencies"
-npm install --no-audit --no-fund
+npm ci --no-audit --no-fund
 cd "${APP_DIR}/server"
-npm install --omit=dev --no-audit --no-fund
+npm ci --omit=dev --no-audit --no-fund
 
 if [[ ! -f "${APP_DIR}/server/.env" ]]; then
   echo "[ERROR] Missing ${APP_DIR}/server/.env"

@@ -33,7 +33,7 @@ Management network (`10.96.133.160/28`, VLAN 1746) remains isolated for admin ac
 ```bash
 sudo apt update
 sudo apt install -y git curl build-essential
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 sudo npm i -g pm2
 ```
@@ -43,7 +43,7 @@ sudo npm i -g pm2
 ```bash
 sudo apt update
 sudo apt install -y git curl build-essential nginx
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 

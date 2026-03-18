@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
@@ -86,51 +86,47 @@ const Portal = () => {
   const [promoteShadowLoading, setPromoteShadowLoading] = useState(false);
   const [failbackLoading, setFailbackLoading] = useState(false);
 
+  const fetchPortalStores = useCallback(async () => {
+    try {
+      setLoading(true);
+      const promises = [api.get('/stores?main=true')];
+      // Only Super Admin can see deletion requests
+      if (user?.role === 'Super Admin') {
+        promises.push(api.get('/stores?deletionRequested=true'));
+      }
+      const [storesRes, requestsRes] = await Promise.all(promises);
+      let availableStores = storesRes.data || [];
+      // Filter stores for Viewers based on accessScope
+      if (user?.role === 'Viewer' && user?.accessScope && user.accessScope !== 'All') {
+        availableStores = availableStores.filter(store =>
+          store.name.toUpperCase().includes(user.accessScope.toUpperCase()) ||
+          store.code?.toUpperCase() === user.accessScope.toUpperCase()
+        );
+      }
+      setStores(availableStores);
+      if (requestsRes) {
+        setDeletionRequests(requestsRes.data);
+      }
+    } catch (error) {
+      console.error('Error fetching stores:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.role, user?.accessScope]);
+
   useEffect(() => {
     const isGlobalViewer = user?.role === 'Viewer' && !user?.assignedStore;
     if (user?.role !== 'Super Admin' && !isGlobalViewer) {
       navigate('/');
       return;
     }
-
-    const fetchStores = async () => {
-      try {
-        const promises = [api.get('/stores?main=true')];
-        // Only Super Admin can see deletion requests
-        if (user?.role === 'Super Admin') {
-          promises.push(api.get('/stores?deletionRequested=true'));
-        }
-        
-        const [storesRes, requestsRes] = await Promise.all(promises);
-        
-        let availableStores = storesRes.data || [];
-        
-        // Filter stores for Viewers based on accessScope
-        if (user?.role === 'Viewer' && user?.accessScope && user.accessScope !== 'All') {
-          availableStores = availableStores.filter(store => 
-            store.name.toUpperCase().includes(user.accessScope.toUpperCase()) || 
-            store.code?.toUpperCase() === user.accessScope.toUpperCase()
-          );
-        }
-        
-        setStores(availableStores);
-        if (requestsRes) {
-          setDeletionRequests(requestsRes.data);
-        }
-      } catch (error) {
-        console.error('Error fetching stores:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStores();
+    fetchPortalStores();
 
     const saved = window.localStorage.getItem('expo_last_backup_download');
     if (saved) {
       setLastBackupTime(saved);
     }
-  }, [user, navigate]);
+  }, [user, navigate, fetchPortalStores]);
 
   useEffect(() => {
     if (user?.role !== 'Super Admin') return;
@@ -267,11 +263,12 @@ const Portal = () => {
     try {
       setLoading(true);
       await api.post('/system/seed');
-      alert('System initialized successfully. Reloading...');
-      window.location.reload();
+      await fetchPortalStores();
+      alert('System initialized successfully.');
     } catch (err) {
       console.error(err);
       alert('Failed to initialize system: ' + (err.response?.data?.message || err.message));
+    } finally {
       setLoading(false);
     }
   };
@@ -294,7 +291,7 @@ const Portal = () => {
       setResetPassword('');
       setResetStoreId('');
       setIncludeUsers(false);
-      window.location.reload();
+      await fetchPortalStores();
     } catch (err) {
       console.error(err);
       alert(err.response?.data?.message || 'Reset failed');
@@ -615,8 +612,9 @@ const Portal = () => {
       await api.post('/system/resilience/restore-to-time/apply', {
         targetTimestamp: restoreTargetTimestamp
       });
-      alert('Restore-to-time completed. The system will reload.');
-      window.location.reload();
+      await fetchResilienceStatus();
+      await fetchBackupArtifacts();
+      alert('Restore-to-time completed.');
     } catch (error) {
       alert('Restore-to-time failed: ' + (error.response?.data?.message || error.message));
     } finally {
@@ -655,8 +653,9 @@ const Portal = () => {
     try {
       setPromoteShadowLoading(true);
       await api.post('/system/resilience/shadow/promote', { confirm: 'PROMOTE' });
-      alert('Shadow promoted successfully. Reloading...');
-      window.location.reload();
+      await fetchResilienceStatus();
+      await fetchBackupArtifacts();
+      alert('Shadow promoted successfully.');
     } catch (error) {
       alert('Promotion failed: ' + (error.response?.data?.message || error.message));
     } finally {
@@ -669,8 +668,9 @@ const Portal = () => {
     try {
       setFailbackLoading(true);
       await api.post('/system/resilience/shadow/failback', {});
-      alert('Failback completed. Reloading...');
-      window.location.reload();
+      await fetchResilienceStatus();
+      await fetchBackupArtifacts();
+      alert('Failback completed.');
     } catch (error) {
       alert('Failback failed: ' + (error.response?.data?.message || error.message));
     } finally {

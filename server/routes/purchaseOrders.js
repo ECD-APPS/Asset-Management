@@ -5,7 +5,7 @@ const { protect, admin, adminOrViewer } = require('../middleware/authMiddleware'
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const xlsx = require('xlsx');
+const ExcelJS = require('exceljs');
 const Vendor = require('../models/Vendor');
 const Store = require('../models/Store');
 
@@ -14,13 +14,17 @@ const uploadRoot = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadRoot)) {
   fs.mkdirSync(uploadRoot, { recursive: true });
 }
+const sanitizeUploadName = (name) => String(name || 'file')
+  .split(path.sep).pop()
+  .replace(/[^a-zA-Z0-9._-]/g, '_')
+  .slice(0, 120);
 
 const storage = multer.diskStorage({
   destination(req, file, cb) {
     cb(null, uploadRoot);
   },
   filename(req, file, cb) {
-    cb(null, `${Date.now()}-${file.originalname}`);
+    cb(null, `${Date.now()}-${sanitizeUploadName(file.originalname)}`);
   },
 });
 
@@ -31,6 +35,16 @@ const upload = multer({
     files: 10
   }
 });
+const safeUnlinkUpload = (relativePath) => {
+  const normalized = String(relativePath || '').replace(/^\/+/, '');
+  if (!normalized) return;
+  const fullPath = path.join(__dirname, '..', normalized);
+  try {
+    if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+  } catch {
+    // Best effort cleanup.
+  }
+};
 
 async function applyViewerStoreFilter(req, filter) {
   if (req.user?.role !== 'Viewer') {
@@ -50,7 +64,7 @@ async function applyViewerStoreFilter(req, filter) {
 
   const mainStores = await Store.find({
     isMainStore: true,
-    name: { $regex: scope, $options: 'i' }
+    name: { $regex: String(scope || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' }
   }).select('_id').lean();
 
   const mainIds = mainStores.map(s => s._id);
@@ -174,12 +188,26 @@ router.put('/:id', protect, admin, upload.array('attachments'), async (req, res)
       }
 
       const newAttachments = req.files ? req.files.map(file => `/uploads/${file.filename}`) : [];
-      
-      // Combine existing attachments with new ones (if any logic needed for removal, handle separately)
-      // Here we just append new ones. 
-      // If the frontend sends 'existingAttachments' array, we could use that to filter out removed ones.
-      // For now, let's just append.
-      const updatedAttachments = [...(po.attachments || []), ...newAttachments];
+      const rawExisting = req.body?.existingAttachments;
+      const existingAttachments = Array.isArray(rawExisting)
+        ? rawExisting
+        : (typeof rawExisting === 'string' && rawExisting.trim()
+          ? (() => {
+              try { return JSON.parse(rawExisting); } catch { return null; }
+            })()
+          : null);
+      const keepSet = new Set(
+        (Array.isArray(existingAttachments) ? existingAttachments : (po.attachments || []))
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      );
+      const previousAttachments = Array.isArray(po.attachments) ? po.attachments : [];
+      previousAttachments.forEach((attachment) => {
+        if (!keepSet.has(String(attachment || '').trim())) {
+          safeUnlinkUpload(attachment);
+        }
+      });
+      const updatedAttachments = [...Array.from(keepSet), ...newAttachments];
       
       // Update fields
       Object.assign(po, req.body);
@@ -207,6 +235,9 @@ router.delete('/:id', protect, admin, async (req, res) => {
         return res.status(404).json({ message: 'Purchase Order not found' });
       }
       
+      (po.attachments || []).forEach((attachment) => {
+        safeUnlinkUpload(attachment);
+      });
       await po.deleteOne();
       res.json({ message: 'Purchase Order removed' });
     } else {
@@ -285,18 +316,18 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
       });
     });
 
-    const wb = xlsx.utils.book_new();
-    const wsMain = xlsx.utils.aoa_to_sheet([header, ...rows]);
-    wsMain['!cols'] = header.map((_, idx) => ({ wch: [16, 24, 18, 18, 14, 12, 12, 14, 16, 18, 24, 18, 22, 22][idx] || 18 }));
-    wsMain['!autofilter'] = { ref: 'A1:N1' };
-    xlsx.utils.book_append_sheet(wb, wsMain, 'Purchase Orders');
+    const wb = new ExcelJS.Workbook();
+    const wsMain = wb.addWorksheet('Purchase Orders');
+    wsMain.addRows([header, ...rows]);
+    wsMain.columns = header.map((_, idx) => ({ width: [16, 24, 18, 18, 14, 12, 12, 14, 16, 18, 24, 18, 22, 22][idx] || 18 }));
+    wsMain.autoFilter = 'A1:N1';
 
-    const wsItems = xlsx.utils.aoa_to_sheet([itemHeader, ...itemRows]);
-    wsItems['!cols'] = itemHeader.map(() => ({ wch: 18 }));
-    wsItems['!autofilter'] = { ref: 'A1:F1' };
-    xlsx.utils.book_append_sheet(wb, wsItems, 'PO Items');
+    const wsItems = wb.addWorksheet('PO Items');
+    wsItems.addRows([itemHeader, ...itemRows]);
+    wsItems.columns = itemHeader.map(() => ({ width: 18 }));
+    wsItems.autoFilter = 'A1:F1';
 
-    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
     res.setHeader('Content-Disposition', 'attachment; filename=PURCHASE_ORDERS_EXPORT.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
@@ -307,7 +338,7 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
 
 router.get('/template', protect, admin, async (req, res) => {
   try {
-    const wb = xlsx.utils.book_new();
+    const wb = new ExcelJS.Workbook();
 
     // Lookups
     const statuses = ['Draft', 'Submitted', 'Approved', 'Cancelled'];
@@ -321,9 +352,9 @@ router.get('/template', protect, admin, async (req, res) => {
       ['Vendors', ...vendorNames],
       ['Stores', ...mainStores]
     ];
-    const wsLookups = xlsx.utils.aoa_to_sheet(lookupsData);
-    wsLookups['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 22 }];
-    xlsx.utils.book_append_sheet(wb, wsLookups, 'Lookups');
+    const wsLookups = wb.addWorksheet('Lookups');
+    wsLookups.addRows(lookupsData);
+    wsLookups.columns = [{ width: 12 }, { width: 22 }, { width: 22 }, { width: 22 }, { width: 22 }];
 
     // PO header sheet
     const poHeader = [
@@ -336,16 +367,16 @@ router.get('/template', protect, admin, async (req, res) => {
       'Store'
     ];
     const poRows = [poHeader];
-    const wsPO = xlsx.utils.aoa_to_sheet(poRows);
-    wsPO['!cols'] = poHeader.map((_, idx) => ({ wch: [16, 22, 14, 14, 14, 30, 18][idx] || 18 }));
-    xlsx.utils.book_append_sheet(wb, wsPO, 'POs');
+    const wsPO = wb.addWorksheet('POs');
+    wsPO.addRows(poRows);
+    wsPO.columns = poHeader.map((_, idx) => ({ width: [16, 22, 14, 14, 14, 30, 18][idx] || 18 }));
 
     // PO items sheet
     const itemsHeader = ['PO Number', 'Item Name', 'Quantity', 'Rate', 'Tax'];
     const itemsRows = [itemsHeader];
-    const wsItems = xlsx.utils.aoa_to_sheet(itemsRows);
-    wsItems['!cols'] = itemsHeader.map(() => ({ wch: 18 }));
-    xlsx.utils.book_append_sheet(wb, wsItems, 'PO Items');
+    const wsItems = wb.addWorksheet('PO Items');
+    wsItems.addRows(itemsRows);
+    wsItems.columns = itemsHeader.map(() => ({ width: 18 }));
 
     // README
     const readme = [
@@ -358,11 +389,11 @@ router.get('/template', protect, admin, async (req, res) => {
       ['Dates: use YYYY-MM-DD'],
       ['Totals are calculated server-side from items']
     ];
-    const wsReadme = xlsx.utils.aoa_to_sheet(readme);
-    wsReadme['!cols'] = [{ wch: 80 }];
-    xlsx.utils.book_append_sheet(wb, wsReadme, 'README');
+    const wsReadme = wb.addWorksheet('README');
+    wsReadme.addRows(readme);
+    wsReadme.columns = [{ width: 80 }];
 
-    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
     res.setHeader('Content-Disposition', 'attachment; filename=purchase_orders_template.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);

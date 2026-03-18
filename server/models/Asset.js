@@ -120,6 +120,23 @@ const assetSchema = new mongoose.Schema({
     ticket_number: String,
     notes: String
   },
+  reserved: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  reserved_at: {
+    type: Date,
+    default: null
+  },
+  reserved_by: {
+    type: String,
+    default: ''
+  },
+  reservation_note: {
+    type: String,
+    default: ''
+  },
   history: {
     type: [
       {
@@ -169,6 +186,10 @@ const assetSchema = new mongoose.Schema({
   price: {
     type: Number,
     default: 0
+  },
+  customFields: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   }
 }, { timestamps: true });
 

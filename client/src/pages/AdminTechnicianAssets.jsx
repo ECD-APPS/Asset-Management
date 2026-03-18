@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api/axios';
 
 const AdminTechnicianAssets = () => {
@@ -10,6 +10,7 @@ const AdminTechnicianAssets = () => {
   const [page, setPage] = useState(1);
   const [limit] = useState(25);
   const [total, setTotal] = useState(0);
+  const requestIdRef = useRef(0);
 
   const getDerivedStatus = (asset) => {
     const cond = String(asset.condition || '').toLowerCase();
@@ -26,6 +27,7 @@ const AdminTechnicianAssets = () => {
   };
 
   const loadAssets = async (q, p = 1) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     try {
       const res = await api.get('/assets/by-technician', {
@@ -35,16 +37,18 @@ const AdminTechnicianAssets = () => {
           limit
         }
       });
+      if (requestId !== requestIdRef.current) return;
       setAssets(res.data.items || []);
       setTotal(res.data.total || 0);
       setPage(res.data.page || 1);
       
       const pr = await api.get('/assets/return-pending');
+      if (requestId !== requestIdRef.current) return;
       setPending(pr.data || []);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   };
 

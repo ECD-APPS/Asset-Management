@@ -94,7 +94,7 @@ COOKIE_SECRET=replace_with_secure_random_value
 COOKIE_SECURE=false
 ENABLE_CSRF=true
 CORS_ORIGIN=http://10.96.133.181
-SEED_DEFAULTS=true
+SEED_DEFAULTS=false
 ```
 
 If HTTPS is configured at Web tier, set:
@@ -105,9 +105,9 @@ CORS_ORIGIN=https://10.96.133.181
 
 Important: `CORS_ORIGIN` must exactly match the URL users open in browser.
 
-### Default Login Accounts (deployment-safe)
+### Default Login Accounts
 
-With `SEED_DEFAULTS=true`, backend startup ensures these users always exist with these credentials:
+When `SEED_DEFAULTS=true` (recommended only for first bootstrap), backend startup ensures these users exist with these credentials:
 
 - `superadmin@expo.com` / `superadmin123`
 - `scy@expo.com` / `admin123`
@@ -150,7 +150,8 @@ npm run build
 
 Use repo `nginx.conf`:
 - serves frontend static files
-- proxies `/api/*` and `/uploads/*` to `http://10.96.133.197:5000`
+- proxies `/api/*` and `/uploads/*` to App API upstream
+- for `deploy-web-safe.sh`, set upstream at runtime with `APP_UPSTREAM=10.96.133.197:5000`
 
 Access URL:
 - `http://10.96.133.181`

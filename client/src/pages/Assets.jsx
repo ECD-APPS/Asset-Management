@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw, Scissors, Clock, MessageSquarePlus, GripVertical } from 'lucide-react';
+import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, RotateCcw, Scissors, Clock, MessageSquarePlus, GripVertical, Lock, LockOpen } from 'lucide-react';
 import api from '../api/axios';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../context/AuthContext';
@@ -18,45 +18,89 @@ const flattenProducts = (list, level = 0, ancestors = []) => {
   return out;
 };
 
-const COLUMN_OPTIONS = [
-  ['uniqueId', 'Unique ID'],
-  ['name', 'Name'],
-  ['model', 'Model'],
-  ['serial', 'Serial'],
-  ['serialLast4', 'Serial Last 4'],
-  ['ticket', 'Ticket'],
-  ['poNumber', 'PO Number'],
-  ['mac', 'MAC Address'],
-  ['rfid', 'RFID'],
-  ['qr', 'QR Code'],
-  ['manufacturer', 'Manufacturer'],
-  ['condition', 'Condition'],
-  ['status', 'Status'],
-  ['prevStatus', 'Prev Status'],
-  ['store', 'Store'],
-  ['location', 'Location'],
-  ['quantity', 'Quantity'],
-  ['vendor', 'Vendor'],
-  ['source', 'Source'],
-  ['deliveredBy', 'Delivered By'],
-  ['deliveredAt', 'Delivered At'],
-  ['assignedTo', 'Assigned To'],
-  ['dateTime', 'Date & Time'],
-  ['price', 'Price'],
-  ['action', 'Action']
+const DEFAULT_COLUMN_DEFS = [
+  { id: 'uniqueId', label: 'Unique ID', key: 'uniqueId', visible: true, builtin: true },
+  { id: 'name', label: 'Name', key: 'name', visible: true, builtin: true },
+  { id: 'model', label: 'Model Number', key: 'model_number', visible: true, builtin: true },
+  { id: 'serial', label: 'Serial Number', key: 'serial_number', visible: true, builtin: true },
+  { id: 'serialLast4', label: 'Serial Last 4', key: 'serial_last_4', visible: true, builtin: true },
+  { id: 'ticket', label: 'Ticket', key: 'ticket_number', visible: true, builtin: true },
+  { id: 'poNumber', label: 'PO Number', key: 'po_number', visible: true, builtin: true },
+  { id: 'mac', label: 'MAC Address', key: 'mac_address', visible: true, builtin: true },
+  { id: 'rfid', label: 'RFID', key: 'rfid', visible: true, builtin: true },
+  { id: 'qr', label: 'QR Code', key: 'qr_code', visible: true, builtin: true },
+  { id: 'manufacturer', label: 'Manufacturer', key: 'manufacturer', visible: true, builtin: true },
+  { id: 'condition', label: 'Condition', key: 'condition', visible: true, builtin: true },
+  { id: 'status', label: 'Status', key: 'status', visible: true, builtin: true },
+  { id: 'prevStatus', label: 'Prev Status', key: 'previous_status', visible: true, builtin: true },
+  { id: 'store', label: 'Store', key: 'store.name', visible: true, builtin: true },
+  { id: 'location', label: 'Location', key: 'location', visible: true, builtin: true },
+  { id: 'quantity', label: 'Quantity', key: 'quantity', visible: true, builtin: true },
+  { id: 'vendor', label: 'Vendor', key: 'vendor_name', visible: true, builtin: true },
+  { id: 'source', label: 'Source', key: 'source', visible: true, builtin: true },
+  { id: 'deliveredBy', label: 'Delivered By', key: 'delivered_by_name', visible: true, builtin: true },
+  { id: 'deliveredAt', label: 'Delivered At', key: 'delivered_at', visible: true, builtin: true },
+  { id: 'assignedTo', label: 'Assigned To', key: 'assigned_to.name', visible: true, builtin: true },
+  { id: 'dateTime', label: 'Date & Time', key: 'updatedAt', visible: true, builtin: true },
+  { id: 'price', label: 'Price', key: 'price', visible: true, builtin: true },
+  { id: 'action', label: 'Action', key: 'action', visible: true, builtin: true }
 ];
-const ALLOWED_STATUS_FILTERS = new Set(['In Store', 'In Use', 'Missing']);
+const ALLOWED_STATUS_FILTERS = new Set(['In Store', 'In Use', 'Missing', 'Reserved']);
+const DEFAULT_COLUMN_ORDER = DEFAULT_COLUMN_DEFS.map((column) => column.id);
+const DEFAULT_VISIBLE_COLUMNS = Object.fromEntries(DEFAULT_COLUMN_DEFS.map((column) => [column.id, column.visible !== false]));
+const KNOWN_EDIT_KEYS = new Set([
+  'name',
+  'model_number',
+  'serial_number',
+  'ticket_number',
+  'po_number',
+  'vendor_name',
+  'price',
+  'rfid',
+  'qr_code',
+  'mac_address',
+  'manufacturer',
+  'location',
+  'condition',
+  'status',
+  'store',
+  'product_name',
+  'quantity',
+  'serial_last_4',
+  'previous_status',
+  'source',
+  'delivered_by_name',
+  'delivered_at',
+  'updatedAt',
+  'action',
+  'uniqueId'
+]);
+const NON_EDITABLE_CUSTOM_KEYS = new Set([
+  'assigned_to.name',
+  'assigned_to.email',
+  'store.name',
+  'store.parentStore.name',
+  'previous_status',
+  'updatedAt',
+  'createdAt'
+]);
+const MAINTENANCE_VENDOR_OPTIONS = ['Siemens', 'G42'];
 
 const Assets = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const searchParams = new URLSearchParams(location.search);
+  const searchParam = searchParams.get('search');
   const productParam = searchParams.get('product');
   const statusParam = searchParams.get('status');
   const actionParam = searchParams.get('action');
   const locationParam = searchParams.get('location');
   const storeParam = searchParams.get('store');
+  const maintenanceVendorParam = searchParams.get('maintenance_vendor');
+  const reservedParam = searchParams.get('reserved');
   const { user, activeStore } = useAuth();
+  const scopedStoreName = String(activeStore?.name || user?.assignedStore?.name || '').toUpperCase();
+  const isScyStoreContext = scopedStoreName.includes('SCY');
 
   const [assets, setAssets] = useState([]);
   const [stores, setStores] = useState([]);
@@ -69,6 +113,9 @@ const Assets = () => {
   const [importPreview, setImportPreview] = useState(null);
   const [forceLoading, setForceLoading] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [reserveBusy, setReserveBusy] = useState(false);
+  const [topReserveBusy, setTopReserveBusy] = useState(false);
   const [bulkLocationId, setBulkLocationId] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
@@ -138,6 +185,12 @@ const Assets = () => {
       next.splice(toIndex, 0, moved);
       return next;
     });
+  };
+
+  const getByPath = (obj, path) => {
+    const rawPath = String(path || '').trim();
+    if (!rawPath) return undefined;
+    return rawPath.split('.').reduce((acc, segment) => (acc == null ? undefined : acc[segment]), obj);
   };
 
   const openCommentModal = (asset) => {
@@ -298,6 +351,7 @@ const Assets = () => {
     ticket_number: '',
     po_number: '',
     vendor_name: '',
+    delivered_by_name: '',
     price: '',
     store: '',
     location: '',
@@ -324,6 +378,8 @@ const Assets = () => {
     rfid: '',
     qr_code: ''
   });
+  const [customEditValues, setCustomEditValues] = useState({});
+  const [editAssignedToId, setEditAssignedToId] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
   const [filterStoreId, setFilterStoreId] = useState('');
@@ -334,6 +390,8 @@ const Assets = () => {
   // Advanced Filters
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [filterManufacturer, setFilterManufacturer] = useState('');
+  const [filterMaintenanceVendor, setFilterMaintenanceVendor] = useState('');
+  const [filterReserved, setFilterReserved] = useState('');
   const [filterModelNumber, setFilterModelNumber] = useState('');
   const [filterSerialNumber, setFilterSerialNumber] = useState('');
   const [filterMacAddress, setFilterMacAddress] = useState('');
@@ -352,34 +410,9 @@ const Assets = () => {
   const [manualLoading, setManualLoading] = useState(false);
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const [dragColumnKey, setDragColumnKey] = useState('');
-  const [columnOrder, setColumnOrder] = useState(() => COLUMN_OPTIONS.map(([key]) => key));
-  const [visibleColumns, setVisibleColumns] = useState({
-    uniqueId: true,
-    name: true,
-    model: true,
-    serial: true,
-    serialLast4: true,
-    ticket: true,
-    poNumber: true,
-    mac: true,
-    rfid: true,
-    qr: true,
-    manufacturer: true,
-    condition: true,
-    status: true,
-    prevStatus: true,
-    store: true,
-    location: true,
-    quantity: true,
-    vendor: true,
-    source: true,
-    deliveredBy: true,
-    deliveredAt: true,
-    assignedTo: true,
-    dateTime: true,
-    action: true,
-    price: true
-  });
+  const [columnDefinitions, setColumnDefinitions] = useState(() => [...DEFAULT_COLUMN_DEFS]);
+  const [columnOrder, setColumnOrder] = useState(() => [...DEFAULT_COLUMN_ORDER]);
+  const [visibleColumns, setVisibleColumns] = useState(() => ({ ...DEFAULT_VISIBLE_COLUMNS }));
   const requestIdRef = useRef(0);
   const activeControllerRef = useRef(null);
   const hasHydratedFiltersRef = useRef(false);
@@ -393,7 +426,8 @@ const Assets = () => {
   useEffect(() => {
     if (showRecentUploads) {
       setPrevVisibleColumns(visibleColumns);
-      setVisibleColumns({
+      setVisibleColumns((prev) => ({
+        ...prev,
         uniqueId: false,
         name: true,
         model: true,
@@ -419,12 +453,56 @@ const Assets = () => {
         dateTime: false,
         price: true,
         action: true
-      });
+      }));
     } else if (prevVisibleColumns) {
       setVisibleColumns(prevVisibleColumns);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showRecentUploads]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadColumnsConfig = async () => {
+      try {
+        const activeStoreId = activeStore?._id || activeStore;
+        const res = await api.get('/system/assets-columns-config', {
+          params: activeStoreId ? { storeId: activeStoreId } : undefined
+        });
+        if (cancelled) return;
+        const config = res.data?.config || {};
+        const nextColumnsRaw = Array.isArray(config.columns) ? config.columns : DEFAULT_COLUMN_DEFS;
+        const nextColumns = [];
+        const seen = new Set();
+        nextColumnsRaw.forEach((column, idx) => {
+          const id = String(column?.id || '').trim() || `custom_${idx}`;
+          if (seen.has(id)) return;
+          const label = String(column?.label || '').trim() || id;
+          const key = String(column?.key || '').trim();
+          if (!key) return;
+          seen.add(id);
+          nextColumns.push({
+            id,
+            label,
+            key,
+            visible: column?.visible !== false,
+            builtin: Boolean(column?.builtin)
+          });
+        });
+
+        const safeColumns = nextColumns.length > 0 ? nextColumns : [...DEFAULT_COLUMN_DEFS];
+        const nextOrder = safeColumns.map((column) => column.id);
+        const nextVisible = Object.fromEntries(safeColumns.map((column) => [column.id, column.visible !== false]));
+
+        setColumnDefinitions(safeColumns);
+        setColumnOrder(nextOrder);
+        setVisibleColumns(nextVisible);
+      } catch {
+        // Non-blocking: keep default columns if config is unavailable.
+      }
+    };
+    loadColumnsConfig();
+    return () => { cancelled = true; };
+  }, [activeStore]);
 
   const handleTopEdit = () => {
     if (selectedIds.length === 0) return;
@@ -440,6 +518,58 @@ const Assets = () => {
     if (selectedIds.length === 0) return;
     const asset = assets.find(a => a._id === selectedIds[0]);
     if (asset) handleAssignClick(asset, selectedIds);
+  };
+
+  const handleTopReserve = async () => {
+    if (selectedIds.length === 0 || topReserveBusy) return;
+    openConfirm(
+      'Reserve Assets',
+      `Reserve ${selectedIds.length} selected asset(s)? Reserved assets cannot be issued to technicians.`,
+      async () => {
+        try {
+          setTopReserveBusy(true);
+          const res = await api.post('/assets/reserve', { assetIds: selectedIds });
+          const updatedItems = res.data?.items || [];
+          const updatedMap = new Map(updatedItems.map((item) => [item._id, item]));
+          setAssets((prev) => prev.map((a) => updatedMap.get(a._id) || a));
+          fetchAssets(undefined, { silent: true });
+          alert(res.data?.message || 'Asset(s) reserved successfully');
+        } catch (error) {
+          console.error('Error reserving assets:', error);
+          alert(error?.response?.data?.message || 'Failed to reserve assets');
+        } finally {
+          setTopReserveBusy(false);
+        }
+      },
+      'warning',
+      'Reserve'
+    );
+  };
+
+  const handleTopUnreserve = async () => {
+    if (selectedIds.length === 0 || topReserveBusy) return;
+    openConfirm(
+      'Unreserve Assets',
+      `Unreserve ${selectedIds.length} selected asset(s)?`,
+      async () => {
+        try {
+          setTopReserveBusy(true);
+          const res = await api.post('/assets/unreserve', { assetIds: selectedIds });
+          const updatedItems = res.data?.items || [];
+          const updatedMap = new Map(updatedItems.map((item) => [item._id, item]));
+          setAssets((prev) => prev.map((a) => updatedMap.get(a._id) || a));
+          fetchAssets(undefined, { silent: true });
+          alert(res.data?.message || 'Asset(s) unreserved successfully');
+        } catch (error) {
+          console.error('Error unreserving assets:', error);
+          alert(error?.response?.data?.message || 'Failed to unreserve assets');
+        } finally {
+          setTopReserveBusy(false);
+        }
+      },
+      'info',
+      'Unreserve'
+    );
   };
 
   const handleTopDelete = () => {
@@ -463,13 +593,16 @@ const Assets = () => {
   // Sync category & status params from URL
   useEffect(() => {
     const normalized = normalizeUrlStatusFilter(statusParam);
+    setSearchTerm(searchParam || '');
     setFilterProductName(productParam || '');
     setFilterStatus(normalized.status);
     setFilterCondition(normalized.condition);
     setFilterLocation(locationParam || '');
     setFilterStoreId(storeParam || '');
+    setFilterMaintenanceVendor(isScyStoreContext ? (maintenanceVendorParam || '') : '');
+    setFilterReserved((reservedParam === 'true' || reservedParam === 'false') ? reservedParam : '');
     if (actionParam === 'add') setShowAddModal(true);
-  }, [productParam, statusParam, actionParam, locationParam, storeParam, normalizeUrlStatusFilter]);
+  }, [searchParam, productParam, statusParam, actionParam, locationParam, storeParam, maintenanceVendorParam, reservedParam, isScyStoreContext, normalizeUrlStatusFilter]);
 
 
   // Hierarchical State for Add/Import
@@ -489,6 +622,7 @@ const Assets = () => {
   const fetchAssets = useCallback(async (params, options) => {
     const silent = options?.silent === true;
     const requestId = ++requestIdRef.current;
+    const reservedFromStatus = filterStatus === 'Reserved';
 
     if (activeControllerRef.current) {
       activeControllerRef.current.abort();
@@ -505,12 +639,14 @@ const Assets = () => {
           limit,
           recent_upload: showRecentUploads,
           q: searchTerm || undefined,
-          status: filterStatus || undefined,
+          status: reservedFromStatus ? undefined : (filterStatus || undefined),
           store: filterStoreId || undefined,
           location: filterLocation || undefined,
           condition: filterCondition || undefined, // Add condition filter
           // category removed
           manufacturer: filterManufacturer || undefined,
+          maintenance_vendor: isScyStoreContext ? (filterMaintenanceVendor || undefined) : undefined,
+          reserved: reservedFromStatus ? 'true' : (filterReserved || undefined),
           model_number: filterModelNumber || undefined,
           serial_number: filterSerialNumber || undefined,
           mac_address: filterMacAddress || undefined,
@@ -544,6 +680,9 @@ const Assets = () => {
     filterLocation,
     filterCondition,
     filterManufacturer,
+    filterMaintenanceVendor,
+    filterReserved,
+    isScyStoreContext,
     filterModelNumber,
     filterSerialNumber,
     filterMacAddress,
@@ -686,6 +825,7 @@ const Assets = () => {
         'Store Location',
         'Status',
         'Condition',
+        'Maintenance Vendor',
         'Delivered By',
         'Delivered At'
       ];
@@ -707,6 +847,7 @@ const Assets = () => {
         'SCY ASSET',
         'In Store',
         'New',
+        'Siemens',
         'JOHN DOE',
         '2024-01-01 10:00'
       ];
@@ -723,40 +864,8 @@ const Assets = () => {
   };
 
   const handleEditClick = async (asset) => {
-    let assetToEdit = asset;
-
-    // Check if assigned
-    const isAssigned = asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name);
-
-    if (isAssigned) {
-      openConfirm(
-        'Asset Assigned',
-        "This asset is currently assigned. Do you want to unassign it before editing?",
-        async () => {
-          try {
-            const res = await api.post('/assets/unassign', { assetId: asset._id });
-            const unassignedAsset = res.data;
-            alert('Asset unassigned successfully. Opening edit form...');
-            // Proceed to edit with unassigned asset
-            setEditingAsset(unassignedAsset);
-            setupEditForm(unassignedAsset);
-            fetchAssets(); 
-          } catch (error) {
-            console.error('Error unassigning asset:', error);
-            alert('Failed to unassign asset. Opening edit form with current state.');
-            // Proceed with original asset
-            setEditingAsset(asset);
-            setupEditForm(asset);
-          }
-        },
-        'warning',
-        'Unassign & Edit'
-      );
-      return; // Stop execution, wait for modal
-    }
-
-    setEditingAsset(assetToEdit);
-    setupEditForm(assetToEdit);
+    setEditingAsset(asset);
+    setupEditForm(asset);
   };
 
   const setupEditForm = (assetToEdit) => {
@@ -770,6 +879,7 @@ const Assets = () => {
       ticket_number: assetToEdit.ticket_number || '',
       po_number: assetToEdit.po_number || '',
       vendor_name: assetToEdit.vendor_name || '',
+      delivered_by_name: assetToEdit.delivered_by_name || '',
       price: assetToEdit.price ?? '',
       rfid: assetToEdit.rfid || '',
       qr_code: assetToEdit.qr_code || '',
@@ -778,6 +888,19 @@ const Assets = () => {
       status: initialStatus,
       condition: assetToEdit.condition || 'New'
     });
+
+    const nextCustomValues = {};
+    customEditableColumns.forEach((column) => {
+      const key = String(column?.key || '').trim();
+      if (!key) return;
+      let raw = getByPath(assetToEdit, key);
+      if ((raw === undefined || raw === null) && !key.includes('.')) {
+        raw = assetToEdit?.customFields?.[key];
+      }
+      nextCustomValues[key] = raw == null ? '' : String(raw);
+    });
+    setCustomEditValues(nextCustomValues);
+    setEditAssignedToId(String(assetToEdit?.assigned_to?._id || assetToEdit?.assigned_to || ''));
 
     // Populate Hierarchy
     setSelectedProduct(assetToEdit.product_name || '');
@@ -792,10 +915,38 @@ const Assets = () => {
   };
 
   const handleSave = async () => {
+    if (!editingAsset || editSaving) return;
     try {
+      setEditSaving(true);
+      const setNested = (target, path, val) => {
+        const parts = String(path || '').split('.').filter(Boolean);
+        if (parts.length === 0) return;
+        let cursor = target;
+        for (let i = 0; i < parts.length - 1; i += 1) {
+          const part = parts[i];
+          if (!cursor[part] || typeof cursor[part] !== 'object') cursor[part] = {};
+          cursor = cursor[part];
+        }
+        cursor[parts[parts.length - 1]] = val;
+      };
+
+      const customFieldsPayload = {};
+      Object.entries(customEditValues || {}).forEach(([rawKey, rawValue]) => {
+        const key = String(rawKey || '').trim();
+        if (!key) return;
+        const value = rawValue == null ? '' : String(rawValue);
+        if (key.startsWith('customFields.')) {
+          setNested(customFieldsPayload, key.replace(/^customFields\./, ''), value);
+          return;
+        }
+        if (key.includes('.')) return; // avoid mutating nested protected paths
+        customFieldsPayload[key] = value;
+      });
+
       const updateData = { 
         ...formData,
-        product_name: selectedProduct
+        product_name: selectedProduct,
+        customFields: customFieldsPayload
       };
 
       // Remove empty store to prevent CastError
@@ -804,20 +955,55 @@ const Assets = () => {
       }
 
       const res = await api.put(`/assets/${editingAsset._id}`, updateData);
-      const updated = res.data;
+      let updated = res.data;
+
+      const selectedTechId = String(editAssignedToId || '').trim();
+      const currentAssignedId = String(updated?.assigned_to?._id || updated?.assigned_to || '');
+      const hasExternalAssignee = Boolean(updated?.assigned_to_external?.name);
+      const shouldUnassign = (!selectedTechId && (currentAssignedId || hasExternalAssignee))
+        || (selectedTechId && currentAssignedId && currentAssignedId !== selectedTechId)
+        || (selectedTechId && hasExternalAssignee);
+
+      if (shouldUnassign) {
+        updated = await api.post('/assets/unassign', { assetId: editingAsset._id }).then((r) => r.data);
+      }
+
+      if (selectedTechId && String(updated?.assigned_to?._id || updated?.assigned_to || '') !== selectedTechId) {
+        const selectedTech = (technicians || []).find((t) => String(t?._id) === selectedTechId);
+        const targetEmail = String(selectedTech?.email || '').trim();
+        if (!targetEmail) {
+          throw new Error('Selected technician has no email. Cannot assign from Edit form.');
+        }
+        const assignRes = await api.post('/assets/assign', {
+          assetId: editingAsset._id,
+          assetIds: [editingAsset._id],
+          technicianId: selectedTechId,
+          recipientEmail: targetEmail,
+          recipientPhone: String(selectedTech?.phone || ''),
+          ticketNumber: formData.ticket_number || '',
+          needGatePass: false
+        });
+        updated = assignRes.data?.asset || updated;
+      }
+
       setEditingAsset(null);
+      setEditAssignedToId('');
       setAssets(prev => prev.map(a => a._id === updated._id ? { ...a, ...updated } : a));
       fetchAssets(undefined, { silent: true });
       fetchProducts();
       alert('Asset updated successfully');
     } catch (error) {
       console.error('Error updating asset:', error);
-      alert('Failed to update asset');
+      alert(error?.response?.data?.message || error?.message || 'Failed to update asset');
+    } finally {
+      setEditSaving(false);
     }
   };
 
   const handleCancel = () => {
     setEditingAsset(null);
+    setCustomEditValues({});
+    setEditAssignedToId('');
   };
   
   const handleAddChange = (e) => {
@@ -991,6 +1177,52 @@ const Assets = () => {
     );
   };
 
+  const handleReserve = async (asset) => {
+    if (reserveBusy) return;
+    openConfirm(
+      'Reserve Asset',
+      `Reserve ${asset.name}? Reserved assets cannot be issued to technicians.`,
+      async () => {
+        try {
+          setReserveBusy(true);
+          await api.post('/assets/reserve', { assetId: asset._id });
+          fetchAssets(undefined, { silent: true });
+          alert('Asset reserved successfully');
+        } catch (error) {
+          console.error('Error reserving asset:', error);
+          alert(error?.response?.data?.message || 'Failed to reserve asset');
+        } finally {
+          setReserveBusy(false);
+        }
+      },
+      'warning',
+      'Reserve'
+    );
+  };
+
+  const handleUnreserve = async (asset) => {
+    if (reserveBusy) return;
+    openConfirm(
+      'Unreserve Asset',
+      `Unreserve ${asset.name}?`,
+      async () => {
+        try {
+          setReserveBusy(true);
+          await api.post('/assets/unreserve', { assetId: asset._id });
+          fetchAssets(undefined, { silent: true });
+          alert('Asset unreserved successfully');
+        } catch (error) {
+          console.error('Error unreserving asset:', error);
+          alert(error?.response?.data?.message || 'Failed to unreserve asset');
+        } finally {
+          setReserveBusy(false);
+        }
+      },
+      'info',
+      'Unreserve'
+    );
+  };
+
   const toggleSelect = (id) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
@@ -1075,6 +1307,7 @@ const Assets = () => {
   };
 
   const getDerivedStatus = (asset) => {
+    if (asset?.reserved === true) return { label: 'Reserved', color: 'bg-amber-50 text-amber-800 border border-amber-200' };
     const s = asset.status;
     const cond = String(asset.condition || '').toLowerCase();
     if (cond.includes('faulty')) return { label: 'Faulty', color: 'bg-rose-50 text-rose-700 border border-rose-100' };
@@ -1096,6 +1329,8 @@ const Assets = () => {
         filterStatus ||
         filterCondition ||
         filterManufacturer ||
+        (isScyStoreContext && filterMaintenanceVendor) ||
+        filterReserved ||
         filterModelNumber ||
         filterSerialNumber ||
         filterMacAddress ||
@@ -1121,7 +1356,7 @@ const Assets = () => {
     }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showRecentUploads, searchTerm, filterLocation, filterStatus, filterCondition, filterManufacturer, filterModelNumber, filterSerialNumber, filterMacAddress, filterProductName, filterTicket, filterRfid, filterQr, filterDateFrom, filterDateTo]);
+  }, [showRecentUploads, searchTerm, filterLocation, filterStatus, filterCondition, filterManufacturer, filterMaintenanceVendor, filterReserved, isScyStoreContext, filterModelNumber, filterSerialNumber, filterMacAddress, filterProductName, filterTicket, filterRfid, filterQr, filterDateFrom, filterDateTo]);
 
   // Page/Limit change effect
   useEffect(() => {
@@ -1136,6 +1371,33 @@ const Assets = () => {
       }
     };
   }, []);
+
+  const columnDefinitionMap = useMemo(() => {
+    return new Map((columnDefinitions || []).map((column) => [column.id, column]));
+  }, [columnDefinitions]);
+
+  const customEditableColumns = useMemo(() => {
+    return (columnDefinitions || []).filter((column) => {
+      const key = String(column?.key || '').trim();
+      if (!key || key === 'action') return false;
+      if (NON_EDITABLE_CUSTOM_KEYS.has(key)) return false;
+      if (key.includes('.') && !key.startsWith('customFields.')) return false;
+      if (!isScyStoreContext && isMaintenanceVendorColumn(column)) return false;
+      return !KNOWN_EDIT_KEYS.has(key);
+    });
+  }, [columnDefinitions, isScyStoreContext]);
+
+  function isMaintenanceVendorColumn(column) {
+    const key = String(column?.key || '').trim().toLowerCase();
+    const label = String(column?.label || '').trim().toLowerCase();
+    const normalizedKey = key.replace(/[^a-z0-9]/g, '');
+    return (
+      normalizedKey.includes('maintenancevendor')
+      || normalizedKey.includes('maintenancevandor')
+      || label.includes('maintenance vendor')
+      || label.includes('maintenance vandor')
+    );
+  }
 
   const columnMeta = useMemo(() => ({
     uniqueId: { label: 'Unique ID', thClass: 'hidden lg:table-cell', tdClass: 'hidden lg:table-cell font-mono text-xs text-gray-600' },
@@ -1200,7 +1462,15 @@ const Assets = () => {
             Split
           </button>
         )}
-        {(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) ? (
+        {asset.reserved ? (
+          <button
+            onClick={() => handleUnreserve(asset)}
+            className="text-amber-700 hover:text-amber-900 font-medium text-sm md:text-base inline-flex items-center gap-1"
+          >
+            <LockOpen size={14} />
+            Unreserve
+          </button>
+        ) : (asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) ? (
           <button
             onClick={() => handleUnassign(asset)}
             className="text-orange-600 hover:text-orange-900 font-medium text-sm md:text-base"
@@ -1213,6 +1483,15 @@ const Assets = () => {
             className="text-green-600 hover:text-green-900 font-medium text-sm md:text-base"
           >
             Assign
+          </button>
+        )}
+        {!asset.reserved && !(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) && (
+          <button
+            onClick={() => handleReserve(asset)}
+            className="text-amber-600 hover:text-amber-800 font-medium text-sm md:text-base inline-flex items-center gap-1"
+          >
+            <Lock size={14} />
+            Reserve
           </button>
         )}
         <button
@@ -1252,12 +1531,31 @@ const Assets = () => {
     if (key === 'assignedTo') value = asset.assigned_to?.name || asset.assigned_to_external?.name || '-';
     if (key === 'dateTime') value = asset.updatedAt ? new Date(asset.updatedAt).toLocaleString() : '-';
     if (key === 'price') value = typeof asset.price === 'number' ? asset.price : '-';
+    if (value === '-' && !columnMeta[key]) {
+      const colDef = columnDefinitionMap.get(key);
+      const rawValue = colDef?.key ? getByPath(asset, colDef.key) : undefined;
+      const fallbackCustomValue = (rawValue === undefined || rawValue === null || rawValue === '')
+        && colDef?.key
+        && !String(colDef.key).includes('.')
+        ? asset?.customFields?.[colDef.key]
+        : rawValue;
+      if (fallbackCustomValue !== undefined && fallbackCustomValue !== null && fallbackCustomValue !== '') {
+        if (fallbackCustomValue instanceof Date) {
+          value = fallbackCustomValue.toLocaleString();
+        } else if (typeof fallbackCustomValue === 'object') {
+          value = Array.isArray(fallbackCustomValue) ? fallbackCustomValue.join(', ') : JSON.stringify(fallbackCustomValue);
+        } else {
+          value = String(fallbackCustomValue);
+        }
+      }
+    }
 
     if (key === 'status') {
+      const derived = getDerivedStatus(asset);
       return (
         <td key={key} className={`px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center ${columnMeta[key]?.tdClass || ''}`}>
-          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getDerivedStatus(asset).color}`}>
-            {asset.status || '-'}
+          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${derived.color}`}>
+            {derived.label}
           </span>
         </td>
       );
@@ -1368,7 +1666,7 @@ const Assets = () => {
             </div>
           )}
           <div className="mt-2 text-sm text-gray-600">
-            Excel headers supported: Category, Product Type, Product Name, Model Number, Quantity, Serial Number, MAC Address, Manufacturer, Ticket Number, PO Number, Vendor Name, Price, RFID, QR Code, Store Location, Status, Condition, Delivered By, Delivered At (date & time)
+            Excel headers supported: Category, Product Type, Product Name, Model Number, Quantity, Serial Number, MAC Address, Manufacturer, Ticket Number, PO Number, Vendor Name, Price, RFID, QR Code, Store Location, Status, Condition, Maintenance Vendor, Delivered By, Delivered At (date & time)
           </div>
         </div>
       )}
@@ -1572,6 +1870,7 @@ const Assets = () => {
             <option value="In Store">In Store</option>
             <option value="In Use">In Use</option>
             <option value="Missing">Missing</option>
+            <option value="Reserved">Reserved</option>
           </select>
           <div className="flex gap-2 sm:col-span-2 lg:col-span-4 items-center">
             <button
@@ -1593,7 +1892,7 @@ const Assets = () => {
                 <div className="absolute z-20 mt-2 right-0 bg-white border border-gray-200 shadow-xl rounded-lg p-3 w-64 max-h-72 overflow-auto">
                   <p className="text-[11px] text-slate-500 mb-2">Drag to reorder columns</p>
                   {columnOrder.map((key) => {
-                    const label = COLUMN_OPTIONS.find(([optionKey]) => optionKey === key)?.[1] || key;
+                    const label = columnDefinitionMap.get(key)?.label || key;
                     return (
                       <div
                         key={key}
@@ -1632,7 +1931,8 @@ const Assets = () => {
               onClick={() => {
                 setSearchTerm(''); setFilterLocation(''); setFilterStatus(''); setFilterCondition('');
                 setFilterStoreId('');
-                setFilterManufacturer(''); setFilterProductName('');
+                setFilterManufacturer(''); setFilterMaintenanceVendor(''); setFilterProductName('');
+                setFilterReserved('');
                 setFilterModelNumber(''); setFilterSerialNumber(''); setFilterMacAddress('');
                 setFilterTicket(''); setFilterRfid(''); setFilterQr('');
                 setFilterDateFrom(''); setFilterDateTo('');
@@ -1677,6 +1977,24 @@ const Assets = () => {
                 {selectedIds.length > 1 ? 'Bulk Assign' : 'Assign'}
                   </button>
                   <button
+                    onClick={handleTopReserve}
+                    disabled={selectedIds.length === 0 || topReserveBusy}
+                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 || topReserveBusy ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'} border`}
+                    title="Reserve selected assets"
+                  >
+                    <Lock size={16} />
+                    {topReserveBusy ? 'Working...' : 'Reserve'}
+                  </button>
+                  <button
+                    onClick={handleTopUnreserve}
+                    disabled={selectedIds.length === 0 || topReserveBusy}
+                    className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 || topReserveBusy ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-amber-200 bg-white text-amber-800 hover:bg-amber-50'} border`}
+                    title="Unreserve selected assets"
+                  >
+                    <LockOpen size={16} />
+                    {topReserveBusy ? 'Working...' : 'Unreserve'}
+                  </button>
+                  <button
                     onClick={handleTopDelete}
                     disabled={selectedIds.length === 0}
                     className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
@@ -1700,6 +2018,27 @@ const Assets = () => {
               onChange={(e) => setFilterManufacturer(e.target.value)}
               className="h-10 px-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             />
+            <select
+              value={filterReserved}
+              onChange={(e) => setFilterReserved(e.target.value)}
+              className="h-10 px-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            >
+              <option value="">Reserved: All</option>
+              <option value="true">Reserved Only</option>
+              <option value="false">Non-Reserved</option>
+            </select>
+            {isScyStoreContext && (
+              <select
+                value={filterMaintenanceVendor}
+                onChange={(e) => setFilterMaintenanceVendor(e.target.value)}
+                className="h-10 px-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                <option value="">Maintenance Vendor</option>
+                {MAINTENANCE_VENDOR_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            )}
             <input
               type="text"
               placeholder="Model Number"
@@ -1794,7 +2133,7 @@ const Assets = () => {
                   key={key}
                   className={`px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider ${columnMeta[key]?.thClass || ''}`}
                 >
-                  {columnMeta[key]?.label || key}
+                  {columnDefinitionMap.get(key)?.label || columnMeta[key]?.label || key}
                 </th>
               ))}
             </tr>
@@ -1891,7 +2230,15 @@ const Assets = () => {
                     <Scissors size={16} />
                   </button>
                 )}
-                {(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) ? (
+                {asset.reserved ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleUnreserve(asset); }}
+                    disabled={reserveBusy}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-colors border ${reserveBusy ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border-amber-200'}`}
+                  >
+                    <LockOpen size={16} /> Unreserve
+                  </button>
+                ) : (asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) ? (
                   <button 
                     onClick={(e) => { e.stopPropagation(); handleUnassign(asset); }}
                     className="flex-1 flex items-center justify-center gap-2 bg-orange-50 text-orange-700 py-2 rounded-md text-sm font-medium hover:bg-orange-100 transition-colors border border-orange-200"
@@ -1904,6 +2251,16 @@ const Assets = () => {
                     className="flex-1 flex items-center justify-center gap-2 bg-green-50 text-green-700 py-2 rounded-md text-sm font-medium hover:bg-green-100 transition-colors border border-green-200"
                   >
                     <UserCheck size={16} /> Assign
+                  </button>
+                )}
+                {!asset.reserved && !(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name)) && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleReserve(asset); }}
+                    disabled={reserveBusy}
+                    className={`flex-none flex items-center justify-center p-2 rounded-md transition-colors border ${reserveBusy ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border-amber-200'}`}
+                    aria-label="Reserve"
+                  >
+                    <Lock size={16} />
                   </button>
                 )}
                 <button 
@@ -2308,6 +2665,16 @@ const Assets = () => {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-gray-700">Delivered By</label>
+                <input
+                  type="text"
+                  name="delivered_by_name"
+                  value={formData.delivered_by_name || ''}
+                  onChange={handleInputChange}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-700">Price</label>
                 <input
                   type="number"
@@ -2401,6 +2768,56 @@ const Assets = () => {
                   <option value="Missing">Missing</option>
                 </select>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Assigned To</label>
+                <select
+                  value={editAssignedToId}
+                  onChange={(e) => setEditAssignedToId(e.target.value)}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                >
+                  <option value="">Unassigned</option>
+                  {(technicians || []).map((tech) => (
+                    <option key={tech._id} value={tech._id}>
+                      {tech.name}{tech.email ? ` (${tech.email})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {customEditableColumns.length > 0 && (
+                <div className="md:col-span-2 border-t border-gray-100 pt-3 mt-1">
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Custom Columns</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {customEditableColumns.map((column) => {
+                      const key = String(column?.key || '').trim();
+                      const useVendorSelect = isMaintenanceVendorColumn(column);
+                      return (
+                        <div key={column.id}>
+                          <label className="block text-sm font-medium text-gray-700">{column.label}</label>
+                          {useVendorSelect ? (
+                            <select
+                              value={customEditValues[key] || ''}
+                              onChange={(e) => setCustomEditValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                            >
+                              <option value="">Select Maintenance Vendor</option>
+                              {MAINTENANCE_VENDOR_OPTIONS.map((option) => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={customEditValues[key] || ''}
+                              onChange={(e) => setCustomEditValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="mt-6 flex justify-end space-x-3">
               <button
@@ -2411,9 +2828,10 @@ const Assets = () => {
               </button>
               <button
                 onClick={handleSave}
-                className="bg-amber-600 hover:bg-amber-700 text-black px-4 py-2 rounded"
+                disabled={editSaving}
+                className={`text-black px-4 py-2 rounded ${editSaving ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
               >
-                Save Changes
+                {editSaving ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
           </div>

@@ -51,6 +51,113 @@ const {
 } = require('../utils/resilienceManager');
 const appPackage = require('../../package.json');
 
+const BASE_ASSET_COLUMNS = [
+  { id: 'uniqueId', label: 'Unique ID', key: 'uniqueId' },
+  { id: 'name', label: 'Name', key: 'name' },
+  { id: 'model', label: 'Model Number', key: 'model_number' },
+  { id: 'serial', label: 'Serial Number', key: 'serial_number' },
+  { id: 'serialLast4', label: 'Serial Last 4', key: 'serial_last_4' },
+  { id: 'ticket', label: 'Ticket', key: 'ticket_number' },
+  { id: 'poNumber', label: 'PO Number', key: 'po_number' },
+  { id: 'mac', label: 'MAC Address', key: 'mac_address' },
+  { id: 'rfid', label: 'RFID', key: 'rfid' },
+  { id: 'qr', label: 'QR Code', key: 'qr_code' },
+  { id: 'manufacturer', label: 'Manufacturer', key: 'manufacturer' },
+  { id: 'condition', label: 'Condition', key: 'condition' },
+  { id: 'status', label: 'Status', key: 'status' },
+  { id: 'prevStatus', label: 'Prev Status', key: 'previous_status' },
+  { id: 'store', label: 'Store', key: 'store.name' },
+  { id: 'location', label: 'Location', key: 'location' },
+  { id: 'quantity', label: 'Quantity', key: 'quantity' },
+  { id: 'vendor', label: 'Vendor', key: 'vendor_name' },
+  { id: 'source', label: 'Source', key: 'source' },
+  { id: 'deliveredBy', label: 'Delivered By', key: 'delivered_by_name' },
+  { id: 'deliveredAt', label: 'Delivered At', key: 'delivered_at' },
+  { id: 'assignedTo', label: 'Assigned To', key: 'assigned_to.name' },
+  { id: 'dateTime', label: 'Date & Time', key: 'updatedAt' },
+  { id: 'price', label: 'Price', key: 'price' },
+  { id: 'action', label: 'Action', key: 'action' }
+];
+const BASE_ASSET_COLUMN_IDS = new Set(BASE_ASSET_COLUMNS.map((c) => c.id));
+const ASSET_COLUMN_ID_RE = /^[a-zA-Z0-9_-]{1,40}$/;
+const ASSET_COLUMN_KEY_RE = /^[a-zA-Z0-9_.]{1,80}$/;
+
+const buildDefaultAssetColumnsConfig = () => ({
+  columns: BASE_ASSET_COLUMNS.map((column) => ({
+    id: column.id,
+    label: column.label,
+    key: column.key,
+    visible: true,
+    builtin: true
+  }))
+});
+
+const sanitizeAssetColumnsConfig = (rawConfig) => {
+  const defaults = buildDefaultAssetColumnsConfig();
+
+  // Backward compatibility for legacy { order, visible } shape
+  if (!Array.isArray(rawConfig?.columns)) {
+    const legacyOrder = Array.isArray(rawConfig?.order) ? rawConfig.order : [];
+    const legacyVisible = rawConfig?.visible && typeof rawConfig.visible === 'object' ? rawConfig.visible : {};
+    if (legacyOrder.length > 0) {
+      const dedup = new Set();
+      const mapped = [];
+      for (const id of legacyOrder) {
+        const base = BASE_ASSET_COLUMNS.find((c) => c.id === id);
+        if (!base || dedup.has(id)) continue;
+        dedup.add(id);
+        mapped.push({
+          id: base.id,
+          label: base.label,
+          key: base.key,
+          visible: Object.prototype.hasOwnProperty.call(legacyVisible, id) ? Boolean(legacyVisible[id]) : true,
+          builtin: true
+        });
+      }
+      BASE_ASSET_COLUMNS.forEach((base) => {
+        if (dedup.has(base.id)) return;
+        mapped.push({ id: base.id, label: base.label, key: base.key, visible: true, builtin: true });
+      });
+      return { columns: mapped };
+    }
+  }
+
+  const inputColumns = Array.isArray(rawConfig?.columns) ? rawConfig.columns : [];
+  const seenIds = new Set();
+  const normalized = [];
+  inputColumns.forEach((item, index) => {
+    const rawId = String(item?.id || '').trim();
+    const fallbackId = `custom_${Date.now()}_${index}`;
+    const id = ASSET_COLUMN_ID_RE.test(rawId) ? rawId : fallbackId;
+    if (seenIds.has(id)) return;
+
+    const label = String(item?.label || '').trim().slice(0, 60) || `Column ${index + 1}`;
+    const key = String(item?.key || '').trim();
+    if (!ASSET_COLUMN_KEY_RE.test(key)) return;
+
+    seenIds.add(id);
+    normalized.push({
+      id,
+      label,
+      key,
+      visible: item?.visible !== false,
+      builtin: BASE_ASSET_COLUMN_IDS.has(id)
+    });
+  });
+
+  if (normalized.length === 0) {
+    return defaults;
+  }
+  return { columns: normalized };
+};
+
+const resolveAssetsColumnsStoreId = (req, inputStoreId) => {
+  if (req.user?.role === 'Super Admin') {
+    return inputStoreId || req.query.storeId || req.activeStore || req.user?.assignedStore || null;
+  }
+  return req.user?.assignedStore || req.activeStore || null;
+};
+
 const maxBackupUploadMb = Number.parseInt(process.env.MAX_BACKUP_UPLOAD_MB || '1024', 10);
 const MAX_BACKUP_UPLOAD_BYTES = Math.max(10, maxBackupUploadMb) * 1024 * 1024;
 const backupUploadTempDir = path.join(__dirname, '../storage/tmp-backups');
@@ -403,6 +510,35 @@ let RESET_LOCK = false;
 const RESTORE_SCANS = new Map();
 const SCAN_TTL_MS = 30 * 60 * 1000;
 const UPLOAD_SESSIONS = new Map();
+const UPLOAD_SESSION_TTL_MS = 60 * 60 * 1000;
+const MAX_INMEMORY_SESSIONS = 500;
+const MAX_BACKUP_CHUNK_BYTES = Math.max(
+  1 * 1024 * 1024,
+  Number.parseInt(String(process.env.MAX_BACKUP_CHUNK_MB || '10'), 10) * 1024 * 1024
+);
+
+const sweepInMemorySessions = () => {
+  const now = Date.now();
+  for (const [id, scan] of RESTORE_SCANS.entries()) {
+    if (!scan || (now - Number(scan.createdAt || 0)) > SCAN_TTL_MS) {
+      RESTORE_SCANS.delete(id);
+    }
+  }
+  for (const [sessionId, session] of UPLOAD_SESSIONS.entries()) {
+    const expired = !session || (now - Number(session.createdAt || 0)) > UPLOAD_SESSION_TTL_MS;
+    if (!expired) continue;
+    try {
+      if (session?.tempPath && fs.existsSync(session.tempPath)) {
+        fs.unlinkSync(session.tempPath);
+      }
+    } catch {
+      // best effort cleanup
+    }
+    UPLOAD_SESSIONS.delete(sessionId);
+  }
+};
+
+setInterval(sweepInMemorySessions, 10 * 60 * 1000).unref();
 
 const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
 const toPlain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject() : doc);
@@ -616,6 +752,46 @@ router.post('/theme', protect, admin, async (req, res) => {
     }
 
     res.json({ message: 'Theme updated', theme: store.appTheme, storeId: store._id, storeName: store.name });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// @desc    Get asset table column customization
+// @route   GET /api/system/assets-columns-config
+// @access  Private
+router.get('/assets-columns-config', protect, async (req, res) => {
+  try {
+    const storeId = resolveAssetsColumnsStoreId(req, req.query.storeId);
+    if (!storeId) {
+      return res.json({ storeId: null, config: buildDefaultAssetColumnsConfig() });
+    }
+    const key = `assetsColumnsConfig:${String(storeId)}`;
+    const doc = await Setting.findOne({ key }).lean();
+    const config = sanitizeAssetColumnsConfig(doc?.value || {});
+    res.json({ storeId: String(storeId), config });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @desc    Save asset table column customization
+// @route   PUT /api/system/assets-columns-config
+// @access  Private/Admin
+router.put('/assets-columns-config', protect, admin, async (req, res) => {
+  try {
+    const storeId = resolveAssetsColumnsStoreId(req, req.body?.storeId);
+    if (!storeId) {
+      return res.status(400).json({ message: 'Store context is required' });
+    }
+    const config = sanitizeAssetColumnsConfig(req.body?.config || {});
+    const key = `assetsColumnsConfig:${String(storeId)}`;
+    await Setting.updateOne(
+      { key },
+      { $set: { value: config, updatedAt: new Date() } },
+      { upsert: true }
+    );
+    res.json({ message: 'Asset columns configuration saved', storeId: String(storeId), config });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -1822,6 +1998,10 @@ router.post('/resilience/marker', protect, superAdmin, async (req, res) => {
 // @access  Private/SuperAdmin
 router.post('/backups/upload-session/start', protect, superAdmin, async (req, res) => {
   try {
+    sweepInMemorySessions();
+    if (UPLOAD_SESSIONS.size >= MAX_INMEMORY_SESSIONS) {
+      return res.status(503).json({ message: 'Too many active upload sessions. Please retry shortly.' });
+    }
     const fileName = String(req.body?.fileName || '').trim();
     const totalChunks = Number.parseInt(String(req.body?.totalChunks || '0'), 10);
     const totalSize = Number.parseInt(String(req.body?.totalSize || '0'), 10);
@@ -1849,7 +2029,12 @@ router.post('/backups/upload-session/start', protect, superAdmin, async (req, re
 // @desc    Upload chunk for resumable backup upload
 // @route   POST /api/system/backups/upload-session/chunk
 // @access  Private/SuperAdmin
-router.post('/backups/upload-session/chunk', protect, superAdmin, multer({ storage: multer.memoryStorage() }).single('chunk'), async (req, res) => {
+router.post(
+  '/backups/upload-session/chunk',
+  protect,
+  superAdmin,
+  multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_BACKUP_CHUNK_BYTES } }).single('chunk'),
+  async (req, res) => {
   try {
     const sessionId = String(req.body?.sessionId || '').trim();
     const chunkIndex = Number.parseInt(String(req.body?.chunkIndex || '-1'), 10);

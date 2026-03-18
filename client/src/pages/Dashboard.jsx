@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import DashboardCharts from '../components/DashboardCharts';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -17,8 +17,10 @@ import {
   Package
 } from 'lucide-react';
 
+const DASHBOARD_VENDORS = ['All', 'Siemens', 'G42'];
+
 const Dashboard = () => {
-  const { user } = useAuth();
+  const { user, activeStore } = useAuth();
   const { theme } = useTheme();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -26,19 +28,44 @@ const Dashboard = () => {
   const [systemOk, setSystemOk] = useState(true);
   const [_HEALTH, setHealth] = useState({ backend: false, db: false });
   const [recentAssets, setRecentAssets] = useState([]);
+  const [dashboardVendor, setDashboardVendor] = useState('All');
+  const fetchSeqRef = useRef(0);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const scopeHints = [
+    activeStore?.name,
+    user?.assignedStore?.name,
+    user?.name,
+    user?.email
+  ]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase();
+  const hasScyHint = scopeHints.includes('SCY');
+  const hasItHint = scopeHints.includes('IT ASSET') || /\bIT\b/.test(scopeHints);
+  const hasNocHint = scopeHints.includes('NOC ASSET') || /\bNOC\b/.test(scopeHints);
+  // Prefer explicit SCY match; otherwise allow by default for non-IT/NOC scoped users.
+  const isScyDashboard = hasScyHint || (!hasItHint && !hasNocHint && user?.role !== 'Super Admin');
 
   useEffect(() => {
+    let cancelled = false;
+    const fetchSeq = ++fetchSeqRef.current;
+    const isStale = () => cancelled || fetchSeq !== fetchSeqRef.current;
     const fetchStats = async () => {
       const maxAttempts = 3;
       let lastError = null;
+      if (!isStale()) setLoading(true);
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          setError(null);
+          if (!isStale()) setError(null);
+          const vendorFilter = isScyDashboard && dashboardVendor !== 'All' ? { maintenance_vendor: dashboardVendor } : {};
+          const statsParams = vendorFilter;
+          const recentParams = { page: 1, limit: 8, ...vendorFilter };
           const [statsResponse, recentResponse] = await Promise.all([
-            api.get('/assets/stats'),
-            api.get('/assets', { params: { page: 1, limit: 8 } })
+            api.get('/assets/stats', { params: statsParams }),
+            api.get('/assets', { params: recentParams })
           ]);
+          if (isStale()) return;
           setStats(statsResponse.data);
           setRecentAssets(recentResponse.data?.assets || recentResponse.data?.items || []);
           lastError = null;
@@ -52,14 +79,19 @@ const Dashboard = () => {
         }
       }
       if (lastError) {
+        if (isStale()) return;
         console.error('Error fetching stats:', lastError);
-        setError('Failed to load dashboard data. Please try refreshing.');
+        const scopeLabel = isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : '';
+        setError(`Failed to load ${scopeLabel}dashboard data. Please try refreshing.`);
       }
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     };
 
     fetchStats();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardVendor, isScyDashboard]);
 
   useEffect(() => {
     let timer;
@@ -118,7 +150,7 @@ const Dashboard = () => {
               Dashboard
               {loading && <Activity className="w-5 h-5 text-app-accent animate-pulse" />}
             </h1>
-            <p className="text-app-muted mt-1">Welcome back, {user?.name}. Here is the latest system snapshot.</p>
+            <p className="text-app-muted mt-1">Welcome back, {user?.name}. Here is the latest {isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : ''}snapshot.</p>
           </div>
 
           <div className={`inline-flex items-center gap-2 self-start rounded-full px-3 py-1.5 text-xs font-medium ${systemOk ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
@@ -133,6 +165,32 @@ const Dashboard = () => {
       <div className="inline-flex items-center rounded-full border border-app-card bg-app-elevated px-3 py-1 text-xs text-app-muted">
         Theme: <span className="ml-1 font-semibold text-app-main capitalize">{theme}</span>
       </div>
+
+      {isScyDashboard && (
+        <div className="rounded-2xl border border-app-card bg-app-card p-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-app-main">Maintenance Vendor Dashboard</h2>
+              <p className="text-xs text-app-muted mt-0.5">All = full SCY dashboard, or switch to Siemens/G42 analytics.</p>
+            </div>
+            <div className="inline-flex items-center rounded-xl border border-app-card bg-app-elevated p-1">
+              {DASHBOARD_VENDORS.map((vendor) => {
+                const active = dashboardVendor === vendor;
+                return (
+                  <button
+                    key={vendor}
+                    type="button"
+                    onClick={() => setDashboardVendor(vendor)}
+                    className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${active ? 'bg-app-accent text-white shadow-sm' : 'text-app-muted hover:text-app-main'}`}
+                  >
+                    {vendor}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {(stats?.overview?.pendingRequests > 0 || (user?.role !== 'Viewer' && stats?.overview?.pendingReturns > 0)) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -216,7 +274,7 @@ const Dashboard = () => {
           </Link>
         </div>
 
-      <DashboardCharts stats={stats} />
+      <DashboardCharts stats={stats} showMaintenanceVendorFeatures={isScyDashboard} />
 
       <div className="rounded-xl border border-app-card bg-app-elevated shadow-sm">
         <div className="flex items-center justify-between border-b border-app-card px-5 py-4">

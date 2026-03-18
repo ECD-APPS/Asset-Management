@@ -49,7 +49,7 @@ const RecentActivity = () => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-100">
               {recent.map((e, idx) => (
-                <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                <tr key={e?._id || `${e?.createdAt || 'na'}-${idx}`} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {new Date(e.createdAt).toLocaleDateString()}
                     <span className="block text-xs text-gray-400">{new Date(e.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>

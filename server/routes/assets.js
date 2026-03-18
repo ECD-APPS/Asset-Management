@@ -11,7 +11,7 @@ const Request = require('../models/Request');
 const Pass = require('../models/Pass');
 const CollectionApproval = require('../models/CollectionApproval');
 const { protect, admin, restrictViewer } = require('../middleware/authMiddleware');
-const xlsx = require('xlsx');
+const ExcelJS = require('exceljs');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -31,6 +31,8 @@ function capitalizeWords(s) {
   if (!s) return s;
   return String(s).toUpperCase();
 }
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const toContainsRegex = (value) => new RegExp(escapeRegex(value), 'i');
 
 const getScopedStoreId = (req) => String(req.activeStore || req.user?.assignedStore || '').trim();
 const hasAssetStoreAccess = (req, storeId) => {
@@ -38,6 +40,25 @@ const hasAssetStoreAccess = (req, storeId) => {
   const scopedStoreId = getScopedStoreId(req);
   if (!scopedStoreId) return false;
   return String(storeId || '') === scopedStoreId;
+};
+
+const resolveScopedStoreName = async (req) => {
+  const scoped = req.activeStore || req.user?.assignedStore || null;
+  if (!scoped) return '';
+  if (typeof scoped === 'object' && scoped?.name) return String(scoped.name || '');
+  const scopedId = String(scoped?._id || scoped || '').trim();
+  if (!mongoose.isValidObjectId(scopedId)) return '';
+  const storeDoc = await Store.findById(scopedId).select('name').lean();
+  return String(storeDoc?.name || '');
+};
+
+const isScyScopedContext = async (req) => {
+  try {
+    const name = await resolveScopedStoreName(req);
+    return /(^|\s)scy(\s|$)/i.test(name) || /scy asset/i.test(name);
+  } catch {
+    return false;
+  }
 };
 // Helper to generate Unique ID
 async function generateUniqueId(assetType) {
@@ -194,16 +215,70 @@ const buildCollectionApprovalHtml = ({ title, message, token, approved = false }
   return `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title></head><body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;"><div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;"><h2 style="margin:0 0 12px 0;color:#0f172a;">${safeTitle}</h2><p style="color:#334155;margin:0 0 16px 0;">${safeMessage}</p><a href="/api/assets/collect-approval/${token}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;border-radius:8px;padding:10px 16px;">Open Approval Page</a></div></body></html>`;
 };
 
-function readUploadedWorkbook(file) {
+const excelCellToPlain = (raw, defval = '') => {
+  if (raw == null) return defval;
+  if (raw instanceof Date) return raw;
+  if (typeof raw !== 'object') return raw;
+  if (Array.isArray(raw.richText)) {
+    return raw.richText.map((part) => String(part?.text || '')).join('');
+  }
+  if (raw.text != null) return raw.text;
+  if (raw.result != null) return raw.result;
+  if (raw.hyperlink) return raw.text || raw.hyperlink;
+  return defval;
+};
+
+const worksheetToAoa = (worksheet, { defval = '', blankrows = false } = {}) => {
+  const rows = [];
+  const maxCol = Math.max(worksheet?.columnCount || 0, 1);
+  worksheet.eachRow({ includeEmpty: true }, (row) => {
+    const out = [];
+    let hasData = false;
+    for (let c = 1; c <= maxCol; c += 1) {
+      const value = excelCellToPlain(row.getCell(c).value, defval);
+      if (!(value === '' || value == null)) hasData = true;
+      out.push(value == null ? defval : value);
+    }
+    if (blankrows || hasData) rows.push(out);
+  });
+  return rows;
+};
+
+const worksheetToJsonRows = (worksheet, { defval = '', blankrows = false } = {}) => {
+  const matrix = worksheetToAoa(worksheet, { defval, blankrows: true });
+  if (!Array.isArray(matrix) || matrix.length === 0) return [];
+  const headers = (matrix[0] || []).map((header, idx) => {
+    const normalized = String(header == null ? '' : header).trim();
+    return normalized || `__EMPTY_${idx}`;
+  });
+  return matrix
+    .slice(1)
+    .map((row = []) => {
+      const obj = {};
+      headers.forEach((header, idx) => {
+        obj[header] = row[idx] == null ? defval : row[idx];
+      });
+      return obj;
+    })
+    .filter((record) => {
+      if (blankrows) return true;
+      return Object.values(record).some((value) => String(value == null ? '' : value).trim() !== '');
+    });
+};
+
+async function readUploadedWorkbook(file) {
   if (!file) {
     throw new Error('No file uploaded');
   }
+  const workbook = new ExcelJS.Workbook();
   if (file.buffer) {
-    return xlsx.read(file.buffer, { type: 'buffer' });
+    await workbook.xlsx.load(file.buffer);
+    return workbook;
   }
   if (file.path && fs.existsSync(file.path)) {
     const buf = fs.readFileSync(file.path);
-    return xlsx.read(buf, { type: 'buffer' });
+    await workbook.xlsx.load(buf);
+    return workbook;
   }
   throw new Error('Uploaded file is not readable');
 }
@@ -365,6 +440,8 @@ router.get('/', protect, async (req, res) => {
     const location = String(req.query.location || '').trim();
     const deliveredBy = String(req.query.delivered_by || '').trim();
     const vendorName = String(req.query.vendor_name || '').trim();
+    const maintenanceVendor = String(req.query.maintenance_vendor || '').trim();
+    const reservedParam = String(req.query.reserved || '').trim().toLowerCase();
     const disposedParam = String(req.query.disposed || '').trim().toLowerCase();
 
     const filter = {};
@@ -377,7 +454,7 @@ router.get('/', protect, async (req, res) => {
       filter.disposed = false;
     }
     if (q) {
-      const rx = new RegExp(q, 'i');
+      const rx = toContainsRegex(q);
       const orClauses = [
         { name: rx },
         { model_number: rx },
@@ -426,7 +503,7 @@ router.get('/', protect, async (req, res) => {
     }
 
     if (deliveredBy) {
-      const rxDelivered = new RegExp(deliveredBy, 'i');
+      const rxDelivered = toContainsRegex(deliveredBy);
       filter.delivered_by_name = rxDelivered;
     }
 
@@ -478,9 +555,9 @@ router.get('/', protect, async (req, res) => {
         const scope = req.user.accessScope || 'All';
         if (scope !== 'All') {
           // Find all allowed store IDs
-          const allowedMainStores = await Store.find({ 
-            isMainStore: true, 
-            name: { $regex: scope, $options: 'i' } 
+          const allowedMainStores = await Store.find({
+            isMainStore: true,
+            name: { $regex: escapeRegex(scope), $options: 'i' }
           }).select('_id');
           const allowedMainIds = allowedMainStores.map(s => s._id);
           
@@ -538,10 +615,10 @@ router.get('/', protect, async (req, res) => {
         });
       }
     }
-    if (manufacturer) filter.manufacturer = new RegExp(manufacturer, 'i');
-    if (modelNumber) filter.model_number = new RegExp(modelNumber, 'i');
-    if (serialNumber) filter.serial_number = new RegExp(serialNumber, 'i');
-    if (macAddress) filter.mac_address = new RegExp(macAddress, 'i');
+    if (manufacturer) filter.manufacturer = toContainsRegex(manufacturer);
+    if (modelNumber) filter.model_number = toContainsRegex(modelNumber);
+    if (serialNumber) filter.serial_number = toContainsRegex(serialNumber);
+    if (macAddress) filter.mac_address = toContainsRegex(macAddress);
     // product_type removed
     if (productName) {
       let names = [];
@@ -562,9 +639,9 @@ router.get('/', protect, async (req, res) => {
         filter.product_name = { $in: regexes };
       }
     }
-    if (ticketNumber) filter.ticket_number = new RegExp(ticketNumber, 'i');
-    if (rfid) filter.rfid = new RegExp(rfid, 'i');
-    if (qrCode) filter.qr_code = new RegExp(qrCode, 'i');
+    if (ticketNumber) filter.ticket_number = toContainsRegex(ticketNumber);
+    if (rfid) filter.rfid = toContainsRegex(rfid);
+    if (qrCode) filter.qr_code = toContainsRegex(qrCode);
     if (source) filter.source = source;
     if (condition) filter.condition = condition;
     if (location) {
@@ -574,6 +651,29 @@ router.get('/', protect, async (req, res) => {
     if (vendorName) {
       const escapedVendor = vendorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.vendor_name = new RegExp(escapedVendor, 'i');
+    }
+    if (maintenanceVendor) {
+      const allowMaintenanceFilter = await isScyScopedContext(req);
+      if (allowMaintenanceFilter) {
+        const escapedMaintenanceVendor = maintenanceVendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const maintenanceRx = new RegExp(`^${escapedMaintenanceVendor}$`, 'i');
+        filter.$and = [
+          ...(filter.$and || []),
+          {
+            $or: [
+              { 'customFields.maintenance_vendor': maintenanceRx },
+              { 'customFields.maintenance_vandor': maintenanceRx },
+              { 'customFields.maintenanceVendor': maintenanceRx },
+              { maintenance_vendor: maintenanceRx }
+            ]
+          }
+        ];
+      }
+    }
+    if (reservedParam === 'true') {
+      filter.reserved = true;
+    } else if (reservedParam === 'false') {
+      filter.reserved = false;
     }
     
     if (dateFrom || dateTo) {
@@ -592,7 +692,7 @@ router.get('/', protect, async (req, res) => {
         .sort({ updatedAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request source vendor_name delivered_by_name delivered_at quantity price history createdAt updatedAt')
+        .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at quantity price customFields history createdAt updatedAt')
         .populate({
           path: 'store',
           select: 'name parentStore',
@@ -640,7 +740,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/:id([0-9a-fA-F]{24})', protect, async (req, res) => {
   try {
     const asset = await Asset.findById(req.params.id)
-      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request source vendor_name delivered_by_name delivered_at quantity price history createdAt updatedAt')
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at quantity price customFields history createdAt updatedAt')
       .populate({
         path: 'store',
         select: 'name parentStore',
@@ -717,6 +817,7 @@ router.get('/search-serial', protect, async (req, res) => {
 router.get('/stats', protect, async (req, res) => {
   try {
     const filter = { disposed: false };
+    const maintenanceVendor = String(req.query.maintenance_vendor || '').trim();
     let targetStoreId = null;
 
     if (req.activeStore && mongoose.isValidObjectId(req.activeStore)) {
@@ -728,6 +829,25 @@ router.get('/stats', protect, async (req, res) => {
     if (targetStoreId) {
       const storeIds = await getStoreIds(targetStoreId);
       filter.store = { $in: storeIds };
+    }
+
+    if (maintenanceVendor) {
+      const allowMaintenanceFilter = await isScyScopedContext(req);
+      if (allowMaintenanceFilter) {
+        const escapedMaintenanceVendor = maintenanceVendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const maintenanceRx = new RegExp(`^${escapedMaintenanceVendor}$`, 'i');
+        filter.$and = [
+          ...(filter.$and || []),
+          {
+            $or: [
+              { 'customFields.maintenance_vendor': maintenanceRx },
+              { 'customFields.maintenance_vandor': maintenanceRx },
+              { 'customFields.maintenanceVendor': maintenanceRx },
+              { maintenance_vendor: maintenanceRx }
+            ]
+          }
+        ];
+      }
     }
 
     const requestFilter = { status: 'Pending' };
@@ -777,7 +897,8 @@ router.get('/stats', protect, async (req, res) => {
       categoryCounts,
       growthStats,
       usageBreakdownCounts,
-      assetTypeCountAgg
+      assetTypeCountAgg,
+      maintenanceVendorCounts
     ] = await Promise.all([
       sumQuantity(filter),
       sumQuantity({ 
@@ -895,6 +1016,49 @@ router.get('/stats', protect, async (req, res) => {
         { $group: { _id: { $toLower: '$model_number' } } },
         { $match: { _id: { $ne: '' } } },
         { $count: 'count' }
+      ]),
+      Asset.aggregate([
+        { $match: filter },
+        {
+          $project: {
+            vendorRaw: {
+              $toLower: {
+                $trim: {
+                  input: {
+                    $ifNull: [
+                      '$customFields.maintenance_vendor',
+                      {
+                        $ifNull: [
+                          '$customFields.maintenance_vandor',
+                          {
+                            $ifNull: [
+                              '$customFields.maintenanceVendor',
+                              { $ifNull: ['$maintenance_vendor', ''] }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            vendorBucket: {
+              $switch: {
+                branches: [
+                  { case: { $regexMatch: { input: '$vendorRaw', regex: /siemens/ } }, then: 'Siemens' },
+                  { case: { $regexMatch: { input: '$vendorRaw', regex: /g42/ } }, then: 'G42' }
+                ],
+                default: 'Other'
+              }
+            }
+          }
+        },
+        { $group: { _id: '$vendorBucket', count: { $sum: quantityExpr } } }
       ])
     ]);
 
@@ -920,7 +1084,12 @@ router.get('/stats', protect, async (req, res) => {
       products: [],
       locations: [],
       categories: [],
-      growth: growthStats.map(g => ({ name: g._id, value: g.count }))
+      growth: growthStats.map(g => ({ name: g._id, value: g.count })),
+      maintenanceVendors: {
+        Siemens: 0,
+        G42: 0,
+        Other: 0
+      }
     };
 
     const usageMap = { Installed: 0, Used: 0, Faulty: 0, Other: 0 };
@@ -934,6 +1103,11 @@ router.get('/stats', protect, async (req, res) => {
 
     conditionCounts.forEach(item => {
       if (item._id) stats.conditions[item._id] = item.count;
+    });
+    maintenanceVendorCounts.forEach((item) => {
+      if (item?._id && Object.prototype.hasOwnProperty.call(stats.maintenanceVendors, item._id)) {
+        stats.maintenanceVendors[item._id] = item.count;
+      }
     });
 
     stats.models = modelCounts.map(item => ({
@@ -1021,7 +1195,7 @@ router.get('/my', protect, async (req, res) => {
 // Download Excel Template
 router.get('/template', async (req, res) => {
   try {
-    const wb = xlsx.utils.book_new();
+    const wb = new ExcelJS.Workbook();
 
     const headers = [
       'Category',
@@ -1041,15 +1215,16 @@ router.get('/template', async (req, res) => {
       'Store Location',
       'Status',
       'Condition',
+      'Maintenance Vendor',
       'Delivered By',
       'Delivered At'
     ];
 
     // Sheet 1: Template (headers only)
     const templateRows = [headers];
-    const wsTemplate = xlsx.utils.aoa_to_sheet(templateRows);
-    wsTemplate['!cols'] = headers.map((_, idx) => ({ wch: idx === 0 ? 28 : 20 }));
-    xlsx.utils.book_append_sheet(wb, wsTemplate, 'Template');
+    const wsTemplate = wb.addWorksheet('Template');
+    wsTemplate.addRows(templateRows);
+    wsTemplate.columns = headers.map((_, idx) => ({ width: idx === 0 ? 28 : 20 }));
 
     // Sheet 2: Sample (headers + one example row)
     const sampleRow = [
@@ -1070,14 +1245,15 @@ router.get('/template', async (req, res) => {
       'SCY ASSET',
       'In Store',
       'New',
+      'Siemens',
       'JOHN DOE',
       '2024-01-01 10:00'
     ];
-    const wsSample = xlsx.utils.aoa_to_sheet([headers, sampleRow]);
-    wsSample['!cols'] = headers.map((_, idx) => ({ wch: idx === 0 ? 28 : 20 }));
-    xlsx.utils.book_append_sheet(wb, wsSample, 'Sample');
+    const wsSample = wb.addWorksheet('Sample');
+    wsSample.addRows([headers, sampleRow]);
+    wsSample.columns = headers.map((_, idx) => ({ width: idx === 0 ? 28 : 20 }));
 
-    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
     res.setHeader('Content-Disposition', 'attachment; filename="Asset_Import_Template.xlsx"');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
@@ -1419,15 +1595,14 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
   }
   try {
     const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-    const workbook = readUploadedWorkbook(req.file);
-    if (!workbook || !Array.isArray(workbook.SheetNames) || workbook.SheetNames.length === 0) {
+    const workbook = await readUploadedWorkbook(req.file);
+    const worksheets = Array.isArray(workbook?.worksheets) ? workbook.worksheets : [];
+    if (worksheets.length === 0) {
       return res.status(400).json({ message: 'Invalid Excel file: no sheets found' });
     }
     let rows = [];
-    for (const name of workbook.SheetNames) {
-      const ws = workbook.Sheets[name];
-      if (!ws) continue;
-      const out = xlsx.utils.sheet_to_json(ws, { defval: '', blankrows: false });
+    for (const ws of worksheets) {
+      const out = worksheetToJsonRows(ws, { defval: '', blankrows: false });
       if (Array.isArray(out) && out.length > 0) {
         rows = out;
         break;
@@ -1542,6 +1717,13 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       const uniqueId = await generateUniqueId(name);
       const deliveredByFromRow = norm['delivered by'] || norm['delivered_by'] || norm['deliveredby'] || '';
       const vendorNameFromRow = norm['vendor name'] || norm['vendor'] || '';
+      const maintenanceVendorFromRow =
+        norm['maintenance vendor']
+        || norm['maintenance vendors']
+        || norm['maintenance vandor']
+        || norm['maintenance_vendor']
+        || norm['maintenance_vandor']
+        || '';
       const deliveredAtRaw = norm['delivered at'] || norm['delivered_at'] || '';
       const deliveredAtDate = deliveredAtRaw ? new Date(deliveredAtRaw) : new Date();
       const assetData = {
@@ -1568,6 +1750,12 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         quantity,
         price
       };
+      if (String(maintenanceVendorFromRow || '').trim()) {
+        assetData.customFields = {
+          ...(assetData.customFields || {}),
+          maintenance_vendor: String(maintenanceVendorFromRow).trim()
+        };
+      }
       if (!assetData.serial_number) {
         invalid_rows.push({ serial: '', reason: 'Missing serial number' });
         continue;
@@ -1608,29 +1796,25 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
 
   try {
     const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-    const workbook = readUploadedWorkbook(req.file);
-    if (!workbook || !Array.isArray(workbook.SheetNames) || workbook.SheetNames.length === 0) {
+    const workbook = await readUploadedWorkbook(req.file);
+    const worksheets = Array.isArray(workbook?.worksheets) ? workbook.worksheets : [];
+    if (worksheets.length === 0) {
       return res.status(400).json({ message: 'Invalid Excel file: no sheets found' });
     }
-    const sheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
     let data = [];
     let sheetName = null;
-    for (const name of sheetNames) {
-      const ws = workbook.Sheets[name];
-      if (!ws) continue;
-      const rows = xlsx.utils.sheet_to_json(ws, { defval: '', blankrows: false });
+    for (const ws of worksheets) {
+      const rows = worksheetToJsonRows(ws, { defval: '', blankrows: false });
       if (Array.isArray(rows) && rows.length > 0) {
         data = rows;
-        sheetName = name;
+        sheetName = ws.name;
         break;
       }
     }
     // Fallback: manual header parsing if standard conversion returns empty
     if (!Array.isArray(data) || data.length === 0) {
-      for (const name of sheetNames) {
-        const ws = workbook.Sheets[name];
-        if (!ws) continue;
-        const raw = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: false });
+      for (const ws of worksheets) {
+        const raw = worksheetToAoa(ws, { defval: '', blankrows: false });
         if (Array.isArray(raw) && raw.length > 0) {
           // Find header row dynamically (matches at least one known header)
           const KNOWN = ['product name','name','model number','serial number','mac address','manufacturer','ticket number','rfid','qr code','store','store location','location','status','condition','asset type'];
@@ -1654,61 +1838,10 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
             }).filter(r => Object.values(r).some(v => String(v || '').trim() !== ''));
             if (converted.length > 0) {
               data = converted;
-              sheetName = name;
+              sheetName = ws.name;
               break;
             }
           }
-        }
-      }
-    }
-    if (!Array.isArray(data) || data.length === 0) {
-      // Fallback #2: decode cells manually via !ref to tolerate exotic formatting
-      for (const name of sheetNames) {
-        const ws = workbook.Sheets[name];
-        if (!ws || !ws['!ref']) continue;
-        try {
-          const range = xlsx.utils.decode_range(ws['!ref']);
-          const KNOWN = new Set(['product name','name','model number','serial number','mac address','manufacturer','ticket number','rfid','qr code','store','store location','location','status','condition','asset type']);
-          let headerIdx = -1;
-          let headers = [];
-          for (let r = range.s.r; r <= range.e.r; r++) {
-            const rowVals = [];
-            for (let c = range.s.c; c <= range.e.c; c++) {
-              const addr = xlsx.utils.encode_cell({ c, r });
-              const cell = ws[addr];
-              const val = cell && cell.v !== undefined ? String(cell.v).trim() : '';
-              rowVals.push(val);
-            }
-            const matchCount = rowVals.map(v => v.toLowerCase()).filter(v => KNOWN.has(v)).length;
-            if (matchCount >= 2) {
-              headerIdx = r;
-              headers = rowVals;
-              break;
-            }
-          }
-          if (headerIdx >= 0) {
-            const converted = [];
-            for (let r = headerIdx + 1; r <= range.e.r; r++) {
-              const obj = {};
-              let nonEmpty = false;
-              for (let c = range.s.c; c <= range.e.c; c++) {
-                const addr = xlsx.utils.encode_cell({ c, r });
-                const cell = ws[addr];
-                const val = cell && cell.v !== undefined ? String(cell.v).trim() : '';
-                const header = headers[c - range.s.c] || `COL${c}`;
-                obj[header] = val;
-                if (val !== '') nonEmpty = true;
-              }
-              if (nonEmpty) converted.push(obj);
-            }
-            if (converted.length > 0) {
-              data = converted;
-              sheetName = name;
-              break;
-            }
-          }
-        } catch (e) {
-          // ignore and continue
         }
       }
     }
@@ -1863,6 +1996,13 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
 
       const deliveredByFromRow = norm['delivered by'] || norm['delivered_by'] || norm['deliveredby'] || '';
       const vendorNameFromRow = norm['vendor name'] || norm['vendor'] || '';
+      const maintenanceVendorFromRow =
+        norm['maintenance vendor']
+        || norm['maintenance vendors']
+        || norm['maintenance vandor']
+        || norm['maintenance_vendor']
+        || norm['maintenance_vandor']
+        || '';
       const deliveredAtRaw = norm['delivered at'] || norm['delivered_at'] || '';
       
       // Condition Logic (strict enum mapping)
@@ -1937,6 +2077,12 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
           quantity,
           price
         };
+        if (String(maintenanceVendorFromRow || '').trim()) {
+          assetData.customFields = {
+            ...(assetData.customFields || {}),
+            maintenance_vendor: String(maintenanceVendorFromRow).trim()
+          };
+        }
 
         parsedAssets.push({ serialStr, storeId, assetData });
       }
@@ -2105,22 +2251,22 @@ router.get('/export', protect, admin, async (req, res) => {
       }
     });
 
-    const wb = xlsx.utils.book_new();
-    const wsMain = xlsx.utils.aoa_to_sheet([headerMain, ...rowsMain]);
-    wsMain['!cols'] = [
-      { wch: 24 },{ wch: 22 },{ wch: 24 },{ wch: 22 },{ wch: 16 },{ wch: 16 },
-      { wch: 18 },{ wch: 18 },{ wch: 16 },{ wch: 12 },{ wch: 12 },{ wch: 16 },{ wch: 24 },
-      { wch: 12 },{ wch: 20 },{ wch: 14 },{ wch: 22 },{ wch: 18 },{ wch: 22 },{ wch: 22 },{ wch: 22 }
+    const wb = new ExcelJS.Workbook();
+    const wsMain = wb.addWorksheet('ASSETS');
+    wsMain.addRows([headerMain, ...rowsMain]);
+    wsMain.columns = [
+      { width: 24 },{ width: 22 },{ width: 24 },{ width: 22 },{ width: 16 },{ width: 16 },
+      { width: 18 },{ width: 18 },{ width: 16 },{ width: 12 },{ width: 12 },{ width: 16 },{ width: 24 },
+      { width: 12 },{ width: 20 },{ width: 14 },{ width: 22 },{ width: 18 },{ width: 22 },{ width: 22 },{ width: 22 }
     ];
-    wsMain['!autofilter'] = { ref: 'A1:U1' };
-    xlsx.utils.book_append_sheet(wb, wsMain, 'ASSETS');
+    wsMain.autoFilter = 'A1:U1';
 
-    const wsHist = xlsx.utils.aoa_to_sheet([headerHistory, ...rowsHistory]);
-    wsHist['!cols'] = [{ wch: 14 },{ wch: 22 },{ wch: 24 },{ wch: 22 },{ wch: 16 },{ wch: 22 }];
-    wsHist['!autofilter'] = { ref: 'A1:F1' };
-    xlsx.utils.book_append_sheet(wb, wsHist, 'HISTORY');
+    const wsHist = wb.addWorksheet('HISTORY');
+    wsHist.addRows([headerHistory, ...rowsHistory]);
+    wsHist.columns = [{ width: 14 },{ width: 22 },{ width: 24 },{ width: 22 },{ width: 16 },{ width: 22 }];
+    wsHist.autoFilter = 'A1:F1';
 
-    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
 
     res.setHeader('Content-Disposition', 'attachment; filename=ASSETS_EXPORT.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -2159,10 +2305,12 @@ router.get('/import-template', protect, admin, async (req, res) => {
         'Delivered At': ''
       }
     ];
-    const workbook = xlsx.utils.book_new();
-    const worksheet = xlsx.utils.json_to_sheet(template, { skipHeader: false });
-    xlsx.utils.book_append_sheet(workbook, worksheet, 'Template');
-    const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Template');
+    const headers = Object.keys(template[0] || {});
+    worksheet.addRow(headers);
+    template.forEach((row) => worksheet.addRow(headers.map((h) => row[h])));
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     res.setHeader('Content-Disposition', 'attachment; filename=assets_import_template.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
@@ -2185,7 +2333,7 @@ router.get('/by-technician', protect, admin, async (req, res) => {
         ]
       };
     } else {
-      const rx = new RegExp(q, 'i');
+      const rx = toContainsRegex(q);
       const users = await User.find({
         $or: [
           { name: rx },
@@ -2269,6 +2417,12 @@ router.post('/assign', protect, admin, async (req, res) => {
     if (disposedAssets.length > 0) {
       return res.status(400).json({
         message: `Cannot assign: ${disposedAssets.length} selected asset(s) are disposed`
+      });
+    }
+    const reservedAssets = assets.filter((a) => a.reserved === true);
+    if (reservedAssets.length > 0) {
+      return res.status(400).json({
+        message: `Cannot assign: ${reservedAssets.length} selected asset(s) are reserved`
       });
     }
 
@@ -2451,6 +2605,143 @@ router.post('/assign', protect, admin, async (req, res) => {
   }
 });
 
+// @desc    Reserve asset(s) to block issuing
+// @route   POST /api/assets/reserve
+// @access  Private/Admin
+router.post('/reserve', protect, admin, async (req, res) => {
+  const { assetId, assetIds, note } = req.body;
+  try {
+    const normalizedIds = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(assetIds) ? assetIds : []),
+          ...(assetId ? [assetId] : [])
+        ]
+          .map((id) => String(id || '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (normalizedIds.length === 0) {
+      return res.status(400).json({ message: 'Provide assetId or assetIds' });
+    }
+
+    const assets = await Asset.find({ _id: { $in: normalizedIds } });
+    if (assets.length !== normalizedIds.length) {
+      return res.status(404).json({ message: 'One or more assets were not found' });
+    }
+    if (!assets.every((asset) => hasAssetStoreAccess(req, asset.store))) {
+      return res.status(403).json({ message: 'One or more assets are outside your store scope' });
+    }
+
+    const blocked = assets.filter((a) => a.assigned_to || (a.assigned_to_external && a.assigned_to_external.name));
+    if (blocked.length > 0) {
+      return res.status(400).json({ message: 'Unassign selected assets before reserving' });
+    }
+
+    const reserveNote = String(note || '').trim().slice(0, 300);
+    const now = new Date();
+    for (const asset of assets) {
+      if (asset.reserved === true) continue;
+      asset.reserved = true;
+      asset.reserved_at = now;
+      asset.reserved_by = req.user.name || '';
+      asset.reservation_note = reserveNote;
+      asset.history.push({
+        action: 'Reserved',
+        details: reserveNote || 'Reserved for controlled stock',
+        user: req.user.name,
+        date: now
+      });
+      await asset.save();
+      await ActivityLog.create({
+        user: req.user.name,
+        email: req.user.email,
+        role: req.user.role,
+        action: 'Reserve Asset',
+        details: `Reserved asset ${asset.name} (SN: ${asset.serial_number || 'N/A'})`,
+        store: asset.store
+      });
+    }
+
+    const refreshed = await Asset.find({ _id: { $in: normalizedIds } })
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at quantity price customFields history createdAt updatedAt')
+      .populate('store', 'name parentStore')
+      .populate('assigned_to', 'name email');
+
+    return res.json({
+      message: `${normalizedIds.length} asset(s) reserved successfully`,
+      items: refreshed
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// @desc    Remove reservation from asset(s)
+// @route   POST /api/assets/unreserve
+// @access  Private/Admin
+router.post('/unreserve', protect, admin, async (req, res) => {
+  const { assetId, assetIds } = req.body;
+  try {
+    const normalizedIds = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(assetIds) ? assetIds : []),
+          ...(assetId ? [assetId] : [])
+        ]
+          .map((id) => String(id || '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (normalizedIds.length === 0) {
+      return res.status(400).json({ message: 'Provide assetId or assetIds' });
+    }
+
+    const assets = await Asset.find({ _id: { $in: normalizedIds } });
+    if (assets.length !== normalizedIds.length) {
+      return res.status(404).json({ message: 'One or more assets were not found' });
+    }
+    if (!assets.every((asset) => hasAssetStoreAccess(req, asset.store))) {
+      return res.status(403).json({ message: 'One or more assets are outside your store scope' });
+    }
+
+    const now = new Date();
+    for (const asset of assets) {
+      if (asset.reserved !== true) continue;
+      asset.reserved = false;
+      asset.reserved_at = null;
+      asset.reserved_by = '';
+      asset.reservation_note = '';
+      asset.history.push({
+        action: 'Unreserved',
+        user: req.user.name,
+        date: now
+      });
+      await asset.save();
+      await ActivityLog.create({
+        user: req.user.name,
+        email: req.user.email,
+        role: req.user.role,
+        action: 'Unreserve Asset',
+        details: `Unreserved asset ${asset.name} (SN: ${asset.serial_number || 'N/A'})`,
+        store: asset.store
+      });
+    }
+
+    const refreshed = await Asset.find({ _id: { $in: normalizedIds } })
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at quantity price customFields history createdAt updatedAt')
+      .populate('store', 'name parentStore')
+      .populate('assigned_to', 'name email');
+
+    return res.json({
+      message: `${normalizedIds.length} asset(s) unreserved successfully`,
+      items: refreshed
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 // @desc    Dispose asset as non-repairable (Admin)
 // @route   POST /api/assets/dispose
 // @access  Private/Admin
@@ -2614,10 +2905,14 @@ router.get('/collect-approval/:token', async (req, res) => {
 // @route   POST /api/assets/collect-approval/:token/approve
 // @access  Public (token)
 router.get('/collect-approval/:token/approve', async (req, res) => {
-  const token = String(req.params.token || '').trim();
-  if (!token) return res.status(400).send('Invalid approval token');
-  const csrfToken = typeof req.csrfToken === 'function' ? req.csrfToken() : '';
-  return res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"><title>Confirm Approval</title></head><body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;"><div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;"><h2 style="margin:0 0 12px 0;color:#0f172a;">Confirm Approval</h2><p style="color:#334155;margin:0 0 16px 0;">For security, approval now requires explicit confirmation.</p><form method="POST" action="/api/assets/collect-approval/${token}/approve?_csrf=${encodeURIComponent(String(csrfToken || ''))}"><button type="submit" style="display:inline-block;background:#16a34a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;">Grant Permission</button></form></div></body></html>`);
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).send('Invalid approval token');
+    const csrfToken = typeof req.csrfToken === 'function' ? req.csrfToken() : '';
+    return res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"><title>Confirm Approval</title></head><body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;"><div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;"><h2 style="margin:0 0 12px 0;color:#0f172a;">Confirm Approval</h2><p style="color:#334155;margin:0 0 16px 0;">For security, approval now requires explicit confirmation.</p><form method="POST" action="/api/assets/collect-approval/${token}/approve?_csrf=${encodeURIComponent(String(csrfToken || ''))}"><button type="submit" style="display:inline-block;background:#16a34a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;">Grant Permission</button></form></div></body></html>`);
+  } catch (error) {
+    return res.status(500).send(`Approval error: ${error.message}`);
+  }
 });
 
 router.post('/collect-approval/:token/approve', async (req, res) => {
@@ -2695,6 +2990,9 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
     }
     if (asset.disposed === true) {
       return res.status(400).json({ message: 'Disposed asset cannot be collected' });
+    }
+    if (asset.reserved === true) {
+      return res.status(400).json({ message: 'Asset is reserved and cannot be issued' });
     }
     if (asset.condition === 'Faulty' || asset.status === 'Missing') {
       return res.status(400).json({ message: 'Asset is not available (Faulty/Missing)' });
@@ -3233,7 +3531,7 @@ router.post('/:id/comment', protect, restrictViewer, async (req, res) => {
 router.put('/:id', protect, admin, async (req, res) => {
   const {
     name, model_number, serial_number, mac_address, manufacturer, store, location, status, condition,
-    ticket_number, po_number, product_name, rfid, qr_code, vendor_name, price
+    ticket_number, po_number, product_name, rfid, qr_code, vendor_name, delivered_by_name, price, customFields
   } = req.body;
   try {
     const asset = await Asset.findById(req.params.id);
@@ -3252,6 +3550,7 @@ router.put('/:id', protect, admin, async (req, res) => {
       asset.ticket_number = ticket_number || asset.ticket_number || '';
       if (po_number !== undefined) asset.po_number = po_number || '';
       if (vendor_name !== undefined) asset.vendor_name = capitalizeWords(vendor_name || '');
+      if (delivered_by_name !== undefined) asset.delivered_by_name = capitalizeWords(delivered_by_name || '');
       if (price !== undefined && price !== '') {
         const parsedPrice = Number(price);
         if (Number.isFinite(parsedPrice)) asset.price = parsedPrice;
@@ -3285,6 +3584,30 @@ router.put('/:id', protect, admin, async (req, res) => {
       }
       asset.status = normStatus;
       asset.condition = normCondition;
+      if (customFields && typeof customFields === 'object' && !Array.isArray(customFields)) {
+        const sanitizeCustomFields = (input) => {
+          const out = {};
+          Object.entries(input || {}).forEach(([rawKey, rawValue]) => {
+            const key = String(rawKey || '').trim();
+            if (!key || key.startsWith('$') || key.includes('.')) return;
+            if (rawValue === null || rawValue === undefined) {
+              out[key] = '';
+              return;
+            }
+            if (typeof rawValue === 'object') {
+              out[key] = JSON.stringify(rawValue);
+              return;
+            }
+            out[key] = String(rawValue);
+          });
+          return out;
+        };
+
+        asset.customFields = {
+          ...(asset.customFields && typeof asset.customFields === 'object' ? asset.customFields : {}),
+          ...sanitizeCustomFields(customFields)
+        };
+      }
 
       const updatedAsset = await asset.save();
 
@@ -3374,7 +3697,7 @@ router.get('/activity-logs', protect, admin, async (req, res) => {
 // @desc    Recent technician activity (admin)
 // @route   GET /api/assets/recent-activity
 // @access  Private/Admin
-router.get('/recent-activity', protect, admin, async (req, res) => {
+router.get('/recent-asset-history', protect, admin, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
     const pipeline = [];

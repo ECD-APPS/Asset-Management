@@ -37,6 +37,7 @@ const TechScanner = () => {
   }, []);
 
   const searchAsset = async (query) => {
+    if (loading) return;
     setLoading(true);
     setMessage('');
     setShowAddForm(false);
@@ -59,6 +60,7 @@ const TechScanner = () => {
 
   const handleAddSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     if (!addForm.name || !addForm.model_number || !addForm.serial_number || !addForm.store) {
       setMessage('Please fill all required fields');
       return;
@@ -86,6 +88,7 @@ const TechScanner = () => {
 
 
   const handleAction = async (action) => {
+    if (loading || !asset?._id) return;
     if (!ticketNumber) {
       setMessage('Please enter a Ticket Number');
       return;
@@ -97,6 +100,7 @@ const TechScanner = () => {
     }
     
     try {
+      setLoading(true);
       if (action === 'collect') {
         await api.post('/assets/collect', { assetId: asset._id, ticketNumber, installationLocation });
         setMessage('Asset collected successfully');
@@ -109,22 +113,28 @@ const TechScanner = () => {
       setAsset(res.data[0]);
     } catch (error) {
       setMessage(error.response?.data?.message || 'Action failed');
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleReturn = async () => {
+    if (loading) return;
     if (!ticketNumber) {
       setMessage('Please enter a Ticket Number');
       return;
     }
     if (!asset) return;
     try {
+      setLoading(true);
       await api.post('/assets/return', { assetId: asset._id, condition: returnCondition, ticketNumber });
       setMessage(`Asset returned as ${returnCondition}`);
       const res = await api.get('/assets/search', { params: { query: asset.serial_number } });
       setAsset(res.data[0]);
     } catch (error) {
       setMessage(error.response?.data?.message || 'Return failed');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -168,9 +178,10 @@ const TechScanner = () => {
               />
               <button 
                 onClick={() => searchAsset(manualSearch)} 
-                className="bg-amber-600 hover:bg-amber-700 text-black px-4 py-2 rounded"
+                disabled={loading}
+                className={`text-black px-4 py-2 rounded ${loading ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
               >
-                Search
+                {loading ? 'Searching...' : 'Search'}
               </button>
             </div>
           </div>
@@ -253,9 +264,10 @@ const TechScanner = () => {
             <div className="flex gap-2 pt-2">
               <button
                 type="submit"
-                className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded"
+                disabled={loading}
+                className={`flex-1 text-white py-2 rounded ${loading ? 'bg-green-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
               >
-                Add & Select
+                {loading ? 'Saving...' : 'Add & Select'}
               </button>
               <button
                 type="button"
@@ -311,9 +323,9 @@ const TechScanner = () => {
             <div className="grid grid-cols-2 gap-4">
               <button 
                 onClick={() => handleAction('collect')}
-                disabled={asset.assigned_to || asset.status === 'Missing' || String(asset.condition || '').toLowerCase().includes('faulty')}
+                disabled={loading || asset.assigned_to || asset.status === 'Missing' || String(asset.condition || '').toLowerCase().includes('faulty')}
                 className={`py-3 rounded text-white font-medium ${
-                  (!asset.assigned_to && asset.status !== 'Missing' && !String(asset.condition || '').toLowerCase().includes('faulty'))
+                  (!loading && !asset.assigned_to && asset.status !== 'Missing' && !String(asset.condition || '').toLowerCase().includes('faulty'))
                     ? 'bg-green-600 hover:bg-green-700'
                     : 'bg-gray-400 cursor-not-allowed'
                 }`}
@@ -322,7 +334,8 @@ const TechScanner = () => {
               </button>
               <button 
                  onClick={() => handleAction('faulty')}
-                 className="py-3 rounded bg-red-600 hover:bg-red-700 text-white font-medium"
+                 disabled={loading}
+                 className={`py-3 rounded text-white font-medium ${loading ? 'bg-red-300 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
               >
                 Report Faulty
               </button>
@@ -340,9 +353,9 @@ const TechScanner = () => {
               </select>
               <button
                 onClick={handleReturn}
-                disabled={!asset.assigned_to || asset.assigned_to._id !== user?._id}
+                disabled={loading || !asset.assigned_to || asset.assigned_to._id !== user?._id}
                 className={`py-3 rounded font-medium ${
-                  asset.assigned_to && asset.assigned_to._id === user?._id ? 'bg-amber-600 hover:bg-amber-700 text-black' : 'bg-gray-400 text-white cursor-not-allowed'
+                  (!loading && asset.assigned_to && asset.assigned_to._id === user?._id) ? 'bg-amber-600 hover:bg-amber-700 text-black' : 'bg-gray-400 text-white cursor-not-allowed'
                 }`}
               >
                 Return Asset
