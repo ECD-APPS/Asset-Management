@@ -4,7 +4,7 @@ const resilienceJobSchema = new mongoose.Schema({
   jobType: {
     type: String,
     required: true,
-    enum: ['restore_to_time', 'shadow_sync', 'shadow_promote', 'shadow_failback', 'verify_backup', 'upload_finalize'],
+    enum: ['restore_to_time', 'shadow_sync', 'shadow_promote', 'shadow_failback', 'verify_backup', 'upload_finalize', 'pitr_archive', 'checksum_audit', 'crash_recovery_check'],
     index: true
   },
   phase: {

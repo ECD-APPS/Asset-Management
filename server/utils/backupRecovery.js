@@ -1,6 +1,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const archiver = require('archiver');
 const unzipper = require('unzipper');
@@ -29,7 +30,77 @@ const ALLOWED_ENV_EXPORT = [
   'CORS_ORIGIN'
 ];
 const CURRENT_BACKUP_FORMAT_VERSION = 2;
+const CURRENT_MANIFEST_VERSION = 3;
 const getResilienceHelpers = () => require(path.join(__dirname, 'resilienceManager'));
+
+const parseMajor = (version = '') => {
+  const major = Number.parseInt(String(version || '').split('.')[0], 10);
+  return Number.isFinite(major) ? major : 0;
+};
+
+const sha256File = async (filePath) => {
+  const hash = crypto.createHash('sha256');
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', resolve);
+  });
+  return hash.digest('hex');
+};
+
+const isReplicaSetReady = async () => {
+  try {
+    const adminDb = mongoose.connection.db.admin();
+    const hello = await adminDb.command({ hello: 1 });
+    const replicaSetName = String(hello?.setName || '').trim();
+    const writablePrimary = Boolean(hello?.isWritablePrimary || hello?.ismaster);
+    const hasHosts = Array.isArray(hello?.hosts) && hello.hosts.length > 0;
+    return {
+      ok: Boolean(replicaSetName && hasHosts && writablePrimary),
+      details: {
+        replicaSetName,
+        writablePrimary,
+        hosts: Array.isArray(hello?.hosts) ? hello.hosts : []
+      }
+    };
+  } catch (error) {
+    return { ok: false, details: { error: error.message || String(error) } };
+  }
+};
+
+const enforceReplicaSetSafety = async () => {
+  const strict = String(process.env.ENFORCE_REPLICA_SET_FOR_BACKUPS || 'true').toLowerCase() === 'true';
+  if (!strict) return;
+  const rs = await isReplicaSetReady();
+  if (!rs.ok) {
+    throw new Error('Replica set safety check failed. Enterprise backups require a healthy writable replica set.');
+  }
+};
+
+const buildCompatibilityPolicy = (appVersion = 'unknown') => {
+  const major = parseMajor(appVersion);
+  return {
+    backupFormatVersion: CURRENT_BACKUP_FORMAT_VERSION,
+    appVersion,
+    appMajor: major,
+    minRestoreAppMajor: Math.max(0, major - 1),
+    maxRestoreAppMajor: major
+  };
+};
+
+const assertRestoreCompatibility = (meta = {}) => {
+  const sourceVersion = String(meta?.app_version || meta?.appVersion || 'unknown');
+  const sourceMajor = parseMajor(sourceVersion);
+  const currentMajor = parseMajor(appPackage.version || 'unknown');
+  if (sourceMajor > 0 && currentMajor > 0 && sourceMajor > currentMajor) {
+    throw new Error(`Backup major version ${sourceMajor} is newer than running app major ${currentMajor}. Restore blocked.`);
+  }
+  const formatVersion = parseBackupFormatVersion(meta);
+  if (formatVersion > CURRENT_BACKUP_FORMAT_VERSION) {
+    throw new Error(`Backup format v${formatVersion} is newer than supported v${CURRENT_BACKUP_FORMAT_VERSION}.`);
+  }
+};
 
 const COLLECTION_NAME_ALIASES = new Map([
   ['users', 'users'],
@@ -109,8 +180,35 @@ const NUMERIC_FIELD_NAMES = new Set([
   'cost',
   'unitPrice',
   'unit_price',
-  'total'
+  'total',
+  'smtpPort'
 ]);
+
+const tryObjectIdFromLegacyBuffer = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  let bytes = null;
+  if (Array.isArray(value)) {
+    bytes = value;
+  } else if (value.type === 'Buffer' && Array.isArray(value.data)) {
+    bytes = value.data;
+  } else if (value.buffer && typeof value.buffer === 'object') {
+    if (Array.isArray(value.buffer.data)) {
+      bytes = value.buffer.data;
+    } else {
+      const keys = Object.keys(value.buffer)
+        .filter((k) => /^\d+$/.test(k))
+        .sort((a, b) => Number(a) - Number(b));
+      if (keys.length > 0) {
+        bytes = keys.map((k) => Number(value.buffer[k]));
+      }
+    }
+  }
+  if (!Array.isArray(bytes) || bytes.length !== 12) return null;
+  if (!bytes.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) return null;
+  const hex = Buffer.from(bytes).toString('hex');
+  if (!mongoose.Types.ObjectId.isValid(hex)) return null;
+  return new mongoose.Types.ObjectId(hex);
+};
 
 const shouldCoerceToObjectId = (key = '', parentKey = '') => {
   if (!key && !parentKey) return false;
@@ -142,6 +240,10 @@ const coerceDocObjectIds = (value, key = '', parentKey = '') => {
     return value.map((item) => coerceDocObjectIds(item, '', key || parentKey));
   }
   if (value && typeof value === 'object') {
+    if (shouldCoerceToObjectId(key, parentKey)) {
+      const legacyOid = tryObjectIdFromLegacyBuffer(value);
+      if (legacyOid) return legacyOid;
+    }
     // Canonical EJSON wrappers from legacy/new backup files.
     if (Object.prototype.hasOwnProperty.call(value, '$oid')) {
       const oid = String(value.$oid || '');
@@ -344,6 +446,46 @@ const removeDirectorySafe = async (dirPath) => {
   }
 };
 
+const MAINTENANCE_LOCK_KEY = 'systemMaintenanceLock';
+
+const acquireMaintenanceLock = async ({ reason = 'restore', actor = null } = {}) => {
+  const SettingModel = Setting;
+  const existing = await SettingModel.findOne({ key: MAINTENANCE_LOCK_KEY }).lean();
+  if (existing?.value?.active) {
+    throw new Error(`Maintenance lock is already active (${existing.value.reason || 'unknown reason'}).`);
+  }
+  const value = {
+    active: true,
+    reason,
+    actorEmail: String(actor?.email || ''),
+    actorId: String(actor?._id || ''),
+    startedAt: new Date().toISOString()
+  };
+  await SettingModel.updateOne(
+    { key: MAINTENANCE_LOCK_KEY },
+    { $set: { value, updatedAt: new Date() } },
+    { upsert: true }
+  );
+};
+
+const releaseMaintenanceLock = async ({ note = '' } = {}) => {
+  await Setting.updateOne(
+    { key: MAINTENANCE_LOCK_KEY },
+    {
+      $set: {
+        value: {
+          active: false,
+          reason: '',
+          note: String(note || ''),
+          releasedAt: new Date().toISOString()
+        },
+        updatedAt: new Date()
+      }
+    },
+    { upsert: true }
+  );
+};
+
 const exportCollectionsNdjson = async ({ outputFilePath, incrementalSince }) => {
   await ensureDir(path.dirname(outputFilePath));
   const stream = fs.createWriteStream(outputFilePath, { flags: 'w' });
@@ -475,6 +617,7 @@ const createBackupArtifact = async ({
   user = null,
   sourceBackupId = null
 }) => {
+  await enforceReplicaSetSafety();
   await ensureDir(BACKUP_ROOT);
   await ensureDir(TMP_ROOT);
 
@@ -492,6 +635,7 @@ const createBackupArtifact = async ({
   let artifact = null;
   try {
     await ensureDir(filesDir);
+    const previousReadyArtifact = await BackupArtifact.findOne({ status: 'ready' }).sort({ createdAt: -1 }).lean();
     const lastArtifact = backupType === 'Incremental'
       ? await BackupArtifact.findOne({ status: 'ready' }).sort({ createdAt: -1 }).lean()
       : null;
@@ -515,6 +659,9 @@ const createBackupArtifact = async ({
     await fsp.writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8');
     await createZipFromDirectory(backupDir, zipPath);
     const stat = await fsp.stat(zipPath);
+    const checksumSha256 = await sha256File(zipPath);
+    const compatibility = buildCompatibilityPolicy(appVersion);
+    const previousChecksumSha256 = String(previousReadyArtifact?.metadata?.checksumSha256 || '');
 
     artifact = await BackupArtifact.create({
       name: path.basename(fileName, '.zip'),
@@ -529,7 +676,15 @@ const createBackupArtifact = async ({
       metadata: {
         collections: collectionSummary,
         includesFiles: true,
-        fromBackupId: sourceBackupId || null
+        fromBackupId: sourceBackupId || null,
+        manifestVersion: CURRENT_MANIFEST_VERSION,
+        checksumSha256,
+        chain: {
+          previousBackupId: previousReadyArtifact?._id || null,
+          previousChecksumSha256,
+          chainValid: previousReadyArtifact ? Boolean(previousChecksumSha256) : true
+        },
+        compatibility
       },
       createdBy: user?._id || null
     });
@@ -631,7 +786,7 @@ const parseJsonDatabase = async (filePath) => {
   return parseJsonPayloadToGrouped(parsed);
 };
 
-const restoreFromExtractedBackup = async (extractedDir) => {
+const inspectExtractedBackup = async (extractedDir) => {
   const backupDirCandidate = path.join(extractedDir, 'backup');
   const rootCandidate = extractedDir;
   const backupDir = fs.existsSync(path.join(backupDirCandidate, 'database.ndjson'))
@@ -643,6 +798,64 @@ const restoreFromExtractedBackup = async (extractedDir) => {
   const filesSource = path.join(backupDir, 'files');
   const settingsFile = path.join(backupDir, 'settings.json');
   const metaFile = path.join(backupDir, 'meta.json');
+  return {
+    backupDir,
+    databaseNdjsonFile,
+    databaseJsonFile,
+    filesSource,
+    settingsFile,
+    metaFile
+  };
+};
+
+const validateBackupZipForRestore = async (zipPath, expectedChecksum = '') => {
+  const extractDir = await extractBackupZip(zipPath);
+  try {
+    const inspected = await inspectExtractedBackup(extractDir);
+    if (!fs.existsSync(inspected.databaseNdjsonFile) && !fs.existsSync(inspected.databaseJsonFile)) {
+      throw new Error('Backup file is invalid: database export is missing (database.ndjson or database.json)');
+    }
+    let meta = {};
+    if (fs.existsSync(inspected.metaFile)) {
+      try {
+        meta = JSON.parse(String(await fsp.readFile(inspected.metaFile, 'utf8') || '{}').replace(/^\uFEFF/, ''));
+      } catch {
+        meta = {};
+      }
+    }
+    assertRestoreCompatibility(meta);
+    if (expectedChecksum) {
+      const actual = await sha256File(zipPath);
+      if (String(actual).toLowerCase() !== String(expectedChecksum).toLowerCase()) {
+        throw new Error('Backup checksum validation failed. Artifact may be corrupted or tampered.');
+      }
+    }
+    const groupedRaw = fs.existsSync(inspected.databaseNdjsonFile)
+      ? await parseNdjsonDatabase(inspected.databaseNdjsonFile)
+      : await parseJsonDatabase(inspected.databaseJsonFile);
+    const detectedVersion = parseBackupFormatVersion(meta);
+    const migrated = migrateGroupedCollectionsToCurrent(groupedRaw, detectedVersion);
+    const sanitized = sanitizeGroupedCollections(migrated.grouped);
+    return {
+      ok: true,
+      detectedVersion,
+      appliedVersion: migrated.appliedVersion,
+      skippedCollections: sanitized.skippedCollections,
+      collectionsCount: sanitized.grouped.size
+    };
+  } finally {
+    await removeDirectorySafe(extractDir);
+  }
+};
+
+const restoreFromExtractedBackup = async (extractedDir) => {
+  const {
+    databaseNdjsonFile,
+    databaseJsonFile,
+    filesSource,
+    settingsFile,
+    metaFile
+  } = await inspectExtractedBackup(extractedDir);
 
   if (!fs.existsSync(databaseNdjsonFile) && !fs.existsSync(databaseJsonFile)) {
     throw new Error('Backup file is invalid: database export is missing (database.ndjson or database.json)');
@@ -659,6 +872,7 @@ const restoreFromExtractedBackup = async (extractedDir) => {
       meta = {};
     }
   }
+  assertRestoreCompatibility(meta);
   const detectedVersion = parseBackupFormatVersion(meta);
   const migrated = migrateGroupedCollectionsToCurrent(groupedRaw, detectedVersion);
   const sanitized = sanitizeGroupedCollections(migrated.grouped);
@@ -737,10 +951,29 @@ const extractBackupZip = async (zipPath) => {
   return extractDir;
 };
 
-const restoreBackupArtifact = async ({ backupArtifact, user, createSafetyBackup = true }) => {
+const restoreBackupArtifact = async ({
+  backupArtifact,
+  user,
+  createSafetyBackup = true,
+  useMaintenanceLock = true
+}) => {
   let safetyBackup = null;
   let extractDir = null;
+  let lockAcquired = false;
   try {
+    if (useMaintenanceLock) {
+      await acquireMaintenanceLock({ reason: 'restore', actor: user });
+      lockAcquired = true;
+    }
+    const expectedChecksum = String(backupArtifact?.metadata?.checksumSha256 || '');
+    if (expectedChecksum) {
+      const actualChecksum = await sha256File(backupArtifact.filePath);
+      if (String(actualChecksum).toLowerCase() !== expectedChecksum.toLowerCase()) {
+        throw new Error('Backup checksum mismatch; restore blocked.');
+      }
+    }
+    await validateBackupZipForRestore(backupArtifact.filePath, expectedChecksum);
+
     if (createSafetyBackup) {
       safetyBackup = await createBackupArtifact({
         backupType: 'Full',
@@ -785,13 +1018,21 @@ const restoreBackupArtifact = async ({ backupArtifact, user, createSafetyBackup 
     });
     if (safetyBackup) {
       try {
-        await restoreBackupArtifact({ backupArtifact: safetyBackup, user, createSafetyBackup: false });
+        await restoreBackupArtifact({
+          backupArtifact: safetyBackup,
+          user,
+          createSafetyBackup: false,
+          useMaintenanceLock: false
+        });
       } catch {
         // If rollback also fails, original error is still surfaced.
       }
     }
     throw error;
   } finally {
+    if (lockAcquired) {
+      await releaseMaintenanceLock({ note: 'restore_completed' }).catch(() => {});
+    }
     if (extractDir) await removeDirectorySafe(extractDir);
   }
 };
@@ -807,6 +1048,9 @@ const restoreFromUploadedZip = async ({ zipPath, user }) => {
 };
 
 const restoreFromJsonPayload = async ({ payload, user = null }) => {
+  let safetyBackup = null;
+  let lockAcquired = false;
+  assertRestoreCompatibility(payload?.meta || {});
   const groupedRaw = parseJsonPayloadToGrouped(payload);
   const detectedVersion = parseBackupFormatVersion(payload?.meta || {});
   const migrated = migrateGroupedCollectionsToCurrent(groupedRaw, detectedVersion);
@@ -835,6 +1079,14 @@ const restoreFromJsonPayload = async ({ payload, user = null }) => {
       || msg.includes('replica set');
   };
   try {
+    await acquireMaintenanceLock({ reason: 'json_restore', actor: user });
+    lockAcquired = true;
+    safetyBackup = await createBackupArtifact({
+      backupType: 'Full',
+      trigger: 'rollback',
+      user,
+      sourceBackupId: null
+    });
     const { withJournalCaptureSuspended } = getResilienceHelpers();
     await withJournalCaptureSuspended(async () => {
       try {
@@ -867,7 +1119,24 @@ const restoreFromJsonPayload = async ({ payload, user = null }) => {
       }
     }).catch(() => {});
     return restoreReport;
+  } catch (error) {
+    if (safetyBackup) {
+      try {
+        await restoreBackupArtifact({
+          backupArtifact: safetyBackup,
+          user,
+          createSafetyBackup: false,
+          useMaintenanceLock: false
+        });
+      } catch {
+        // preserve original error
+      }
+    }
+    throw error;
   } finally {
+    if (lockAcquired) {
+      await releaseMaintenanceLock({ note: 'json_restore_completed' }).catch(() => {});
+    }
     await session.endSession();
   }
 };
@@ -875,9 +1144,13 @@ const restoreFromJsonPayload = async ({ payload, user = null }) => {
 module.exports = {
   BACKUP_ROOT,
   CURRENT_BACKUP_FORMAT_VERSION,
+  CURRENT_MANIFEST_VERSION,
   createBackupArtifact,
   restoreBackupArtifact,
   restoreFromUploadedZip,
   restoreFromJsonPayload,
-  createBackupLog
+  createBackupLog,
+  validateBackupZipForRestore,
+  acquireMaintenanceLock,
+  releaseMaintenanceLock
 };

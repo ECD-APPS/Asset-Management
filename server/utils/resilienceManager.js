@@ -11,6 +11,7 @@ const BackupArtifact = require('../models/BackupArtifact');
 const Setting = require('../models/Setting');
 
 const IMMUTABLE_ROOT = path.join(__dirname, '../storage/immutable-backups');
+const OPLOG_ARCHIVE_ROOT = path.join(__dirname, '../storage/oplog-archive');
 const CRITICAL_COLLECTIONS = [
   'users',
   'stores',
@@ -28,7 +29,10 @@ const CRITICAL_COLLECTIONS = [
 const STATE_KEYS = {
   shadow: 'resilienceShadowState',
   upload: 'resilienceUploadState',
-  verify: 'resilienceLastVerification'
+  verify: 'resilienceLastVerification',
+  pitr: 'resiliencePitrState',
+  backupAudit: 'resilienceBackupAuditState',
+  crash: 'resilienceCrashState'
 };
 
 let JOURNAL_LISTENER_ATTACHED = false;
@@ -194,10 +198,18 @@ const createImmutableManifestForArtifact = async (artifact) => {
   if (!fs.existsSync(immutablePath)) {
     await fs.promises.copyFile(artifact.filePath, immutablePath);
   }
+  const previousBackupId = String(artifact?.metadata?.chain?.previousBackupId || '');
+  const previousChecksumSha256 = String(artifact?.metadata?.chain?.previousChecksumSha256 || '');
   const manifest = {
+    manifestVersion: Number(artifact?.metadata?.manifestVersion || 1),
     backupId: String(artifact._id || ''),
     fileName: artifact.fileName,
     checksum,
+    chain: {
+      previousBackupId: previousBackupId || null,
+      previousChecksumSha256: previousChecksumSha256 || null
+    },
+    compatibility: artifact?.metadata?.compatibility || {},
     immutablePath,
     createdAt: new Date().toISOString()
   };
@@ -239,6 +251,102 @@ const previewRestoreToTime = async (targetDate) => {
     },
     replayEntries: journalCount
   };
+};
+
+const archiveOplogWindow = async ({ actor = null, retentionDays = 14 } = {}) => {
+  const pitrEnabled = String(process.env.PITR_ENABLED || 'true').toLowerCase() === 'true';
+  if (!pitrEnabled) {
+    throw new Error('PITR is disabled (PITR_ENABLED=false).');
+  }
+  const adminDb = mongoose.connection.db.admin();
+  const hello = await adminDb.command({ hello: 1 });
+  if (!hello?.setName) {
+    throw new Error('PITR requires replica set mode. MongoDB is not running as a replica set.');
+  }
+
+  await ensureDir(OPLOG_ARCHIVE_ROOT);
+  const pitrState = await getState(STATE_KEYS.pitr, {});
+  const localDb = mongoose.connection.client.db('local');
+  const oplog = localDb.collection('oplog.rs');
+  const filter = pitrState.lastTs ? { ts: { $gt: pitrState.lastTs } } : {};
+  const docs = await oplog.find(filter).sort({ ts: 1 }).limit(20000).toArray();
+
+  const createdAt = new Date();
+  const archiveName = `oplog_${createdAt.toISOString().replace(/[:.]/g, '-')}.ndjson`;
+  const archivePath = path.join(OPLOG_ARCHIVE_ROOT, archiveName);
+  let firstTs = null;
+  let lastTs = null;
+  if (docs.length > 0) {
+    const lines = docs.map((doc) => mongoose.mongo.BSON.EJSON.stringify(doc, { relaxed: false }));
+    await fs.promises.writeFile(archivePath, `${lines.join('\n')}\n`, 'utf8');
+    firstTs = docs[0].ts;
+    lastTs = docs[docs.length - 1].ts;
+  } else {
+    await fs.promises.writeFile(archivePath, '', 'utf8');
+  }
+  const checksum = await computeChecksum(archivePath);
+  const retentionCutoff = new Date(Date.now() - Math.max(1, Number(retentionDays || 14)) * 24 * 60 * 60 * 1000);
+
+  const files = await fs.promises.readdir(OPLOG_ARCHIVE_ROOT);
+  for (const file of files) {
+    if (!file.endsWith('.ndjson')) continue;
+    const full = path.join(OPLOG_ARCHIVE_ROOT, file);
+    const stat = await fs.promises.stat(full).catch(() => null);
+    if (!stat) continue;
+    if (stat.mtime >= retentionCutoff) continue;
+    await fs.promises.unlink(full).catch(() => {});
+  }
+
+  const nextState = {
+    enabled: true,
+    lastArchivedAt: createdAt.toISOString(),
+    lastArchiveFile: archiveName,
+    lastArchiveChecksum: checksum,
+    lastTs: lastTs || pitrState.lastTs || null,
+    firstTs: firstTs || pitrState.firstTs || null,
+    retainedDays: Math.max(1, Number(retentionDays || 14)),
+    archivedOps: docs.length
+  };
+  await setState(STATE_KEYS.pitr, nextState);
+  await appendJournalEntry({
+    opType: 'archive',
+    collectionName: 'system',
+    actor,
+    metadata: {
+      mode: 'oplog-archive',
+      archiveName,
+      checksum,
+      count: docs.length
+    }
+  });
+  return nextState;
+};
+
+const readArchivedOplogEntriesUntil = async (targetDate) => {
+  if (!fs.existsSync(OPLOG_ARCHIVE_ROOT)) return [];
+  const names = (await fs.promises.readdir(OPLOG_ARCHIVE_ROOT))
+    .filter((n) => n.endsWith('.ndjson'))
+    .sort();
+  const entries = [];
+  for (const name of names) {
+    const full = path.join(OPLOG_ARCHIVE_ROOT, name);
+    const content = await fs.promises.readFile(full, 'utf8').catch(() => '');
+    const lines = String(content || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      let parsed = null;
+      try {
+        parsed = mongoose.mongo.BSON.EJSON.parse(line, { relaxed: false });
+      } catch {
+        parsed = null;
+      }
+      if (!parsed?.ts) continue;
+      const opDate = parsed.ts?.getHighBits ? new Date(parsed.ts.getHighBits() * 1000) : null;
+      if (opDate && opDate <= targetDate) {
+        entries.push(parsed);
+      }
+    }
+  }
+  return entries;
 };
 
 const applyJournalCommand = async (db, entry) => {
@@ -284,15 +392,63 @@ const replayJournalEntriesToTime = async (targetDate, afterDate) => {
   return entries.length;
 };
 
+const applyOplogEntries = async (entries = []) => {
+  const db = mongoose.connection.db;
+  const dbName = String(db.databaseName || '');
+  let applied = 0;
+  for (const entry of entries) {
+    const ns = String(entry?.ns || '');
+    if (!ns.startsWith(`${dbName}.`)) continue;
+    const collectionName = ns.split('.').slice(1).join('.');
+    if (!CRITICAL_COLLECTIONS.includes(collectionName.toLowerCase())) continue;
+    const c = db.collection(collectionName);
+    if (entry.op === 'i') {
+      const doc = entry.o;
+      if (doc && typeof doc === 'object') {
+        // eslint-disable-next-line no-await-in-loop
+        await c.replaceOne({ _id: doc._id }, doc, { upsert: true });
+        applied += 1;
+      }
+      continue;
+    }
+    if (entry.op === 'u') {
+      const q = entry.o2 || {};
+      const u = entry.o || {};
+      // eslint-disable-next-line no-await-in-loop
+      await c.updateOne(q, u, { upsert: false });
+      applied += 1;
+      continue;
+    }
+    if (entry.op === 'd') {
+      const q = entry.o || {};
+      // eslint-disable-next-line no-await-in-loop
+      await c.deleteOne(q);
+      applied += 1;
+    }
+  }
+  return applied;
+};
+
 const restoreToTimestamp = async ({ targetDate, user }) => {
   const preview = await previewRestoreToTime(targetDate);
   const snapshot = await BackupArtifact.findById(preview.snapshot.id);
   if (!snapshot) throw new Error('Snapshot not found for restore.');
   const { restoreBackupArtifact } = require('./backupRecovery');
   await withJournalCaptureSuspended(async () => {
-    await restoreBackupArtifact({ backupArtifact: snapshot, user, createSafetyBackup: true });
+    await restoreBackupArtifact({
+      backupArtifact: snapshot,
+      user,
+      createSafetyBackup: true,
+      useMaintenanceLock: true
+    });
   });
-  const replayed = await replayJournalEntriesToTime(targetDate, new Date(preview.snapshot.createdAt));
+  const oplogEntries = await readArchivedOplogEntriesUntil(targetDate);
+  let replayed = 0;
+  if (oplogEntries.length > 0) {
+    replayed = await applyOplogEntries(oplogEntries);
+  } else {
+    replayed = await replayJournalEntriesToTime(targetDate, new Date(preview.snapshot.createdAt));
+  }
   await appendJournalEntry({
     opType: 'restore',
     collectionName: 'system',
@@ -496,6 +652,79 @@ const verifyLatestBackupRestore = async () => {
   return record;
 };
 
+const auditBackupChain = async () => {
+  const backups = await BackupArtifact.find({ status: 'ready' }).sort({ createdAt: 1 }).lean();
+  let ok = true;
+  const issues = [];
+  for (let i = 0; i < backups.length; i += 1) {
+    const current = backups[i];
+    if (!current?.filePath || !fs.existsSync(current.filePath)) {
+      ok = false;
+      issues.push(`Missing backup file for ${current?.fileName || current?._id}`);
+      continue;
+    }
+    const expectedChecksum = String(current?.metadata?.checksumSha256 || '');
+    if (expectedChecksum) {
+      // eslint-disable-next-line no-await-in-loop
+      const computed = await computeChecksum(current.filePath);
+      if (computed !== expectedChecksum) {
+        ok = false;
+        issues.push(`Checksum mismatch for ${current.fileName}`);
+      }
+    }
+    if (i > 0) {
+      const prev = backups[i - 1];
+      const linkedPrev = String(current?.metadata?.chain?.previousBackupId || '');
+      if (linkedPrev && linkedPrev !== String(prev._id)) {
+        ok = false;
+        issues.push(`Chain break for ${current.fileName}: previousBackupId does not match.`);
+      }
+    }
+  }
+  const state = {
+    ok,
+    checkedAt: new Date().toISOString(),
+    totalBackups: backups.length,
+    issues
+  };
+  await setState(STATE_KEYS.backupAudit, state);
+  return state;
+};
+
+const getBackupReadiness = async () => {
+  const [verifyState, backupAudit, pitrState, latestBackup] = await Promise.all([
+    getState(STATE_KEYS.verify, { status: 'unknown' }),
+    getState(STATE_KEYS.backupAudit, { ok: false, issues: ['No backup audit has run yet.'] }),
+    getState(STATE_KEYS.pitr, { enabled: false }),
+    BackupArtifact.findOne({ status: 'ready' }).sort({ createdAt: -1 }).lean()
+  ]);
+  const ready = Boolean(
+    latestBackup
+    && verifyState?.status === 'passed'
+    && backupAudit?.ok === true
+  );
+  return {
+    ready,
+    latestBackup: latestBackup ? {
+      id: String(latestBackup._id),
+      fileName: latestBackup.fileName,
+      createdAt: latestBackup.createdAt,
+      checksumSha256: latestBackup?.metadata?.checksumSha256 || ''
+    } : null,
+    verification: verifyState,
+    backupAudit,
+    pitr: pitrState
+  };
+};
+
+const markCrashDetected = async ({ reason = '' } = {}) => {
+  await setState(STATE_KEYS.crash, {
+    detected: true,
+    reason: String(reason || 'unclean_shutdown'),
+    detectedAt: new Date().toISOString()
+  });
+};
+
 const createResilienceJob = async ({ jobType, actor = null, metadata = {} }) => {
   return ResilienceJob.create({
     jobType,
@@ -517,6 +746,9 @@ const getResilienceStatus = async () => {
   const latestJournal = await ChangeJournal.findOne({}).sort({ seq: -1 }).lean();
   const shadow = await getState(STATE_KEYS.shadow, { lag: 0 });
   const verify = await getState(STATE_KEYS.verify, { status: 'unknown' });
+  const backupAudit = await getState(STATE_KEYS.backupAudit, { ok: false, issues: [] });
+  const pitr = await getState(STATE_KEYS.pitr, { enabled: false });
+  const crash = await getState(STATE_KEYS.crash, { detected: false });
   const activeJob = await ResilienceJob.findOne({ status: 'running' }).sort({ startedAt: -1 }).lean();
   const recentVerifications = await ResilienceVerification.find({}).sort({ createdAt: -1 }).limit(5).lean();
   return {
@@ -526,6 +758,9 @@ const getResilienceStatus = async () => {
     },
     shadow,
     verification: verify,
+    backupAudit,
+    pitr,
+    crash,
     activeJob,
     recentVerifications
   };
@@ -555,6 +790,10 @@ module.exports = {
   createResilienceJob,
   updateResilienceJob,
   getResilienceStatus,
+  getBackupReadiness,
+  auditBackupChain,
+  archiveOplogWindow,
+  markCrashDetected,
   computeChecksum,
   writeUploadChecksum
 };

@@ -10,6 +10,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/Expo}"
 SERVICE_NAME="${SERVICE_NAME:-expo-app}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:5000/healthz}"
+READY_URL="${READY_URL:-http://127.0.0.1:5000/api/readyz}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/expo-backups/app}"
 BRANCH="${BRANCH:-main}"
 
@@ -68,6 +69,12 @@ pm2 save
 echo "[INFO] Health check: ${HEALTH_URL}"
 sleep 3
 curl -fsS "${HEALTH_URL}" >/dev/null
+curl -fsS "${READY_URL}" >/dev/null
 
 trap - ERR
 echo "[SUCCESS] App deployment completed safely."
+echo "[RUNBOOK] If startup fails after deployment:"
+echo "  1) pm2 logs ${SERVICE_NAME} --lines 200"
+echo "  2) curl -sS ${HEALTH_URL}"
+echo "  3) Trigger emergency restore from Portal or:"
+echo "     curl -X POST http://127.0.0.1:5000/api/system/backups/emergency-restore -H 'Content-Type: application/json' -b '<auth-cookie>'"

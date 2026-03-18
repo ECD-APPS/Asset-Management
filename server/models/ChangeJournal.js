@@ -5,7 +5,7 @@ const changeJournalSchema = new mongoose.Schema({
   opType: {
     type: String,
     required: true,
-    enum: ['insert', 'update', 'delete', 'snapshot', 'restore', 'verify', 'shadow_sync', 'promotion', 'marker'],
+    enum: ['insert', 'update', 'delete', 'snapshot', 'restore', 'verify', 'shadow_sync', 'promotion', 'marker', 'archive'],
     index: true
   },
   collectionName: { type: String, default: '', index: true },

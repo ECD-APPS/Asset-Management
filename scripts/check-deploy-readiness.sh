@@ -19,6 +19,7 @@ DB_PORT="${DB_PORT:-27017}"
 WEB_IP="${WEB_IP:-10.96.133.181}"
 APP_IP="${APP_IP:-10.96.133.197}"
 APP_PORT="${APP_PORT:-5000}"
+API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:${APP_PORT}}"
 
 if [[ -z "$ROLE" ]]; then
   echo "ERROR: ROLE is required (app|web|db)."
@@ -96,6 +97,20 @@ if [[ "$ROLE" == "app" ]]; then
     ok "Local health endpoint responds at :${APP_PORT}/healthz"
   else
     warn "Local health endpoint not reachable yet. Start app with PM2 and re-run."
+  fi
+  if curl -sS "${API_BASE_URL}/api/readyz" >/dev/null 2>&1; then
+    ok "API readiness endpoint responds at ${API_BASE_URL}/api/readyz"
+  else
+    warn "API readiness endpoint not reachable yet."
+  fi
+  if command -v mongosh >/dev/null 2>&1; then
+    if mongosh --quiet --eval "db.hello().setName ? 0 : 1" >/dev/null 2>&1; then
+      ok "MongoDB replica set detected (required for PITR)."
+    else
+      warn "MongoDB replica set not detected from this host. Enterprise PITR requires replica set mode."
+    fi
+  else
+    warn "mongosh not found; skipping replica set check."
   fi
 elif [[ "$ROLE" == "web" ]]; then
   print_header "Web VM Readiness"

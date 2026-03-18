@@ -21,6 +21,7 @@ Environment:
 - Repo URL: https://github.com/tariq5024-blip/Expo.git
 - Branch: main
 - Node version required: 20.x
+- MongoDB mode required: replica set (single-node allowed for now)
 
 Rules you MUST follow:
 1) Give commands only for Linux bash.
@@ -37,6 +38,11 @@ Rules you MUST follow:
    - scripts/deploy-web-safe.sh
 7) If a command needs sudo, include sudo explicitly.
 8) At the end, provide a verification checklist with curl commands.
+9) Enforce enterprise backup guardrails:
+   - backup_v3_enabled=true
+   - pitr_enabled=true
+   - reject unsafe restore when checksum or compatibility fails
+10) Keep existing endpoints for compatibility unless migration is complete.
 
 Now generate a clean deployment runbook with exact commands for:
 - Fresh install
@@ -83,6 +89,26 @@ Set Mongo bind IP:
 ```bash
 sudo sed -i 's/^  bindIp: .*/  bindIp: 127.0.0.1,10.96.133.213/' /etc/mongod.conf
 sudo systemctl restart mongod
+```
+
+Enable replica set (required for enterprise backup + PITR):
+
+```bash
+sudo python3 - <<'PY'
+from pathlib import Path
+p = Path('/etc/mongod.conf')
+s = p.read_text()
+if 'replSetName:' not in s:
+    if '#replication:' in s:
+        s = s.replace('#replication:\n', 'replication:\n  replSetName: expo-rs0\n', 1)
+    elif 'replication:' not in s:
+        s = s.rstrip() + '\n\nreplication:\n  replSetName: expo-rs0\n'
+p.write_text(s)
+print('replication configured')
+PY
+sudo systemctl restart mongod
+mongosh --eval 'rs.initiate({_id:"expo-rs0",members:[{_id:0,host:"10.96.133.213:27017"}]})'
+mongosh --eval 'rs.status().ok'
 ```
 
 Create DB user:
@@ -132,14 +158,18 @@ cp .env.vm.example .env
 Edit `/opt/Expo/server/.env` and set:
 
 ```env
-MONGO_URI=mongodb://expo_user:CHANGE_ME_STRONG_PASSWORD@10.96.133.213:27017/expo-stores
+MONGO_URI=mongodb://expo_user:CHANGE_ME_STRONG_PASSWORD@10.96.133.213:27017/expo-stores?replicaSet=expo-rs0
 PORT=5000
 JWT_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
 COOKIE_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
-COOKIE_SECURE=false
+COOKIE_SECURE=auto
 ENABLE_CSRF=true
 CORS_ORIGIN=http://10.96.133.181
-SEED_DEFAULTS=true
+SEED_DEFAULTS=false
+BACKUP_V3_ENABLED=true
+PITR_ENABLED=true
+PITR_RETENTION_DAYS=14
+ENFORCE_REPLICA_SET_FOR_BACKUPS=true
 ```
 
 Install + start backend:
@@ -270,6 +300,8 @@ From **App VM**:
 ```bash
 nc -zv 10.96.133.213 27017
 curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/readyz
+mongosh --eval 'rs.status().ok'
 ```
 
 From browser:
@@ -282,6 +314,30 @@ Login check:
 - `superadmin@expo.com / superadmin123`
 - `it@expo.com / admin123`
 - `noc@expo.com / admin123`
+
+Enterprise backup check (Super Admin session required):
+
+```bash
+# 1) create enterprise full backup
+curl -sS -X POST http://127.0.0.1:5000/api/system/backups/create \
+  -H "Content-Type: application/json" \
+  -b "<cookie_file_or_sid>" \
+  --data '{"backupType":"Full","trigger":"manual"}'
+
+# 2) run PITR archive
+curl -sS -X POST http://127.0.0.1:5000/api/system/resilience/pitr/archive \
+  -H "Content-Type: application/json" \
+  -b "<cookie_file_or_sid>" \
+  --data '{}'
+
+# 3) readiness must report ready=true and pitr.enabled=true
+curl -sS http://127.0.0.1:5000/api/system/resilience/readiness \
+  -b "<cookie_file_or_sid>"
+```
+
+Cutover rule (enterprise):
+- move to production only after `3` successful automated restore verifications
+- and `1` full disaster recovery drill pass
 
 ---
 

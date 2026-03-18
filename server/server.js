@@ -20,7 +20,10 @@ const {
   startCommandJournaling,
   syncShadowDatabase,
   verifyLatestBackupRestore,
-  getResilienceStatus
+  getResilienceStatus,
+  auditBackupChain,
+  archiveOplogWindow,
+  markCrashDetected
 } = require('./utils/resilienceManager');
 const serverPackage = require('./package.json');
 
@@ -397,6 +400,39 @@ let backupJobStarted = false;
 let mongod = null;
 let backupSchedulerStarted = false;
 let runtimeDbMode = 'unknown';
+const runtimeStateDir = path.join(__dirname, 'storage/runtime');
+const runtimeStateFile = path.join(runtimeStateDir, 'boot-state.json');
+let heartbeatTimer = null;
+
+const writeRuntimeState = async (patch = {}) => {
+  try {
+    if (!fs.existsSync(runtimeStateDir)) fs.mkdirSync(runtimeStateDir, { recursive: true });
+    let current = {};
+    if (fs.existsSync(runtimeStateFile)) {
+      try {
+        current = JSON.parse(String(fs.readFileSync(runtimeStateFile, 'utf8') || '{}'));
+      } catch {
+        current = {};
+      }
+    }
+    const next = { ...current, ...patch };
+    fs.writeFileSync(runtimeStateFile, JSON.stringify(next, null, 2), 'utf8');
+  } catch {
+    // best-effort runtime marker
+  }
+};
+
+const evaluateUncleanShutdown = async () => {
+  if (!fs.existsSync(runtimeStateFile)) return;
+  try {
+    const parsed = JSON.parse(String(fs.readFileSync(runtimeStateFile, 'utf8') || '{}'));
+    if (parsed.cleanShutdown === false) {
+      await markCrashDetected({ reason: 'unclean_shutdown_detected_on_boot' }).catch(() => {});
+    }
+  } catch {
+    // ignore parse failures
+  }
+};
 
 // Connect to MongoDB
 const connectDB = async () => {
@@ -445,6 +481,17 @@ const connectDB = async () => {
   }
   console.log('MongoDB Connected to:', mongoUri);
   startCommandJournaling();
+  await evaluateUncleanShutdown();
+  await writeRuntimeState({
+    cleanShutdown: false,
+    bootedAt: new Date().toISOString(),
+    pid: process.pid
+  });
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    writeRuntimeState({ lastHeartbeatAt: new Date().toISOString(), cleanShutdown: false });
+  }, 15000);
+  heartbeatTimer.unref();
   try {
     const migration = await migrateStoreEmailPasswords();
     if (!migration.skipped) {
@@ -542,6 +589,22 @@ const connectDB = async () => {
           await verifyLatestBackupRestore();
         } catch (err) {
           console.error('Scheduled backup verification failed:', err.message || err);
+        }
+      });
+      // Daily backup checksum + chain audit
+      cron.schedule('45 2 * * *', async () => {
+        try {
+          await auditBackupChain();
+        } catch (err) {
+          console.error('Scheduled backup chain audit failed:', err.message || err);
+        }
+      });
+      // Frequent PITR oplog archive (every 10 minutes)
+      cron.schedule('*/10 * * * *', async () => {
+        try {
+          await archiveOplogWindow({ actor: null, retentionDays: Number(process.env.PITR_RETENTION_DAYS || 14) });
+        } catch (err) {
+          console.error('Scheduled PITR archive failed:', err.message || err);
         }
       });
       console.log('Backup scheduler started (6h, daily, weekly, monthly).');
@@ -682,6 +745,11 @@ app.use((req, res) => {
 });
 
 const shutdown = async () => {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  await writeRuntimeState({ cleanShutdown: true, shutdownAt: new Date().toISOString() });
   try {
     await mongoose.connection.close();
   } catch {}

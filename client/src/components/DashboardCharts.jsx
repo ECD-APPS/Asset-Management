@@ -212,7 +212,7 @@ const buildPieConfig = ({
   };
 };
 
-const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false }) => {
+const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selectedMaintenanceVendor = 'All' }) => {
   if (!stats) return <div className="p-8 text-center text-gray-500">Loading dashboard data...</div>;
 
   const { overview, growth, conditions, usageBreakdown, locations, products, maintenanceVendors } = stats;
@@ -363,6 +363,9 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false }) => {
   const navigateToAssets = (status) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
+    if (selectedMaintenanceVendor && selectedMaintenanceVendor !== 'All') {
+      params.set('maintenance_vendor', selectedMaintenanceVendor);
+    }
     const query = params.toString();
     window.open(`/assets${query ? `?${query}` : ''}`, '_blank', 'noopener,noreferrer');
   };
@@ -451,7 +454,8 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false }) => {
 
 DashboardCharts.propTypes = {
   stats: PropTypes.object,
-  showMaintenanceVendorFeatures: PropTypes.bool
+  showMaintenanceVendorFeatures: PropTypes.bool,
+  selectedMaintenanceVendor: PropTypes.string
 };
 
 export default DashboardCharts;

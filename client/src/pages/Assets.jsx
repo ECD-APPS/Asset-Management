@@ -37,6 +37,7 @@ const DEFAULT_COLUMN_DEFS = [
   { id: 'location', label: 'Location', key: 'location', visible: true, builtin: true },
   { id: 'quantity', label: 'Quantity', key: 'quantity', visible: true, builtin: true },
   { id: 'vendor', label: 'Vendor', key: 'vendor_name', visible: true, builtin: true },
+  { id: 'maintenanceVendor', label: 'Maintenance Vendor', key: 'maintenance_vendor', visible: true, builtin: true },
   { id: 'source', label: 'Source', key: 'source', visible: true, builtin: true },
   { id: 'deliveredBy', label: 'Delivered By', key: 'delivered_by_name', visible: true, builtin: true },
   { id: 'deliveredAt', label: 'Delivered At', key: 'delivered_at', visible: true, builtin: true },
@@ -99,8 +100,20 @@ const Assets = () => {
   const maintenanceVendorParam = searchParams.get('maintenance_vendor');
   const reservedParam = searchParams.get('reserved');
   const { user, activeStore } = useAuth();
-  const scopedStoreName = String(activeStore?.name || user?.assignedStore?.name || '').toUpperCase();
-  const isScyStoreContext = scopedStoreName.includes('SCY');
+  const scopeHints = [
+    activeStore?.name,
+    user?.assignedStore?.name,
+    user?.name,
+    user?.email
+  ]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase();
+  const hasScyHint = scopeHints.includes('SCY');
+  const hasItHint = scopeHints.includes('IT ASSET') || /\bIT\b/.test(scopeHints);
+  const hasNocHint = scopeHints.includes('NOC ASSET') || /\bNOC\b/.test(scopeHints);
+  const isScyStoreContext = hasScyHint || (!hasItHint && !hasNocHint && user?.role !== 'Super Admin');
 
   const [assets, setAssets] = useState([]);
   const [stores, setStores] = useState([]);
@@ -447,6 +460,7 @@ const Assets = () => {
         location: true,
         quantity: true,
         vendor: true,
+        maintenanceVendor: true,
         source: false,
         deliveredBy: true,
         deliveredAt: true,
@@ -491,8 +505,32 @@ const Assets = () => {
         });
 
         const safeColumns = nextColumns.length > 0 ? nextColumns : [...DEFAULT_COLUMN_DEFS];
+        const hasMaintenanceVendorColumn = safeColumns.some((column) => {
+          const key = String(column?.key || '').toLowerCase();
+          const label = String(column?.label || '').toLowerCase();
+          return key.includes('maintenance_vendor')
+            || key.includes('maintenancevendor')
+            || key.includes('maintenance_vandor')
+            || label.includes('maintenance vendor')
+            || label.includes('maintenance vandor');
+        });
+        if (!hasMaintenanceVendorColumn) {
+          safeColumns.push({ id: 'maintenanceVendor', label: 'Maintenance Vendor', key: 'maintenance_vendor', visible: true, builtin: true });
+        }
         const nextOrder = safeColumns.map((column) => column.id);
         const nextVisible = Object.fromEntries(safeColumns.map((column) => [column.id, column.visible !== false]));
+        const maintenanceColumnId = safeColumns.find((column) => {
+          const key = String(column?.key || '').toLowerCase();
+          const label = String(column?.label || '').toLowerCase();
+          return key.includes('maintenance_vendor')
+            || key.includes('maintenancevendor')
+            || key.includes('maintenance_vandor')
+            || label.includes('maintenance vendor')
+            || label.includes('maintenance vandor');
+        })?.id;
+        if (maintenanceColumnId) {
+          nextVisible[maintenanceColumnId] = true;
+        }
 
         setColumnDefinitions(safeColumns);
         setColumnOrder(nextOrder);
@@ -600,7 +638,9 @@ const Assets = () => {
     setFilterCondition(normalized.condition);
     setFilterLocation(locationParam || '');
     setFilterStoreId(storeParam || '');
-    setFilterMaintenanceVendor(isScyStoreContext ? (maintenanceVendorParam || '') : '');
+    // Keep vendor filter from URL (e.g. dashboard Siemens/G42 KPI click),
+    // while backend still enforces SCY scope authorization.
+    setFilterMaintenanceVendor(maintenanceVendorParam || '');
     setFilterReserved((reservedParam === 'true' || reservedParam === 'false') ? reservedParam : '');
     if (actionParam === 'add') setShowAddModal(true);
   }, [searchParam, productParam, statusParam, actionParam, locationParam, storeParam, maintenanceVendorParam, reservedParam, isScyStoreContext, normalizeUrlStatusFilter]);
@@ -646,7 +686,7 @@ const Assets = () => {
           condition: filterCondition || undefined, // Add condition filter
           // category removed
           manufacturer: filterManufacturer || undefined,
-          maintenance_vendor: isScyStoreContext ? (filterMaintenanceVendor || undefined) : undefined,
+          maintenance_vendor: filterMaintenanceVendor || undefined,
           reserved: reservedFromStatus ? 'true' : (filterReserved || undefined),
           model_number: filterModelNumber || undefined,
           serial_number: filterSerialNumber || undefined,
@@ -1434,11 +1474,13 @@ const Assets = () => {
 
   const orderedVisibleColumns = useMemo(() => {
     return columnOrder.filter((key) => {
+      const colDef = columnDefinitionMap.get(key);
+      if (isMaintenanceVendorColumn(colDef)) return true; // Permanent column
       if (!visibleColumns[key]) return false;
       if (key === 'action' && user?.role === 'Viewer') return false;
       return true;
     });
-  }, [columnOrder, visibleColumns, user?.role]);
+  }, [columnOrder, visibleColumns, user?.role, columnDefinitionMap]);
 
   const renderActionCell = (asset, key = 'action') => (
     <td key={key} className="px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center text-sm" onClick={(e) => e.stopPropagation()}>
@@ -1509,6 +1551,32 @@ const Assets = () => {
     </td>
   );
 
+  const getMaintenanceVendorValue = (asset = {}) => {
+    const fromCustom = asset?.customFields || {};
+    const candidates = [
+      asset?.maintenance_vendor,
+      asset?.maintenanceVendor,
+      fromCustom?.maintenance_vendor,
+      fromCustom?.maintenance_vandor,
+      fromCustom?.maintenanceVendor,
+      fromCustom?.['maintenance vendor'],
+      fromCustom?.['maintenance vandor']
+    ];
+    for (const raw of candidates) {
+      const value = String(raw || '').trim();
+      if (!value) continue;
+      const lower = value.toLowerCase();
+      if (lower === 'siemens') return 'Siemens';
+      if (lower === 'g42') return 'G42';
+      return value;
+    }
+    // Fallback: if vendor_name itself is Siemens/G42, show it in maintenance vendor column.
+    const vendorName = String(asset?.vendor_name || '').trim().toLowerCase();
+    if (vendorName === 'siemens') return 'Siemens';
+    if (vendorName === 'g42') return 'G42';
+    return '-';
+  };
+
   const renderAssetCell = (asset, key) => {
     if (key === 'action') return renderActionCell(asset, key);
 
@@ -1530,6 +1598,7 @@ const Assets = () => {
     if (key === 'location') value = asset.location || '-';
     if (key === 'quantity') value = asset.quantity ?? '-';
     if (key === 'vendor') value = asset.vendor_name || '-';
+    if (key === 'maintenanceVendor') value = getMaintenanceVendorValue(asset);
     if (key === 'source') value = asset.source || '-';
     if (key === 'deliveredBy') value = asset.delivered_by_name || '-';
     if (key === 'deliveredAt') value = asset.delivered_at ? new Date(asset.delivered_at).toLocaleString() : '-';
@@ -1552,6 +1621,9 @@ const Assets = () => {
         } else {
           value = String(fallbackCustomValue);
         }
+      }
+      if (value === '-' && isMaintenanceVendorColumn(colDef)) {
+        value = getMaintenanceVendorValue(asset);
       }
     }
 
@@ -1877,6 +1949,17 @@ const Assets = () => {
             <option value="Missing">Missing</option>
             <option value="Reserved">Reserved</option>
           </select>
+          {isScyStoreContext && (
+            <select
+              value={filterMaintenanceVendor}
+              onChange={(e) => setFilterMaintenanceVendor(e.target.value)}
+              className="h-10 px-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            >
+              <option value="">All Vendors</option>
+              <option value="Siemens">Siemens</option>
+              <option value="G42">G42</option>
+            </select>
+          )}
           <div className="flex gap-2 sm:col-span-2 lg:col-span-4 items-center">
             <button
               onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
@@ -1914,8 +1997,12 @@ const Assets = () => {
                         <GripVertical className="w-4 h-4 text-slate-400" />
                         <input
                           type="checkbox"
-                          checked={visibleColumns[key]}
-                          onChange={(e) => setVisibleColumns(prev => ({ ...prev, [key]: e.target.checked }))}
+                          checked={isMaintenanceVendorColumn(columnDefinitionMap.get(key)) ? true : visibleColumns[key]}
+                          disabled={isMaintenanceVendorColumn(columnDefinitionMap.get(key))}
+                          onChange={(e) => {
+                            if (isMaintenanceVendorColumn(columnDefinitionMap.get(key))) return;
+                            setVisibleColumns(prev => ({ ...prev, [key]: e.target.checked }));
+                          }}
                         />
                         <span>{label}</span>
                       </div>

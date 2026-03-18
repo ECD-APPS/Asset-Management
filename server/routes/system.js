@@ -32,7 +32,10 @@ const {
   restoreBackupArtifact,
   restoreFromUploadedZip,
   restoreFromJsonPayload,
-  createBackupLog
+  createBackupLog,
+  validateBackupZipForRestore,
+  acquireMaintenanceLock,
+  releaseMaintenanceLock
 } = require('../utils/backupRecovery');
 const ResilienceJob = require('../models/ResilienceJob');
 const {
@@ -45,6 +48,9 @@ const {
   createResilienceJob,
   updateResilienceJob,
   getResilienceStatus,
+  getBackupReadiness,
+  auditBackupChain,
+  archiveOplogWindow,
   appendJournalEntry,
   computeChecksum,
   writeUploadChecksum
@@ -227,6 +233,9 @@ const handleUpload = (uploader) => (req, res, next) => {
     return res.status(400).json({ message: error.message || 'Upload failed' });
   });
 };
+
+const isBackupV3Enabled = () => String(process.env.BACKUP_V3_ENABLED || 'true').toLowerCase() === 'true';
+const isPitrEnabled = () => String(process.env.PITR_ENABLED || 'true').toLowerCase() === 'true';
 
 const parseUploadedBackupPayload = async (file) => {
   if (!file?.path) throw new Error('Uploaded backup file path is missing');
@@ -880,6 +889,9 @@ router.get('/backup-file', protect, superAdmin, async (req, res) => {
 // @access  Private/SuperAdmin
 router.post('/backups/create', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
   try {
+    if (!isBackupV3Enabled()) {
+      return res.status(503).json({ message: 'Enterprise backup flow is disabled (BACKUP_V3_ENABLED=false).' });
+    }
     const requestedType = String(req.body?.backupType || 'Full').toLowerCase();
     const backupType = requestedType === 'incremental' ? 'Incremental' : (requestedType === 'auto' ? 'Auto' : 'Full');
     const trigger = String(req.body?.trigger || 'manual');
@@ -955,6 +967,9 @@ router.delete('/backups/:id', protect, superAdmin, heavyOpsLimiter, async (req, 
 // @access  Private/SuperAdmin
 router.post('/backups/:id/restore', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
   try {
+    if (!isBackupV3Enabled()) {
+      return res.status(503).json({ message: 'Enterprise restore flow is disabled (BACKUP_V3_ENABLED=false).' });
+    }
     const backup = await BackupArtifact.findById(req.params.id);
     if (!backup) return res.status(404).json({ message: 'Backup not found' });
     if (!backup.filePath || !fs.existsSync(backup.filePath)) {
@@ -970,6 +985,23 @@ router.post('/backups/:id/restore', protect, superAdmin, heavyOpsLimiter, async 
   }
 });
 
+// @desc    Dry-run validate restore from backup artifact
+// @route   POST /api/system/backups/:id/restore-dry-run
+// @access  Private/SuperAdmin
+router.post('/backups/:id/restore-dry-run', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  try {
+    const backup = await BackupArtifact.findById(req.params.id).lean();
+    if (!backup) return res.status(404).json({ message: 'Backup not found' });
+    if (!backup.filePath || !fs.existsSync(backup.filePath)) {
+      return res.status(404).json({ message: 'Backup file does not exist on server' });
+    }
+    const report = await validateBackupZipForRestore(backup.filePath, String(backup?.metadata?.checksumSha256 || ''));
+    res.json({ message: 'Dry-run validation completed', report });
+  } catch (error) {
+    res.status(400).json({ message: error.message || 'Dry-run validation failed' });
+  }
+});
+
 // @desc    Upload zip/json backup and restore
 // @route   POST /api/system/backups/upload-restore
 // @access  Private/SuperAdmin
@@ -978,6 +1010,9 @@ router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, han
     return res.status(400).json({ message: 'Backup file is required' });
   }
   try {
+    if (!isBackupV3Enabled()) {
+      return res.status(503).json({ message: 'Enterprise restore flow is disabled (BACKUP_V3_ENABLED=false).' });
+    }
     const checksum = await computeChecksum(req.file.path);
     await writeUploadChecksum({
       checksum,
@@ -995,6 +1030,30 @@ router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, han
     return res.json({ message: 'Legacy JSON restore completed successfully', checksum, result });
   } catch (error) {
     return res.status(500).json({ message: error.message || 'Restore failed' });
+  } finally {
+    await cleanupUploadedBackupFile(req.file);
+  }
+});
+
+// @desc    Dry-run validate uploaded zip/json backup
+// @route   POST /api/system/backups/upload-dry-run
+// @access  Private/SuperAdmin
+router.post('/backups/upload-dry-run', protect, superAdmin, heavyOpsLimiter, handleUpload(backupZipUpload), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Backup file is required' });
+  }
+  try {
+    const checksum = await computeChecksum(req.file.path);
+    const lower = String(req.file.originalname || '').toLowerCase();
+    if (lower.endsWith('.zip') || req.file.mimetype === 'application/zip') {
+      const report = await validateBackupZipForRestore(req.file.path, checksum);
+      return res.json({ message: 'Dry-run validation completed', checksum, report });
+    }
+    const payload = await parseUploadedBackupPayload(req.file);
+    const report = validateJsonBackupPayload(payload);
+    return res.json({ message: 'Dry-run validation completed', checksum, report });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Dry-run validation failed' });
   } finally {
     await cleanupUploadedBackupFile(req.file);
   }
@@ -1835,11 +1894,94 @@ router.get('/resilience/status', protect, superAdmin, async (req, res) => {
   }
 });
 
+// @desc    Get enterprise backup readiness snapshot
+// @route   GET /api/system/resilience/readiness
+// @access  Private/SuperAdmin
+router.get('/resilience/readiness', protect, superAdmin, async (req, res) => {
+  try {
+    const readiness = await getBackupReadiness();
+    res.json(readiness);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to load backup readiness' });
+  }
+});
+
+// @desc    Run checksum + chain audit for all backups
+// @route   POST /api/system/resilience/audit-backups
+// @access  Private/SuperAdmin
+router.post('/resilience/audit-backups', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  let job = null;
+  try {
+    job = await createResilienceJob({ jobType: 'checksum_audit', actor: req.user });
+    await updateResilienceJob(job._id, { phase: 'verifying' });
+    const report = await auditBackupChain();
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date(), metadata: report });
+    res.json({ message: 'Backup audit completed', report, jobId: job._id });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'Backup audit failed' });
+  }
+});
+
+// @desc    Archive replica-set oplog window for PITR
+// @route   POST /api/system/resilience/pitr/archive
+// @access  Private/SuperAdmin
+router.post('/resilience/pitr/archive', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  let job = null;
+  try {
+    if (!isPitrEnabled()) {
+      return res.status(503).json({ message: 'PITR is disabled (PITR_ENABLED=false).' });
+    }
+    const retentionDays = Number.parseInt(String(req.body?.retentionDays || '14'), 10);
+    job = await createResilienceJob({
+      jobType: 'pitr_archive',
+      actor: req.user,
+      metadata: { retentionDays }
+    });
+    await updateResilienceJob(job._id, { phase: 'syncing' });
+    const state = await archiveOplogWindow({ actor: req.user, retentionDays });
+    await updateResilienceJob(job._id, { status: 'done', phase: 'done', finishedAt: new Date(), metadata: state });
+    res.json({ message: 'PITR archive completed', state, jobId: job._id });
+  } catch (error) {
+    if (job?._id) {
+      await updateResilienceJob(job._id, { status: 'failed', phase: 'failed', error: error.message || String(error), finishedAt: new Date() });
+    }
+    res.status(500).json({ message: error.message || 'PITR archive failed' });
+  }
+});
+
+// @desc    Set maintenance lock explicitly
+// @route   POST /api/system/resilience/maintenance-lock
+// @access  Private/SuperAdmin
+router.post('/resilience/maintenance-lock', protect, superAdmin, async (req, res) => {
+  try {
+    await acquireMaintenanceLock({ reason: String(req.body?.reason || 'manual'), actor: req.user });
+    res.json({ message: 'Maintenance lock enabled' });
+  } catch (error) {
+    res.status(400).json({ message: error.message || 'Failed to enable maintenance lock' });
+  }
+});
+
+// @desc    Release maintenance lock explicitly
+// @route   POST /api/system/resilience/maintenance-unlock
+// @access  Private/SuperAdmin
+router.post('/resilience/maintenance-unlock', protect, superAdmin, async (req, res) => {
+  try {
+    await releaseMaintenanceLock({ note: String(req.body?.note || '') });
+    res.json({ message: 'Maintenance lock released' });
+  } catch (error) {
+    res.status(400).json({ message: error.message || 'Failed to release maintenance lock' });
+  }
+});
+
 // @desc    Preview restore-to-time impact
 // @route   POST /api/system/resilience/restore-to-time/preview
 // @access  Private/SuperAdmin
 router.post('/resilience/restore-to-time/preview', protect, superAdmin, async (req, res) => {
   try {
+    if (!isPitrEnabled()) return res.status(503).json({ message: 'PITR is disabled (PITR_ENABLED=false).' });
     const ts = String(req.body?.targetTimestamp || '').trim();
     if (!ts) return res.status(400).json({ message: 'targetTimestamp is required' });
     const targetDate = new Date(ts);
@@ -1857,6 +1999,7 @@ router.post('/resilience/restore-to-time/preview', protect, superAdmin, async (r
 router.post('/resilience/restore-to-time/apply', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
   let job = null;
   try {
+    if (!isPitrEnabled()) return res.status(503).json({ message: 'PITR is disabled (PITR_ENABLED=false).' });
     const ts = String(req.body?.targetTimestamp || '').trim();
     if (!ts) return res.status(400).json({ message: 'targetTimestamp is required' });
     const targetDate = new Date(ts);

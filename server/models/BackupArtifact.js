@@ -21,7 +21,21 @@ const backupArtifactSchema = new mongoose.Schema({
     collections: { type: Object, default: {} },
     includesFiles: { type: Boolean, default: true },
     fromBackupId: { type: mongoose.Schema.Types.ObjectId, ref: 'BackupArtifact', default: null },
-    note: { type: String, default: '' }
+    note: { type: String, default: '' },
+    manifestVersion: { type: Number, default: 1 },
+    checksumSha256: { type: String, default: '' },
+    chain: {
+      previousBackupId: { type: mongoose.Schema.Types.ObjectId, ref: 'BackupArtifact', default: null },
+      previousChecksumSha256: { type: String, default: '' },
+      chainValid: { type: Boolean, default: true }
+    },
+    compatibility: {
+      backupFormatVersion: { type: Number, default: 1 },
+      appVersion: { type: String, default: 'unknown' },
+      appMajor: { type: Number, default: 0 },
+      minRestoreAppMajor: { type: Number, default: 0 },
+      maxRestoreAppMajor: { type: Number, default: 0 }
+    }
   },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   createdAt: { type: Date, default: Date.now, index: true }

@@ -1209,6 +1209,90 @@ const Portal = () => {
                 </div>
               </div>
             </div>
+
+            {/* Enterprise Backup Readiness */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 shadow-sm md:col-span-2">
+              <div className="flex items-center gap-4 md:gap-5">
+                <div className="p-3 md:p-4 bg-emerald-50 rounded-lg text-emerald-600 border border-emerald-100">
+                  <CheckCircle2 size={20} className="md:w-[24px] md:h-[24px]" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-base md:text-lg font-bold text-slate-900 mb-1">Enterprise Backup Readiness</h3>
+                  <p className="text-slate-500 text-xs md:text-sm mb-3">
+                    Live status for backup verification, checksum-chain audit, and PITR archival.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
+                      <div className="text-slate-500">Verification</div>
+                      <div className="font-semibold text-slate-800">{resilienceStatus?.verification?.status || 'unknown'}</div>
+                    </div>
+                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
+                      <div className="text-slate-500">Chain Audit</div>
+                      <div className="font-semibold text-slate-800">{resilienceStatus?.backupAudit?.ok ? 'ok' : 'not-ok'}</div>
+                    </div>
+                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
+                      <div className="text-slate-500">PITR Last Archive</div>
+                      <div className="font-semibold text-slate-800">{resilienceStatus?.pitr?.lastArchivedAt ? new Date(resilienceStatus.pitr.lastArchivedAt).toLocaleString() : 'never'}</div>
+                    </div>
+                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
+                      <div className="text-slate-500">Shadow Lag</div>
+                      <div className="font-semibold text-slate-800">{Number(resilienceStatus?.shadow?.lag || 0)}</div>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleVerifyLatestBackup}
+                      disabled={verifyResilienceLoading}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      <CheckCircle2 size={14} />
+                      {verifyResilienceLoading ? 'Verifying...' : 'Verify Latest Backup'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.post('/system/resilience/audit-backups');
+                          await fetchResilienceStatus();
+                          alert('Backup chain audit completed.');
+                        } catch (error) {
+                          alert('Audit failed: ' + (error.response?.data?.message || error.message));
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-700 text-white text-xs hover:bg-black"
+                    >
+                      <ShieldCheck size={14} />
+                      Run Chain Audit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.post('/system/resilience/pitr/archive', {});
+                          await fetchResilienceStatus();
+                          alert('PITR archive completed.');
+                        } catch (error) {
+                          alert('PITR archive failed: ' + (error.response?.data?.message || error.message));
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700"
+                    >
+                      <UploadCloud size={14} />
+                      Run PITR Archive
+                    </button>
+                    <button
+                      type="button"
+                      onClick={fetchResilienceStatus}
+                      disabled={resilienceLoading}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {resilienceLoading ? 'Refreshing...' : 'Refresh Status'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         )}

@@ -206,3 +206,48 @@ cd /opt/Expo
 APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo HEALTH_URL=http://127.0.0.1/ ./scripts/deploy-web-safe.sh
 ```
 
+## 9) Enterprise Backup + Crash Recovery Runbook
+
+Enterprise restore safety requires MongoDB replica set mode and PITR archive jobs.
+
+### Replica set bootstrap (DB VM)
+
+```bash
+sudo sed -i '/^#replication:/a replication:\n  replSetName: "expo-rs0"' /etc/mongod.conf
+sudo systemctl restart mongod
+mongosh --eval 'rs.initiate({_id:"expo-rs0",members:[{_id:0,host:"10.96.133.213:27017"}]})'
+mongosh --eval 'rs.status().ok'
+```
+
+### App env flags (App VM `server/.env`)
+
+```env
+ENFORCE_REPLICA_SET_FOR_BACKUPS=true
+PITR_ENABLED=true
+PITR_RETENTION_DAYS=14
+```
+
+### Operational checks
+
+```bash
+curl -sS http://127.0.0.1:5000/api/readyz
+curl -sS http://127.0.0.1:5000/api/healthz
+```
+
+### Crash recovery procedure
+
+1. Stop writes (maintenance lock in Portal or API).
+2. Trigger emergency restore from latest full backup.
+3. Run PITR restore-to-time to the target timestamp.
+4. Verify backup readiness and checksum-chain audit.
+5. Release maintenance lock.
+
+API endpoints used by this runbook:
+
+- `POST /api/system/resilience/maintenance-lock`
+- `POST /api/system/backups/emergency-restore`
+- `POST /api/system/resilience/restore-to-time/apply`
+- `POST /api/system/resilience/audit-backups`
+- `GET /api/system/resilience/readiness`
+- `POST /api/system/resilience/maintenance-unlock`
+

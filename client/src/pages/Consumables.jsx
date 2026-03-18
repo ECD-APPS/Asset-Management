@@ -15,6 +15,27 @@ const formDefaults = {
   min_quantity: 0
 };
 
+const asText = (value, fallback = '-') => {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+      return String(value.value ?? fallback);
+    }
+    return fallback;
+  }
+  const s = String(value).trim();
+  return s || fallback;
+};
+
+const asNumber = (value, fallback = 0) => {
+  if (typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, 'value')) {
+    const n = Number(value.value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 const Consumables = () => {
   const { user } = useAuth();
   const canWrite = user?.role === 'Admin' || user?.role === 'Super Admin';
@@ -77,16 +98,16 @@ const Consumables = () => {
   const onEdit = (row) => {
     setEditing(row);
     setForm({
-      name: row.name || '',
-      type: row.type || '',
-      model: row.model || '',
-      serial_number: row.serial_number || '',
-      mac_address: row.mac_address || '',
-      po_number: row.po_number || '',
-      location: row.location || '',
-      comment: row.comment || '',
-      quantity: row.quantity || 0,
-      min_quantity: row.min_quantity || 0
+      name: asText(row.name, ''),
+      type: asText(row.type, ''),
+      model: asText(row.model, ''),
+      serial_number: asText(row.serial_number, ''),
+      mac_address: asText(row.mac_address, ''),
+      po_number: asText(row.po_number, ''),
+      location: asText(row.location, ''),
+      comment: asText(row.comment, ''),
+      quantity: asNumber(row.quantity, 0),
+      min_quantity: asNumber(row.min_quantity, 0)
     });
   };
 
@@ -181,16 +202,16 @@ const Consumables = () => {
               <tr><td className="px-3 py-4 text-slate-500" colSpan={11}>No consumables found.</td></tr>
             ) : rows.map((row) => (
               <tr key={row._id} className="border-t">
-                <td className="px-3 py-2">{row.name}</td>
-                <td className="px-3 py-2">{row.type || '-'}</td>
-                <td className="px-3 py-2">{row.model || '-'}</td>
-                <td className="px-3 py-2">{row.serial_number || '-'}</td>
-                <td className="px-3 py-2">{row.mac_address || '-'}</td>
-                <td className="px-3 py-2">{row.po_number || '-'}</td>
-                <td className="px-3 py-2">{row.location || '-'}</td>
-                <td className="px-3 py-2">{row.quantity}</td>
-                <td className="px-3 py-2">{row.min_quantity}</td>
-                <td className="px-3 py-2">{row.comment || '-'}</td>
+                <td className="px-3 py-2">{asText(row.name)}</td>
+                <td className="px-3 py-2">{asText(row.type)}</td>
+                <td className="px-3 py-2">{asText(row.model)}</td>
+                <td className="px-3 py-2">{asText(row.serial_number)}</td>
+                <td className="px-3 py-2">{asText(row.mac_address)}</td>
+                <td className="px-3 py-2">{asText(row.po_number)}</td>
+                <td className="px-3 py-2">{asText(row.location)}</td>
+                <td className="px-3 py-2">{asNumber(row.quantity, 0)}</td>
+                <td className="px-3 py-2">{asNumber(row.min_quantity, 0)}</td>
+                <td className="px-3 py-2">{asText(row.comment)}</td>
                 <td className="px-3 py-2">
                   <div className="flex gap-3">
                     <button onClick={() => showHistory(row)} className="text-indigo-600 hover:underline">History</button>
@@ -214,10 +235,10 @@ const Consumables = () => {
             <div className="p-4 space-y-2">
               {(historyModal.rows || []).map((h, idx) => (
                 <div key={`${h.createdAt}-${idx}`} className="border border-slate-200 rounded-lg p-3 text-sm">
-                  <div className="font-medium">{h.action}</div>
-                  <div className="text-slate-600">By: {h.actorName || '-'}</div>
-                  <div className="text-slate-600">Quantity: {h.quantity || 0}</div>
-                  <div className="text-slate-600">Note: {h.note || '-'}</div>
+                  <div className="font-medium">{asText(h.action)}</div>
+                  <div className="text-slate-600">By: {asText(h.actorName)}</div>
+                  <div className="text-slate-600">Quantity: {asNumber(h.quantity, 0)}</div>
+                  <div className="text-slate-600">Note: {asText(h.note)}</div>
                   <div className="text-slate-500 text-xs">{new Date(h.createdAt).toLocaleString()}</div>
                 </div>
               ))}

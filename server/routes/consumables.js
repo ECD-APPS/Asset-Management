@@ -18,15 +18,29 @@ const toNumber = (v, fallback = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
+const toDate = (v, fallback = new Date()) => {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
+  if (v && typeof v === 'object' && v.value !== undefined) {
+    const d = new Date(v.value);
+    if (!Number.isNaN(d.getTime())) return d;
+    return fallback;
+  }
+  const d = new Date(v);
+  if (!Number.isNaN(d.getTime())) return d;
+  return fallback;
+};
 
 const sanitizeConsumableNumbers = (item) => {
   if (!item) return;
   item.quantity = Math.max(toNumber(item.quantity, 0), 0);
   item.min_quantity = Math.max(toNumber(item.min_quantity, 0), 0);
+  if (item.createdAt !== undefined) item.createdAt = toDate(item.createdAt, new Date());
+  if (item.updatedAt !== undefined) item.updatedAt = toDate(item.updatedAt, new Date());
   if (Array.isArray(item.history)) {
     item.history = item.history.map((entry) => ({
       ...entry,
-      quantity: Math.max(toNumber(entry?.quantity, 0), 0)
+      quantity: Math.max(toNumber(entry?.quantity, 0), 0),
+      createdAt: toDate(entry?.createdAt, new Date())
     }));
   }
 };
@@ -170,29 +184,44 @@ router.post('/:id/consume', protect, restrictViewer, async (req, res) => {
     const qty = Math.max(toNumber(req.body.quantity, 0), 0);
     if (!qty) return res.status(400).json({ message: 'Quantity must be greater than 0' });
 
-    const item = await Consumable.findById(req.params.id);
+    const item = await Consumable.findById(req.params.id).select('name quantity store').lean();
     if (!item) return res.status(404).json({ message: 'Consumable not found' });
     if (!canAccess(req, item)) return res.status(403).json({ message: 'Not authorized for this store item' });
-    if (item.quantity < qty) {
-      return res.status(400).json({ message: `Not enough stock. Available: ${item.quantity}` });
+    const availableQty = Math.max(toNumber(item.quantity, 0), 0);
+    if (availableQty < qty) {
+      return res.status(400).json({ message: `Not enough stock. Available: ${availableQty}` });
     }
 
-    sanitizeConsumableNumbers(item);
-    item.quantity = Math.max(toNumber(item.quantity, 0) - qty, 0);
-    pushHistory(item, { action: 'Consumed', actor: req.user, quantity: qty, note: req.body?.comment || 'Consumed from panel' });
-    sanitizeConsumableNumbers(item);
-    await item.save();
+    const historyEntry = {
+      action: 'Consumed',
+      actorId: req.user?._id || null,
+      actorName: req.user?.name || '',
+      quantity: qty,
+      note: normalize(req.body?.comment || 'Consumed from panel'),
+      createdAt: new Date()
+    };
+    const updated = await Consumable.findOneAndUpdate(
+      { _id: req.params.id, quantity: { $gte: qty } },
+      {
+        $inc: { quantity: -qty },
+        $push: { history: historyEntry }
+      },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(400).json({ message: 'Not enough stock or item changed. Please refresh and try again.' });
+    }
 
     await ActivityLog.create({
       user: req.user.name,
       email: req.user.email,
       role: req.user.role,
       action: 'Consume Consumable',
-      details: `Consumed ${qty} of ${item.name}. Remaining: ${item.quantity}`,
-      store: item.store
+      details: `Consumed ${qty} of ${updated.name}. Remaining: ${updated.quantity}`,
+      store: updated.store
     });
 
-    res.json(item);
+    res.json(updated);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

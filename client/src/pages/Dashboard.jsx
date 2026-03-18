@@ -70,6 +70,10 @@ const Dashboard = () => {
   const hasNocHint = scopeHints.includes('NOC ASSET') || /\bNOC\b/.test(scopeHints);
   // Prefer explicit SCY match; otherwise allow by default for non-IT/NOC scoped users.
   const isScyDashboard = hasScyHint || (!hasItHint && !hasNocHint && user?.role !== 'Super Admin');
+  const assetsQuery = isScyDashboard && dashboardVendor !== 'All'
+    ? `?maintenance_vendor=${encodeURIComponent(dashboardVendor)}`
+    : '';
+  const assetsLink = `/assets${assetsQuery}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -283,7 +287,7 @@ const Dashboard = () => {
             </>
           )}
 
-          <Link to="/assets" className="bg-app-card p-4 rounded-xl flex flex-col items-center justify-center gap-3 hover:shadow-sm hover:-translate-y-0.5 transition-all group">
+          <Link to={assetsLink} className="bg-app-card p-4 rounded-xl flex flex-col items-center justify-center gap-3 hover:shadow-sm hover:-translate-y-0.5 transition-all group">
              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:bg-emerald-100 transition-colors">
               <Search className="w-6 h-6" />
             </div>
@@ -298,12 +302,16 @@ const Dashboard = () => {
           </Link>
         </div>
 
-      <DashboardCharts stats={stats} showMaintenanceVendorFeatures={isScyDashboard} />
+      <DashboardCharts
+        stats={stats}
+        showMaintenanceVendorFeatures={isScyDashboard}
+        selectedMaintenanceVendor={isScyDashboard ? dashboardVendor : 'All'}
+      />
 
       <div className="rounded-xl border border-app-card bg-app-elevated shadow-sm">
         <div className="flex items-center justify-between border-b border-app-card px-5 py-4">
           <h2 className="text-base font-semibold text-app-main">Recent Asset Activity</h2>
-          <Link to="/assets" className="text-sm text-app-accent hover:opacity-80 font-medium">View all</Link>
+          <Link to={assetsLink} className="text-sm text-app-accent hover:opacity-80 font-medium">View all</Link>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
