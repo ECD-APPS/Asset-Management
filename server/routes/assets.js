@@ -60,6 +60,89 @@ const isScyScopedContext = async (req) => {
     return false;
   }
 };
+
+/** Aligns G-42, G 42, etc. with G42 (and similar spacing for Siemens) for filters & stats */
+function normalizeMaintenanceVendorKeyForCompare(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_.]+/g, '');
+}
+
+/** Mongo: same normalization as normalizeMaintenanceVendorKeyForCompare (MongoDB 4.4+ $replaceAll) */
+function buildMongoNormalizeMaintenanceVendorKeyExpr(inputExpr) {
+  const trimmed = {
+    $trim: {
+      input: {
+        $toString: {
+          $ifNull: [inputExpr, '']
+        }
+      }
+    }
+  };
+  let e = { $toLower: trimmed };
+  for (const ch of ['-', ' ', '_', '.']) {
+    e = { $replaceAll: { input: e, find: ch, replacement: '' } };
+  }
+  return e;
+}
+
+/**
+ * Mongo $expr: first non-empty maintenance-related string, same cascade order as
+ * client getMaintenanceVendorValue() (then vendor_name fallback). Prevents
+ * matching a stale customFields value when top-level maintenance_vendor differs.
+ */
+function buildEffectiveMaintenanceVendorStringExpr() {
+  const trimPath = (path) => ({
+    $trim: { input: { $toString: { $ifNull: [path, ''] } } }
+  });
+  const trimGetField = (fieldName) => ({
+    $trim: {
+      input: {
+        $toString: {
+          $ifNull: [
+            { $getField: { field: fieldName, input: { $ifNull: ['$customFields', {}] } } },
+            ''
+          ]
+        }
+      }
+    }
+  });
+
+  let acc = trimPath('$vendor_name');
+  const priorityLayers = [
+    trimPath('$maintenance_vendor'),
+    trimPath('$maintenanceVendor'),
+    trimPath('$customFields.maintenance_vendor'),
+    trimPath('$customFields.maintenance_vandor'),
+    trimPath('$customFields.maintenanceVendor'),
+    trimGetField('maintenance vendor'),
+    trimGetField('maintenance vandor')
+  ];
+  for (const layer of priorityLayers) {
+    acc = {
+      $cond: [{ $gt: [{ $strLenCP: layer }, 0] }, layer, acc]
+    };
+  }
+  return acc;
+}
+
+/** SCY maintenance vendor filter: same effective field as UI; G-42 matches G42 */
+function buildMaintenanceVendorMatchClause(maintenanceVendor) {
+  const raw = String(maintenanceVendor || '').trim();
+  const normalizedFilter = normalizeMaintenanceVendorKeyForCompare(raw);
+  if (!normalizedFilter) {
+    return { $expr: { $eq: [1, 0] } };
+  }
+  const coalesced = buildEffectiveMaintenanceVendorStringExpr();
+  const normalizedField = buildMongoNormalizeMaintenanceVendorKeyExpr(coalesced);
+  return {
+    $expr: {
+      $eq: [normalizedField, normalizedFilter]
+    }
+  };
+}
+
 // Helper to generate Unique ID
 async function generateUniqueId(assetType) {
   let prefix = 'AST';
@@ -655,18 +738,9 @@ router.get('/', protect, async (req, res) => {
     if (maintenanceVendor) {
       const allowMaintenanceFilter = await isScyScopedContext(req);
       if (allowMaintenanceFilter) {
-        const escapedMaintenanceVendor = maintenanceVendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const maintenanceRx = new RegExp(`^${escapedMaintenanceVendor}$`, 'i');
         filter.$and = [
           ...(filter.$and || []),
-          {
-            $or: [
-              { 'customFields.maintenance_vendor': maintenanceRx },
-              { 'customFields.maintenance_vandor': maintenanceRx },
-              { 'customFields.maintenanceVendor': maintenanceRx },
-              { maintenance_vendor: maintenanceRx }
-            ]
-          }
+          buildMaintenanceVendorMatchClause(maintenanceVendor)
         ];
       }
     }
@@ -834,18 +908,9 @@ router.get('/stats', protect, async (req, res) => {
     if (maintenanceVendor) {
       const allowMaintenanceFilter = await isScyScopedContext(req);
       if (allowMaintenanceFilter) {
-        const escapedMaintenanceVendor = maintenanceVendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const maintenanceRx = new RegExp(`^${escapedMaintenanceVendor}$`, 'i');
         filter.$and = [
           ...(filter.$and || []),
-          {
-            $or: [
-              { 'customFields.maintenance_vendor': maintenanceRx },
-              { 'customFields.maintenance_vandor': maintenanceRx },
-              { 'customFields.maintenanceVendor': maintenanceRx },
-              { maintenance_vendor: maintenanceRx }
-            ]
-          }
+          buildMaintenanceVendorMatchClause(maintenanceVendor)
         ];
       }
     }
@@ -1044,25 +1109,16 @@ router.get('/stats', protect, async (req, res) => {
         { $match: filter },
         {
           $project: {
-            vendorRaw: {
+            effectiveMv: buildEffectiveMaintenanceVendorStringExpr()
+          }
+        },
+        {
+          $project: {
+            vendorKey: buildMongoNormalizeMaintenanceVendorKeyExpr('$effectiveMv'),
+            effLo: {
               $toLower: {
                 $trim: {
-                  input: {
-                    $ifNull: [
-                      '$customFields.maintenance_vendor',
-                      {
-                        $ifNull: [
-                          '$customFields.maintenance_vandor',
-                          {
-                            $ifNull: [
-                              '$customFields.maintenanceVendor',
-                              { $ifNull: ['$maintenance_vendor', ''] }
-                            ]
-                          }
-                        ]
-                      }
-                    ]
-                  }
+                  input: { $toString: { $ifNull: ['$effectiveMv', ''] } }
                 }
               }
             }
@@ -1073,8 +1129,10 @@ router.get('/stats', protect, async (req, res) => {
             vendorBucket: {
               $switch: {
                 branches: [
-                  { case: { $regexMatch: { input: '$vendorRaw', regex: /siemens/ } }, then: 'Siemens' },
-                  { case: { $regexMatch: { input: '$vendorRaw', regex: /g42/ } }, then: 'G42' }
+                  // G-42, G 42, etc. → G42 (substring /g42/ misses hyphenated forms)
+                  { case: { $eq: ['$vendorKey', 'g42'] }, then: 'G42' },
+                  // Keep "Siemens AG" etc. as Siemens (normalize-only would be siemensag → Other)
+                  { case: { $regexMatch: { input: '$effLo', regex: /siemens/ } }, then: 'Siemens' }
                 ],
                 default: 'Other'
               }

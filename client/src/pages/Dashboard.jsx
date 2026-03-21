@@ -1,23 +1,39 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import DashboardCharts from '../components/DashboardCharts';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 
-import { Link } from 'react-router-dom';
-import { 
-  AlertCircle, 
-  Bell, 
-  Plus, 
-  ArrowDownLeft, 
-  Search, 
-  MapPin, 
+import { Link, useSearchParams } from 'react-router-dom';
+import {
+  AlertCircle,
+  Bell,
+  Plus,
+  ArrowDownLeft,
+  Search,
+  MapPin,
   ArrowRight,
-  Activity,
-  Package
+  Package,
+  LayoutDashboard,
+  Sparkles,
+  Clock,
+  ChevronRight,
+  ShieldCheck
 } from 'lucide-react';
 
-const DASHBOARD_VENDORS = ['All', 'Siemens', 'G42'];
+const formatRelativeTime = (iso) => {
+  if (!iso) return '—';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const sec = Math.round((Date.now() - then) / 1000);
+  if (sec < 45) return 'Just now';
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  return new Date(iso).toLocaleString();
+};
+
 const normalizeStats = (raw) => {
   const src = raw && typeof raw === 'object' ? raw : {};
   const overview = src.overview && typeof src.overview === 'object' ? src.overview : {};
@@ -46,14 +62,21 @@ const normalizeStats = (raw) => {
 const Dashboard = () => {
   const { user, activeStore } = useAuth();
   const { theme } = useTheme();
+  const [searchParams] = useSearchParams();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [systemOk, setSystemOk] = useState(true);
   const [_HEALTH, setHealth] = useState({ backend: false, db: false });
   const [recentAssets, setRecentAssets] = useState([]);
-  const [dashboardVendor, setDashboardVendor] = useState('All');
+  const [lastUpdated, setLastUpdated] = useState(null);
   const fetchSeqRef = useRef(0);
+
+  const dashboardVendor = useMemo(() => {
+    const v = searchParams.get('maintenance_vendor');
+    if (v === 'Siemens' || v === 'G42') return v;
+    return 'All';
+  }, [searchParams]);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const scopeHints = [
     activeStore?.name,
@@ -96,6 +119,7 @@ const Dashboard = () => {
           if (isStale()) return;
           setStats(normalizeStats(statsResponse.data));
           setRecentAssets(recentResponse.data?.assets || recentResponse.data?.items || []);
+          setLastUpdated(new Date());
           lastError = null;
           break;
         } catch (error) {
@@ -148,20 +172,30 @@ const Dashboard = () => {
   }, []);
 
   if (loading) return (
-    <div className="flex items-center justify-center min-h-screen bg-app-page">
-      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[rgb(var(--accent-color))]"></div>
+    <div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 bg-app-page px-4">
+      <div className="relative h-16 w-16">
+        <div className="absolute inset-0 rounded-full border-2 border-app-card" />
+        <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-[rgb(var(--accent-color))] animate-spin" />
+      </div>
+      <div className="text-center space-y-1">
+        <p className="text-sm font-semibold text-app-main">Loading dashboard</p>
+        <p className="text-xs text-app-muted">Fetching live stats and recent activity…</p>
+      </div>
     </div>
   );
 
   if (error) return (
     <div className="min-h-screen bg-app-page flex items-center justify-center p-6">
-      <div className="bg-app-card p-8 rounded-xl text-center max-w-md w-full">
-        <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-        <h2 className="text-xl font-semibold text-app-main mb-2">Error Loading Dashboard</h2>
-        <p className="text-app-muted mb-6">{error}</p>
+      <div className="bg-app-card p-8 rounded-2xl text-center max-w-md w-full border border-app-card shadow-lg">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-500/10">
+          <AlertCircle className="h-8 w-8 text-rose-500" />
+        </div>
+        <h2 className="text-xl font-bold text-app-main mb-2">Couldn&apos;t load dashboard</h2>
+        <p className="text-app-muted text-sm mb-6 leading-relaxed">{error}</p>
         <button
-          onClick={() => window.location.reload()} 
-          className="bg-app-accent px-6 py-2 rounded-xl hover:opacity-90 transition-opacity"
+          type="button"
+          onClick={() => window.location.reload()}
+          className="w-full sm:w-auto bg-app-accent text-white px-8 py-2.5 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm"
         >
           Retry
         </button>
@@ -169,194 +203,278 @@ const Dashboard = () => {
     </div>
   );
 
+  const o = stats?.overview || {};
+  const utilPct = o.total > 0 ? Math.round((o.inUse / o.total) * 100) : 0;
+
   return (
-    <div className="min-h-screen bg-app-page space-y-6 text-app-main">
-      <div className="rounded-2xl border border-app-card bg-app-card p-5 md:p-6 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-semibold text-app-main flex items-center gap-3">
-              Dashboard
-              {loading && <Activity className="w-5 h-5 text-app-accent animate-pulse" />}
-            </h1>
-            <p className="text-app-muted mt-1">Welcome back, {user?.name}. Here is the latest {isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : ''}snapshot.</p>
-          </div>
-
-          <div className={`inline-flex items-center gap-2 self-start rounded-full px-3 py-1.5 text-xs font-medium ${systemOk ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-              <div className={`w-2 h-2 rounded-full ${systemOk ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-              <span>
-                {systemOk ? 'System Operational' : 'Connectivity Issue'}
-              </span>
+    <div className="min-h-screen bg-app-page space-y-6 text-app-main pb-10">
+      <div className="relative overflow-hidden rounded-2xl border border-app-card bg-app-card shadow-sm">
+        <div className="absolute left-0 top-0 h-full w-1 bg-[rgb(var(--accent-color))]" aria-hidden />
+        <div className="p-5 md:p-7 pl-6 md:pl-8">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+            <div className="flex items-start gap-4 min-w-0">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[rgb(var(--accent-color))]/10 text-[rgb(var(--accent-color))]">
+                <LayoutDashboard className="h-6 w-6" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-2xl md:text-3xl font-bold text-app-main tracking-tight">Dashboard</h1>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-app-card bg-app-elevated px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-app-muted">
+                    <Sparkles className="h-3 w-3 text-app-accent" />
+                    Live
+                  </span>
+                </div>
+                <p className="text-app-muted mt-1.5 text-sm leading-relaxed">
+                  Welcome back, <span className="font-semibold text-app-main">{user?.name}</span>
+                  {isScyDashboard && dashboardVendor !== 'All' ? (
+                    <> · Viewing <span className="font-medium text-app-main">{dashboardVendor}</span> analytics</>
+                  ) : (
+                    <> · Here&apos;s your fleet snapshot</>
+                  )}
+                </p>
+                {lastUpdated && (
+                  <p className="mt-2 flex items-center gap-1.5 text-xs text-app-muted">
+                    <Clock className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    Data refreshed {lastUpdated.toLocaleTimeString()}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <div
+                className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold border ${
+                  systemOk ? 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20' : 'bg-rose-500/10 text-rose-700 border-rose-500/20'
+                }`}
+              >
+                <ShieldCheck className={`h-3.5 w-3.5 ${systemOk ? 'text-emerald-600' : 'text-rose-600'}`} />
+                {systemOk ? 'System operational' : 'Connectivity issue'}
+                <span className={`h-1.5 w-1.5 rounded-full ${systemOk ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+              </div>
+              <div className="inline-flex items-center rounded-full border border-app-card bg-app-elevated px-3 py-1.5 text-xs text-app-muted">
+                Theme <span className="ml-1.5 font-bold text-app-main capitalize">{theme}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="inline-flex items-center rounded-full border border-app-card bg-app-elevated px-3 py-1 text-xs text-app-muted">
-        Theme: <span className="ml-1 font-semibold text-app-main capitalize">{theme}</span>
-      </div>
-
-      {isScyDashboard && (
-        <div className="rounded-2xl border border-app-card bg-app-card p-4 shadow-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-app-main">Maintenance Vendor Dashboard</h2>
-              <p className="text-xs text-app-muted mt-0.5">All = full SCY dashboard, or switch to Siemens/G42 analytics.</p>
-            </div>
-            <div className="inline-flex items-center rounded-xl border border-app-card bg-app-elevated p-1">
-              {DASHBOARD_VENDORS.map((vendor) => {
-                const active = dashboardVendor === vendor;
-                return (
-                  <button
-                    key={vendor}
-                    type="button"
-                    onClick={() => setDashboardVendor(vendor)}
-                    className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${active ? 'bg-app-accent text-white shadow-sm' : 'text-app-muted hover:text-app-main'}`}
-                  >
-                    {vendor}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Utilization</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{utilPct}%</p>
+          <p className="text-[11px] text-app-muted mt-0.5">{o.inUse ?? 0} in use</p>
         </div>
-      )}
+        <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">In store</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{o.inStore ?? 0}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">Available</p>
+        </div>
+        <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Attention</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{(o.faulty || 0) + (o.missing || 0)}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">Faulty + missing</p>
+        </div>
+        <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Queue</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{(o.pendingRequests || 0) + (o.pendingReturns || 0)}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">Requests + returns</p>
+        </div>
+      </div>
 
       {(stats?.overview?.pendingRequests > 0 || (user?.role !== 'Viewer' && stats?.overview?.pendingReturns > 0)) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {stats.overview.pendingRequests > 0 && (
-            <div className="bg-app-card rounded-xl p-5 flex items-start justify-between hover:shadow-sm transition-shadow">
-              <div className="flex items-start gap-4">
-                <div className="p-2 bg-amber-50 text-amber-600 rounded-xl mt-1">
+            <div className="relative overflow-hidden rounded-2xl border border-app-card bg-app-card p-5 flex items-start justify-between gap-4 hover:shadow-md transition-all duration-200">
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-500 rounded-l-2xl" aria-hidden />
+              <div className="flex items-start gap-4 pl-2 min-w-0">
+                <div className="p-2.5 bg-amber-500/15 text-amber-600 rounded-xl shrink-0">
                   <Bell className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="font-semibold text-app-main">Pending Asset Requests</h3>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-app-main">Pending asset requests</h3>
                   <p className="text-sm text-app-muted mt-1">
-                    <span className="font-bold text-amber-600">{stats.overview.pendingRequests}</span> technician request{stats.overview.pendingRequests !== 1 && 's'} need approval.
+                    <span className="font-bold text-amber-600 tabular-nums">{stats.overview.pendingRequests}</span>
+                    {' '}technician request{stats.overview.pendingRequests !== 1 && 's'} awaiting approval.
                   </p>
                 </div>
               </div>
               <Link
-                to="/admin-requests" 
-                className="flex items-center gap-1 text-sm font-medium text-amber-600 hover:text-amber-700 mt-2 md:mt-0"
+                to="/admin-requests"
+                className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700 hover:bg-amber-500/20 transition-colors"
               >
-                Review <ArrowRight className="w-4 h-4" />
+                Review <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
           )}
 
           {user?.role !== 'Viewer' && stats.overview.pendingReturns > 0 && (
-            <div className="bg-app-card rounded-xl p-5 flex items-start justify-between hover:shadow-sm transition-shadow">
-              <div className="flex items-start gap-4">
-                 <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl mt-1">
+            <div className="relative overflow-hidden rounded-2xl border border-app-card bg-app-card p-5 flex items-start justify-between gap-4 hover:shadow-md transition-all duration-200">
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-indigo-500 rounded-l-2xl" aria-hidden />
+              <div className="flex items-start gap-4 pl-2 min-w-0">
+                <div className="p-2.5 bg-indigo-500/15 text-indigo-600 rounded-xl shrink-0">
                   <ArrowDownLeft className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="font-semibold text-app-main">Pending Returns</h3>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-app-main">Pending returns</h3>
                   <p className="text-sm text-app-muted mt-1">
-                    <span className="font-bold text-indigo-600">{stats.overview.pendingReturns}</span> asset{stats.overview.pendingReturns !== 1 && 's'} waiting for return confirmation.
+                    <span className="font-bold text-indigo-600 tabular-nums">{stats.overview.pendingReturns}</span>
+                    {' '}asset{stats.overview.pendingReturns !== 1 && 's'} waiting for confirmation.
                   </p>
                 </div>
               </div>
               <Link
-                to="/receive-process" 
-                className="flex items-center gap-1 text-sm font-medium text-indigo-600 hover:text-indigo-700 mt-2 md:mt-0"
+                to="/receive-process"
+                className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-indigo-500/10 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-500/20 transition-colors"
               >
-                Process <ArrowRight className="w-4 h-4" />
+                Process <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
           )}
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <section aria-label="Quick shortcuts">
+        <div className="flex items-center justify-between gap-2 mb-3 px-0.5">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-app-muted">Shortcuts</h2>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {user?.role !== 'Viewer' && (
             <>
-              <Link to="/assets?action=add" className="bg-app-card p-4 rounded-xl flex flex-col items-center justify-center gap-3 hover:shadow-sm hover:-translate-y-0.5 transition-all group">
-                <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl group-hover:bg-indigo-100 transition-colors">
+              <Link
+                to="/assets?action=add"
+                className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
+              >
+                <div className="p-3 bg-indigo-500/10 text-indigo-600 rounded-xl group-hover:bg-indigo-500/20 transition-colors">
                   <Plus className="w-6 h-6" />
                 </div>
-                <span className="font-medium text-app-main text-sm">Add New Asset</span>
+                <div>
+                  <span className="font-bold text-app-main text-sm block">Add new asset</span>
+                  <span className="text-[11px] text-app-muted mt-0.5 block">Register hardware</span>
+                </div>
+                <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
               </Link>
 
-              <Link to="/receive-process" className="bg-app-card p-4 rounded-xl flex flex-col items-center justify-center gap-3 hover:shadow-sm hover:-translate-y-0.5 transition-all group">
-                <div className="p-3 bg-purple-50 text-purple-600 rounded-xl group-hover:bg-purple-100 transition-colors">
+              <Link
+                to="/receive-process"
+                className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
+              >
+                <div className="p-3 bg-purple-500/10 text-purple-600 rounded-xl group-hover:bg-purple-500/20 transition-colors">
                   <ArrowDownLeft className="w-6 h-6" />
                 </div>
-                <span className="font-medium text-app-main text-sm">Receive / Return</span>
+                <div>
+                  <span className="font-bold text-app-main text-sm block">Receive / return</span>
+                  <span className="text-[11px] text-app-muted mt-0.5 block">Process movement</span>
+                </div>
+                <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
               </Link>
             </>
           )}
 
-          <Link to={assetsLink} className="bg-app-card p-4 rounded-xl flex flex-col items-center justify-center gap-3 hover:shadow-sm hover:-translate-y-0.5 transition-all group">
-             <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:bg-emerald-100 transition-colors">
+          <Link
+            to={assetsLink}
+            className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
+          >
+            <div className="p-3 bg-emerald-500/10 text-emerald-600 rounded-xl group-hover:bg-emerald-500/20 transition-colors">
               <Search className="w-6 h-6" />
             </div>
-            <span className="font-medium text-app-main text-sm">Search Assets</span>
+            <div>
+              <span className="font-bold text-app-main text-sm block">Search assets</span>
+              <span className="text-[11px] text-app-muted mt-0.5 block">Filtered list</span>
+            </div>
+            <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
           </Link>
 
-          <Link to="/stores" className="bg-app-card p-4 rounded-xl flex flex-col items-center justify-center gap-3 hover:shadow-sm hover:-translate-y-0.5 transition-all group">
-             <div className="p-3 bg-orange-50 text-orange-600 rounded-xl group-hover:bg-orange-100 transition-colors">
+          <Link
+            to="/stores"
+            className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
+          >
+            <div className="p-3 bg-orange-500/10 text-orange-600 rounded-xl group-hover:bg-orange-500/20 transition-colors">
               <MapPin className="w-6 h-6" />
             </div>
-            <span className="font-medium text-app-main text-sm">Manage Locations</span>
+            <div>
+              <span className="font-bold text-app-main text-sm block">Locations</span>
+              <span className="text-[11px] text-app-muted mt-0.5 block">Stores & sites</span>
+            </div>
+            <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
           </Link>
         </div>
+      </section>
 
-      <DashboardCharts
-        stats={stats}
-        showMaintenanceVendorFeatures={isScyDashboard}
-        selectedMaintenanceVendor={isScyDashboard ? dashboardVendor : 'All'}
-      />
+      <section aria-label="Analytics and charts" className="space-y-2">
+        <h2 className="text-xs font-bold uppercase tracking-widest text-app-muted px-0.5">Analytics</h2>
+        <DashboardCharts
+          stats={stats}
+          showMaintenanceVendorFeatures={isScyDashboard}
+          selectedMaintenanceVendor={isScyDashboard ? dashboardVendor : 'All'}
+        />
+      </section>
 
-      <div className="rounded-xl border border-app-card bg-app-elevated shadow-sm">
-        <div className="flex items-center justify-between border-b border-app-card px-5 py-4">
-          <h2 className="text-base font-semibold text-app-main">Recent Asset Activity</h2>
-          <Link to={assetsLink} className="text-sm text-app-accent hover:opacity-80 font-medium">View all</Link>
+      <div className="rounded-2xl border border-app-card bg-app-card shadow-sm overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-app-card px-5 py-4 bg-app-elevated/30">
+          <div>
+            <h2 className="text-base font-bold text-app-main">Recent asset activity</h2>
+            <p className="text-xs text-app-muted mt-0.5">Last {recentAssets.length} updated {recentAssets.length === 1 ? 'record' : 'records'}</p>
+          </div>
+          <Link
+            to={assetsLink}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-app-card bg-app-card px-3 py-2 text-xs font-bold text-app-accent hover:bg-app-elevated transition-colors shrink-0"
+          >
+            View all <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
-              <tr className="text-left text-app-muted">
-                <th className="px-5 py-3 font-medium">Asset</th>
-                <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium">Location</th>
-                <th className="px-5 py-3 font-medium">Updated</th>
+              <tr className="text-left text-app-muted border-b border-app-card bg-app-elevated/20">
+                <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider">Asset</th>
+                <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider">Status</th>
+                <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider">Location</th>
+                <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider">Updated</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
               {recentAssets.length === 0 && (
                 <tr>
-                  <td colSpan="4" className="px-5 py-8 text-center text-app-muted">
-                    <div className="inline-flex items-center gap-2">
-                      <Package size={16} />
-                      No recent asset activity found.
+                  <td colSpan={4} className="px-5 py-14 text-center text-app-muted">
+                    <div className="inline-flex flex-col items-center gap-3 max-w-xs mx-auto">
+                      <div className="p-4 rounded-2xl bg-app-elevated border border-app-card">
+                        <Package className="w-8 h-8 opacity-40" />
+                      </div>
+                      <p className="text-sm font-medium text-app-main">No recent activity</p>
+                      <p className="text-xs leading-relaxed">Assets will appear here after updates, or try widening your vendor filter.</p>
                     </div>
                   </td>
                 </tr>
               )}
               {recentAssets.map((asset) => (
-                <tr key={asset._id} className="hover:bg-slate-50/60">
-                  <td className="px-5 py-3.5">
-                    <div className="font-medium text-app-main">{asset.name || '-'}</div>
-                    <div className="text-xs text-app-muted font-mono">{asset.serial_number || '-'}</div>
+                <tr key={asset._id} className="border-b border-app-card last:border-0 hover:bg-app-elevated/40 transition-colors">
+                  <td className="px-5 py-3.5 align-middle">
+                    <div className="font-semibold text-app-main">{asset.name || '—'}</div>
+                    <div className="text-xs text-app-muted font-mono mt-0.5">{asset.serial_number || '—'}</div>
                   </td>
-                  <td className="px-5 py-3.5">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
-                      asset.status === 'In Use'
-                        ? 'bg-emerald-50 text-emerald-700'
-                        : asset.status === 'In Store'
-                          ? 'bg-sky-50 text-sky-700'
-                          : String(asset.condition || '').toLowerCase().includes('faulty')
-                            ? 'bg-rose-50 text-rose-700'
-                            : asset.status === 'Missing'
-                              ? 'bg-orange-50 text-orange-700'
-                            : 'bg-slate-100 text-slate-700'
-                    }`}>
+                  <td className="px-5 py-3.5 align-middle">
+                    <span
+                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        asset.status === 'In Use'
+                          ? 'bg-emerald-500/15 text-emerald-700'
+                          : asset.status === 'In Store'
+                            ? 'bg-sky-500/15 text-sky-700'
+                            : String(asset.condition || '').toLowerCase().includes('faulty')
+                              ? 'bg-rose-500/15 text-rose-700'
+                              : asset.status === 'Missing'
+                                ? 'bg-orange-500/15 text-orange-700'
+                                : 'bg-app-elevated text-app-muted'
+                      }`}
+                    >
                       {asset.status || 'Unknown'}
                     </span>
                   </td>
-                  <td className="px-5 py-3.5 text-app-main opacity-80">{asset.location || asset.store?.name || '-'}</td>
-                  <td className="px-5 py-3.5 text-app-muted">{asset.updatedAt ? new Date(asset.updatedAt).toLocaleString() : '-'}</td>
+                  <td className="px-5 py-3.5 text-app-main/90 align-middle">{asset.location || asset.store?.name || '—'}</td>
+                  <td className="px-5 py-3.5 align-middle">
+                    <span className="text-app-muted tabular-nums text-xs block" title={asset.updatedAt ? new Date(asset.updatedAt).toLocaleString() : ''}>
+                      {formatRelativeTime(asset.updatedAt)}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>

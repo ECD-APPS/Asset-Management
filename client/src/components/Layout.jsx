@@ -1,18 +1,54 @@
-import { useEffect, useState } from 'react';
-import { Outlet, Link, useNavigate } from 'react-router-dom';
-import { Menu, Search, ChevronDown, Settings } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Outlet, Link, useLocation, useSearchParams } from 'react-router-dom';
+import { Menu, ChevronDown, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { useAuth } from '../context/AuthContext';
+
+const DASHBOARD_VENDOR_OPTIONS = ['All', 'Siemens', 'G42'];
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [headerSearch, setHeaderSearch] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
   const [systemHealthy, setSystemHealthy] = useState(true);
   const [dbMode, setDbMode] = useState('unknown');
   const { user, logout, activeStore } = useAuth();
-  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const scopeHints = useMemo(
+    () =>
+      [activeStore?.name, user?.assignedStore?.name, user?.name, user?.email]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .toUpperCase(),
+    [activeStore?.name, user?.assignedStore?.name, user?.name, user?.email]
+  );
+  const hasScyHint = scopeHints.includes('SCY');
+  const hasItHint = scopeHints.includes('IT ASSET') || /\bIT\b/.test(scopeHints);
+  const hasNocHint = scopeHints.includes('NOC ASSET') || /\bNOC\b/.test(scopeHints);
+  const showMaintenanceVendorScope =
+    hasScyHint || (!hasItHint && !hasNocHint && user?.role !== 'Super Admin');
+  const isDashboardHome = location.pathname === '/';
+
+  const headerDashboardVendor = useMemo(() => {
+    const v = searchParams.get('maintenance_vendor');
+    if (v === 'Siemens' || v === 'G42') return v;
+    return 'All';
+  }, [searchParams]);
+
+  const setHeaderDashboardVendor = (vendor) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (vendor === 'All') next.delete('maintenance_vendor');
+        else next.set('maintenance_vendor', vendor);
+        return next;
+      },
+      { replace: true }
+    );
+  };
 
   useEffect(() => {
     let timer;
@@ -38,15 +74,6 @@ const Layout = () => {
     timer = setInterval(checkHealth, 15000);
     return () => clearInterval(timer);
   }, []);
-
-  const handleHeaderSearch = (e) => {
-    e.preventDefault();
-    const q = headerSearch.trim();
-    if (!q) return;
-    navigate(`/assets?search=${encodeURIComponent(q)}`);
-    setHeaderSearch('');
-    setProfileOpen(false);
-  };
 
   return (
     <div className="flex h-screen bg-app-page text-app-main font-sans">
@@ -75,42 +102,96 @@ const Layout = () => {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Mobile Header */}
-        <header className="flex items-center justify-between border-b border-app-sidebar bg-app-sidebar text-app-sidebar px-4 py-3 shadow-sm md:hidden z-30">
-            <button onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+        <header className="flex flex-col gap-2 border-b border-app-sidebar bg-app-sidebar text-app-sidebar px-4 py-3 shadow-sm md:hidden z-30">
+            <div className="flex items-center justify-between w-full">
+              <button type="button" onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
                 <Menu size={22} strokeWidth={1.5} />
-            </button>
-            <div className="flex flex-col items-center">
-              <span className="text-sm font-semibold">SCY Asset</span>
-              <span className={`text-xs ${systemHealthy ? 'text-emerald-300' : 'text-rose-300'}`}>
-                {systemHealthy ? 'System Operational' : 'System Degraded'}
-              </span>
-              <span className={`text-[10px] ${dbMode === 'in-memory' ? 'text-amber-300' : 'text-emerald-300'}`}>
-                DB: {dbMode === 'in-memory' ? 'In-Memory' : dbMode === 'persistent' ? 'Persistent' : 'Unknown'}
-              </span>
+              </button>
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-semibold">SCY Asset</span>
+                <span className={`text-xs ${systemHealthy ? 'text-emerald-300' : 'text-rose-300'}`}>
+                  {systemHealthy ? 'System Operational' : 'System Degraded'}
+                </span>
+                <span className={`text-[10px] ${dbMode === 'in-memory' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                  DB: {dbMode === 'in-memory' ? 'In-Memory' : dbMode === 'persistent' ? 'Persistent' : 'Unknown'}
+                </span>
+              </div>
+              {user?.role === 'Admin' ? (
+                <Link to="/setup" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+                  <Settings size={20} strokeWidth={1.5} />
+                </Link>
+              ) : (
+                <div className="w-8" />
+              )}
             </div>
-            {user?.role === 'Admin' ? (
-              <Link to="/setup" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
-                <Settings size={20} strokeWidth={1.5} />
-              </Link>
-            ) : (
-              <div className="w-8" />
+            {showMaintenanceVendorScope && isDashboardHome && (
+              <div className="w-full pt-1 border-t border-white/10">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-white/70 mb-1.5">Vendor scope</p>
+                <div className="flex gap-1 overflow-x-auto pb-0.5">
+                  {DASHBOARD_VENDOR_OPTIONS.map((vendor) => {
+                    const active = headerDashboardVendor === vendor;
+                    return (
+                      <button
+                        key={vendor}
+                        type="button"
+                        onClick={() => setHeaderDashboardVendor(vendor)}
+                        className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                          active ? 'bg-orange-500 text-white shadow-md' : 'bg-white/10 text-white/90 hover:bg-white/15'
+                        }`}
+                      >
+                        {vendor}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
         </header>
 
         {/* Desktop Header */}
-        <header className="hidden md:flex items-center justify-between bg-app-header border-b border-app-card px-8 py-4 shadow-sm z-30">
-            <form onSubmit={handleHeaderSearch} className="relative w-full max-w-md">
-              <Search size={16} strokeWidth={1.5} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={headerSearch}
-                onChange={(e) => setHeaderSearch(e.target.value)}
-                placeholder="Search assets by name, serial, ticket..."
-                className="h-10 w-full rounded-xl border border-app-card bg-white/80 pl-9 pr-3 text-sm text-app-main placeholder:text-slate-400 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              />
-            </form>
+        <header className="hidden md:flex items-center justify-between gap-6 bg-app-header border-b border-app-card px-6 lg:px-8 py-3 shadow-sm z-30">
+            <div className="flex flex-1 min-w-0 items-center">
+              {showMaintenanceVendorScope && isDashboardHome ? (
+                <div className="flex flex-col gap-2 min-w-0 max-w-2xl">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="h-2 w-2 rounded-full bg-[rgb(var(--accent-color))] shrink-0" aria-hidden />
+                    <span className="text-xs font-bold text-app-main uppercase tracking-wide truncate">
+                      Maintenance vendor scope
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-app-muted leading-snug hidden xl:block">
+                    All shows the full SCY picture. Siemens or G42 narrows dashboard stats and the asset list to that vendor.
+                  </p>
+                  <div
+                    className="inline-flex flex-wrap items-center rounded-xl border border-app-card bg-white/80 dark:bg-white/5 p-1 gap-0.5 shadow-sm"
+                    role="group"
+                    aria-label="Dashboard maintenance vendor filter"
+                  >
+                    {DASHBOARD_VENDOR_OPTIONS.map((vendor) => {
+                      const active = headerDashboardVendor === vendor;
+                      return (
+                        <button
+                          key={vendor}
+                          type="button"
+                          onClick={() => setHeaderDashboardVendor(vendor)}
+                          className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                            active
+                              ? 'bg-app-accent text-white shadow-sm'
+                              : 'text-app-muted hover:text-app-main hover:bg-app-elevated'
+                          }`}
+                        >
+                          {vendor}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1" aria-hidden />
+              )}
+            </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 lg:gap-4 shrink-0">
               <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${systemHealthy ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                 <span className={`h-2 w-2 rounded-full ${systemHealthy ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                 {systemHealthy ? 'System Operational' : 'System Degraded'}

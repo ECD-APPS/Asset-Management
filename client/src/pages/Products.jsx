@@ -83,7 +83,16 @@ const Products = ({ readOnly = false }) => {
       }
 
       if (editingProduct) {
-        await api.put(`/products/${editingProduct._id}`, formData, {
+        const editId = editingProduct._id != null && editingProduct._id !== ''
+          ? editingProduct._id
+          : 'nested';
+        if (editingProduct.fullPath) {
+          formData.append('hierarchyPath', editingProduct.fullPath);
+        }
+        if (editingProduct.rootProductId != null && editingProduct.rootProductId !== '') {
+          formData.append('scopedRootId', String(editingProduct.rootProductId));
+        }
+        await api.put(`/products/${editId}`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
       }
@@ -124,14 +133,15 @@ const Products = ({ readOnly = false }) => {
     setProductImage(file);
   };
 
-  const flatten = (list, level = 0, ancestors = []) => {
+  const flatten = (list, level = 0, ancestors = [], rootProductId = null) => {
     const out = [];
     (list || []).forEach(p => {
       const pathParts = [...ancestors, p.name];
       const fullPath = pathParts.join(' / ');
-      out.push({ ...p, level, fullPath });
+      const rid = level === 0 ? p._id : rootProductId;
+      out.push({ ...p, level, fullPath, rootProductId: rid });
       if (p.children && p.children.length > 0) {
-        out.push(...flatten(p.children, level + 1, pathParts));
+        out.push(...flatten(p.children, level + 1, pathParts, rid));
       }
     });
     return out;

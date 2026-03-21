@@ -8,7 +8,10 @@ import {
   AlertCircle,
   MapPinOff,
   Layers,
-  PieChart
+  PieChart,
+  LayoutGrid,
+  MapPinned,
+  Wrench
 } from 'lucide-react';
 
 const themeChartMap = {
@@ -62,10 +65,10 @@ const StatCard = ({ title, value, icon: Icon, color, subText, onClick }) => {
     >
       <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${barClass}`}></div>
       <div>
-        <h3 className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">{title}</h3>
-        <div className="flex items-baseline space-x-2">
-          <p className="text-3xl font-bold text-app-main">{value}</p>
-          {subText && <span className="text-xs text-slate-400">{subText}</span>}
+        <h3 className="text-app-muted text-xs font-bold uppercase tracking-wider mb-1">{title}</h3>
+        <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0">
+          <p className="text-3xl font-bold text-app-main tabular-nums">{value}</p>
+          {subText && <span className="text-xs text-app-muted font-medium">{subText}</span>}
         </div>
       </div>
       <div className={`p-3 rounded-xl transition-colors ${iconClasses}`}>
@@ -212,8 +215,29 @@ const buildPieConfig = ({
   };
 };
 
+const SectionLabel = ({ icon: Icon, children }) => (
+  <div className="flex items-center gap-2 px-0.5 pt-1">
+    {Icon && <Icon className="h-3.5 w-3.5 text-app-accent shrink-0" aria-hidden />}
+    <h2 className="text-[10px] font-bold uppercase tracking-[0.2em] text-app-muted">{children}</h2>
+    <div className="h-px flex-1 bg-app-card min-w-[2rem] opacity-80" aria-hidden />
+  </div>
+);
+
+SectionLabel.propTypes = {
+  icon: PropTypes.elementType,
+  children: PropTypes.node
+};
+
 const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selectedMaintenanceVendor = 'All' }) => {
-  if (!stats) return <div className="p-8 text-center text-gray-500">Loading dashboard data...</div>;
+  if (!stats) {
+    return (
+      <div className="flex min-h-[200px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-app-card bg-app-elevated p-10 text-center">
+        <div className="h-10 w-10 animate-pulse rounded-full bg-app-card" />
+        <p className="text-sm font-semibold text-app-main">Preparing charts…</p>
+        <p className="text-xs text-app-muted max-w-xs">Analytics will appear when dashboard data is ready.</p>
+      </div>
+    );
+  }
 
   const { overview, growth, conditions, usageBreakdown, locations, products, maintenanceVendors } = stats;
   const safeOverview = overview || {
@@ -287,6 +311,27 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selecte
       vectorStyle: useVectorPieStyle,
       gradientTargets: useVectorPieStyle ? ['#1d4ed8', '#b45309', '#334155'] : []
     });
+    const totalFleet = safeOverview.total || 0;
+    const siemensCount = maintenanceVendors?.Siemens || 0;
+    const g42Count = maintenanceVendors?.G42 || 0;
+    const siemensVendorPie = buildPieConfig({
+      labels: ['Siemens assets', 'Rest of fleet'],
+      values: [siemensCount, Math.max(0, totalFleet - siemensCount)],
+      colors: useVectorPieStyle ? ['#3b82f6', '#94a3b8'] : ['#2563eb', '#cbd5e1'],
+      title: 'Siemens',
+      height: 280,
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? ['#1d4ed8', '#475569'] : []
+    });
+    const g42VendorPie = buildPieConfig({
+      labels: ['G42 assets', 'Rest of fleet'],
+      values: [g42Count, Math.max(0, totalFleet - g42Count)],
+      colors: useVectorPieStyle ? ['#f59e0b', '#94a3b8'] : ['#ea580c', '#cbd5e1'],
+      title: 'G42',
+      height: 280,
+      vectorStyle: useVectorPieStyle,
+      gradientTargets: useVectorPieStyle ? ['#b45309', '#475569'] : []
+    });
     const barOptions = {
       chart: {
         type: 'bar',
@@ -355,10 +400,14 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selecte
       tooltip: { y: { formatter: (val) => `${val} Assets` } }
     };
     const growthSeries = [{ name: 'New Assets', data: (growth || []).map((g) => g.value) }];
-    return { utilizationPie, conditionPie, usagePie, locationPie, productPie, maintenanceVendorPie, barOptions, barSeries, growthOptions, growthSeries };
-  }, [inUseCount, notInUseCount, useVectorPieStyle, oceanPieColors, oceanPieGradients, palette.primary, conditions, usageBreakdown, locations, products, maintenanceVendors, safeOverview.inStore, safeOverview.faulty, safeOverview.missing, growth]);
-  const { utilizationPie, conditionPie, usagePie, locationPie, productPie, maintenanceVendorPie, barOptions, barSeries, growthOptions, growthSeries } = chartConfigs;
-  const chartCardClass = 'bg-app-card p-6 rounded-2xl border border-app-card shadow-sm hover:shadow-md transition-all duration-300';
+    return { utilizationPie, conditionPie, usagePie, locationPie, productPie, maintenanceVendorPie, siemensVendorPie, g42VendorPie, barOptions, barSeries, growthOptions, growthSeries };
+  }, [inUseCount, notInUseCount, useVectorPieStyle, oceanPieColors, oceanPieGradients, palette.primary, conditions, usageBreakdown, locations, products, maintenanceVendors, safeOverview.total, safeOverview.inStore, safeOverview.faulty, safeOverview.missing, growth]);
+  const { utilizationPie, conditionPie, usagePie, locationPie, productPie, maintenanceVendorPie, siemensVendorPie, g42VendorPie, barOptions, barSeries, growthOptions, growthSeries } = chartConfigs;
+  const chartCardClass =
+    'relative overflow-hidden bg-app-card p-6 rounded-2xl border border-app-card shadow-sm hover:shadow-md transition-all duration-300';
+  const chartCardAccent = 'absolute left-0 top-0 h-full w-1 bg-[rgb(var(--accent-color))] opacity-80 rounded-l-2xl';
+  const chartTitleClass = 'text-app-main font-bold mb-1 flex items-center gap-2 pr-2';
+  const chartSubtitleClass = 'text-xs text-app-muted mb-4 max-w-prose';
 
   const navigateToAssets = (status) => {
     const params = new URLSearchParams();
@@ -371,52 +420,97 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selecte
   };
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6">
+    <div className="space-y-8">
+      <section className="space-y-4" aria-label="Key metrics">
+        <SectionLabel icon={LayoutGrid}>Key metrics</SectionLabel>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 md:gap-5">
         <StatCard title="Total Assets" value={safeOverview.total} icon={Box} color="blue" subText="In Inventory" onClick={() => navigateToAssets('')} />
         <StatCard title="In Use" value={safeOverview.inUse} icon={CheckCircle} color="emerald" subText={`${safeOverview.total ? Math.round((safeOverview.inUse / safeOverview.total) * 100) : 0}% Utilization`} onClick={() => navigateToAssets('In Use')} />
         <StatCard title="In Store" value={safeOverview.inStore} icon={Box} color="amber" subText="Available inventory" onClick={() => navigateToAssets('In Store')} />
         <StatCard title="Faulty" value={safeOverview.faulty} icon={AlertCircle} color="red" subText="Not issuable" onClick={() => navigateToAssets('Faulty')} />
         <StatCard title="Missing" value={safeOverview.missing} icon={MapPinOff} color="gray" subText="Needs investigation" onClick={() => navigateToAssets('Missing')} />
         <StatCard title="Asset Types" value={safeOverview.assetTypes || 0} icon={Layers} color="violet" subText="Unique products" onClick={() => window.open('/products', '_blank', 'noopener,noreferrer')} />
-      </div>
+        </div>
+      </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+      <section className="space-y-4" aria-label="Utilization and condition">
+        <SectionLabel icon={PieChart}>Utilization &amp; condition</SectionLabel>
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
         <div className={`${chartCardClass} xl:col-span-4`}>
-          <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{utilizationPie.title}</h3>
+          <span className={chartCardAccent} aria-hidden />
+          <h3 className={`${chartTitleClass} mt-0.5`}><PieChart size={18} className="text-app-accent shrink-0" />{utilizationPie.title}</h3>
+          <p className={chartSubtitleClass}>Active vs idle allocation across your inventory.</p>
           <Chart options={utilizationPie.options} series={utilizationPie.series} type={utilizationPie.type} height={utilizationPie.height} />
         </div>
         <div className={`${chartCardClass} xl:col-span-4`}>
-          <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{conditionPie.title}</h3>
+          <span className={chartCardAccent} aria-hidden />
+          <h3 className={`${chartTitleClass} mt-0.5`}><PieChart size={18} className="text-app-accent shrink-0" />{conditionPie.title}</h3>
+          <p className={chartSubtitleClass}>Physical / lifecycle condition distribution.</p>
           <Chart options={conditionPie.options} series={conditionPie.series} type={conditionPie.type} height={conditionPie.height} />
         </div>
         <div className={`${chartCardClass} xl:col-span-4`}>
-          <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{usagePie.title}</h3>
+          <span className={chartCardAccent} aria-hidden />
+          <h3 className={`${chartTitleClass} mt-0.5`}><PieChart size={18} className="text-app-accent shrink-0" />{usagePie.title}</h3>
+          <p className={chartSubtitleClass}>Operational usage classification snapshot.</p>
           <Chart options={usagePie.options} series={usagePie.series} type={usagePie.type} height={usagePie.height} />
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+      <section className="space-y-4" aria-label="Locations products and status">
+        <SectionLabel icon={MapPinned}>Locations, products &amp; status</SectionLabel>
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
         <div className={`${chartCardClass} xl:col-span-4`}>
-          <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{locationPie.title}</h3>
+          <span className={chartCardAccent} aria-hidden />
+          <h3 className={`${chartTitleClass} mt-0.5`}><PieChart size={18} className="text-app-accent shrink-0" />{locationPie.title}</h3>
+          <p className={chartSubtitleClass}>Where the largest quantities live.</p>
           <Chart options={locationPie.options} series={locationPie.series} type={locationPie.type} height={locationPie.height} />
         </div>
         <div className={`${chartCardClass} xl:col-span-4`}>
-          <h3 className="text-app-main font-bold mb-4 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{productPie.title}</h3>
+          <span className={chartCardAccent} aria-hidden />
+          <h3 className={`${chartTitleClass} mt-0.5`}><PieChart size={18} className="text-app-accent shrink-0" />{productPie.title}</h3>
+          <p className={chartSubtitleClass}>Top product lines by quantity.</p>
           <Chart options={productPie.options} series={productPie.series} type={productPie.type} height={productPie.height} />
         </div>
         <div className={`${chartCardClass} xl:col-span-4`}>
-          <h3 className="text-app-main font-bold mb-4">In Store vs Faulty vs Missing</h3>
+          <span className={chartCardAccent} aria-hidden />
+          <h3 className={`${chartTitleClass} mt-0.5`}>In Store vs Faulty vs Missing</h3>
+          <p className={chartSubtitleClass}>Inventory exceptions at a glance.</p>
           <Chart options={barOptions} series={barSeries} type="bar" height={300} />
         </div>
-      </div>
+        </div>
+      </section>
 
       {showMaintenanceVendorFeatures && (
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-          <div className={`${chartCardClass} xl:col-span-4`}>
-            <h3 className="text-app-main font-bold mb-1 flex items-center gap-2"><PieChart size={18} className="text-app-accent" />{maintenanceVendorPie.title}</h3>
-            <p className="text-xs text-app-muted mb-3">Quick filter by vendor</p>
-            <div className="mb-3 flex flex-wrap gap-2">
+        <section className="space-y-4" aria-label="Maintenance vendors">
+          <SectionLabel icon={Wrench}>Maintenance vendors</SectionLabel>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+          <div className={chartCardClass}>
+            <span className={chartCardAccent} aria-hidden />
+            <h3 className={`${chartTitleClass} mt-0.5`}>
+              <PieChart size={18} className="text-app-accent shrink-0" />
+              {siemensVendorPie.title}
+            </h3>
+            <p className="text-xs text-app-muted mb-4">Siemens-maintained assets vs the rest of the fleet.</p>
+            <Chart options={siemensVendorPie.options} series={siemensVendorPie.series} type={siemensVendorPie.type} height={siemensVendorPie.height} />
+          </div>
+          <div className={chartCardClass}>
+            <span className={chartCardAccent} aria-hidden />
+            <h3 className={`${chartTitleClass} mt-0.5`}>
+              <PieChart size={18} className="text-app-accent shrink-0" />
+              {g42VendorPie.title}
+            </h3>
+            <p className="text-xs text-app-muted mb-4">G42-maintained assets vs the rest of the fleet.</p>
+            <Chart options={g42VendorPie.options} series={g42VendorPie.series} type={g42VendorPie.type} height={g42VendorPie.height} />
+          </div>
+          <div className={`${chartCardClass} md:col-span-2 xl:col-span-1`}>
+            <span className={chartCardAccent} aria-hidden />
+            <h3 className={`${chartTitleClass} mt-0.5`}>
+              <PieChart size={18} className="text-app-accent shrink-0" />
+              {maintenanceVendorPie.title}
+            </h3>
+            <p className="text-xs text-app-muted mb-3">Compare vendors and jump to filtered assets.</p>
+            <div className="mb-4 flex flex-wrap gap-2">
               {['Siemens', 'G42'].map((vendor) => (
                 <button
                   key={vendor}
@@ -426,7 +520,7 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selecte
                     params.set('maintenance_vendor', vendor);
                     window.open(`/assets?${params.toString()}`, '_blank', 'noopener,noreferrer');
                   }}
-                  className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  className="inline-flex items-center rounded-full border border-app-card bg-app-elevated px-3 py-1.5 text-xs font-semibold text-app-main hover:bg-app-card transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))]"
                 >
                   {vendor}
                 </button>
@@ -434,19 +528,25 @@ const DashboardCharts = ({ stats, showMaintenanceVendorFeatures = false, selecte
             </div>
             <Chart options={maintenanceVendorPie.options} series={maintenanceVendorPie.series} type={maintenanceVendorPie.type} height={maintenanceVendorPie.height} />
           </div>
-        </div>
+          </div>
+        </section>
       )}
 
       {(growth || []).length > 0 && (
-        <div className={chartCardClass}>
-          <h3 className="text-app-main font-bold mb-4 flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-app-accent" />
-            Asset Acquisition Trend (Last 6 Months)
-          </h3>
-          <div className="h-[300px] w-full">
-            <Chart options={growthOptions} series={growthSeries} type="area" height="100%" />
+        <section className="space-y-4" aria-label="Acquisition trend">
+          <SectionLabel icon={TrendingUp}>Growth</SectionLabel>
+          <div className={chartCardClass}>
+            <span className={chartCardAccent} aria-hidden />
+            <h3 className={`${chartTitleClass} mt-0.5`}>
+              <TrendingUp className="w-5 h-5 text-app-accent shrink-0" />
+              Asset Acquisition Trend (Last 6 Months)
+            </h3>
+            <p className={chartSubtitleClass}>New assets registered over recent months.</p>
+            <div className="h-[300px] w-full">
+              <Chart options={growthOptions} series={growthSeries} type="area" height="100%" />
+            </div>
           </div>
-        </div>
+        </section>
       )}
     </div>
   );

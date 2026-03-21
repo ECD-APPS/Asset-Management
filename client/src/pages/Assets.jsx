@@ -1551,6 +1551,12 @@ const Assets = () => {
     </td>
   );
 
+  const normalizeMaintenanceVendorKey = (v) =>
+    String(v || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-_.]+/g, '');
+
   const getMaintenanceVendorValue = (asset = {}) => {
     const fromCustom = asset?.customFields || {};
     const candidates = [
@@ -1565,15 +1571,15 @@ const Assets = () => {
     for (const raw of candidates) {
       const value = String(raw || '').trim();
       if (!value) continue;
-      const lower = value.toLowerCase();
-      if (lower === 'siemens') return 'Siemens';
-      if (lower === 'g42') return 'G42';
+      const key = normalizeMaintenanceVendorKey(value);
+      if (key === 'siemens') return 'Siemens';
+      if (key === 'g42') return 'G42';
       return value;
     }
     // Fallback: if vendor_name itself is Siemens/G42, show it in maintenance vendor column.
-    const vendorName = String(asset?.vendor_name || '').trim().toLowerCase();
-    if (vendorName === 'siemens') return 'Siemens';
-    if (vendorName === 'g42') return 'G42';
+    const vendorKey = normalizeMaintenanceVendorKey(asset?.vendor_name || '');
+    if (vendorKey === 'siemens') return 'Siemens';
+    if (vendorKey === 'g42') return 'G42';
     return '-';
   };
 
