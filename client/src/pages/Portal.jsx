@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
-import { Users, ArrowLeft, Database, AlertTriangle, X, Store, Building2, ChevronRight, Settings, ShieldCheck, Activity, Search, Lock, LogOut, Mail, Send, UploadCloud, CheckCircle2 } from 'lucide-react';
+import { Users, ArrowLeft, Database, AlertTriangle, X, Store, Building2, ChevronRight, Settings, ShieldCheck, Activity, Search, Lock, LogOut, Mail, Send } from 'lucide-react';
 import AddMembers from './AddMembers';
 import ChangePasswordModal from '../components/ChangePasswordModal';
 
@@ -76,15 +76,6 @@ const Portal = () => {
   const [testingEmail, setTestingEmail] = useState(false);
   const [gatePassLogoUrl, setGatePassLogoUrl] = useState('/gatepass-logo.svg');
   const [appLogoPreviewUrl, setAppLogoPreviewUrl] = useState('');
-  const [resilienceStatus, setResilienceStatus] = useState(null);
-  const [resilienceLoading, setResilienceLoading] = useState(false);
-  const [restoreTargetTimestamp, setRestoreTargetTimestamp] = useState('');
-  const [restoreToTimePreview, setRestoreToTimePreview] = useState(null);
-  const [restoreToTimeLoading, setRestoreToTimeLoading] = useState(false);
-  const [shadowSyncLoading, setShadowSyncLoading] = useState(false);
-  const [verifyResilienceLoading, setVerifyResilienceLoading] = useState(false);
-  const [promoteShadowLoading, setPromoteShadowLoading] = useState(false);
-  const [failbackLoading, setFailbackLoading] = useState(false);
 
   const fetchPortalStores = useCallback(async () => {
     try {
@@ -196,23 +187,9 @@ const Portal = () => {
     }
   };
 
-  const fetchResilienceStatus = async () => {
-    if (user?.role !== 'Super Admin') return;
-    try {
-      setResilienceLoading(true);
-      const res = await api.get('/system/resilience/status');
-      setResilienceStatus(res.data || null);
-    } catch (error) {
-      console.error('Failed to load resilience status:', error);
-    } finally {
-      setResilienceLoading(false);
-    }
-  };
-
   useEffect(() => {
     if (user?.role !== 'Super Admin') return;
     fetchBackupArtifacts();
-    fetchResilienceStatus();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
 
@@ -276,22 +253,21 @@ const Portal = () => {
   const handleResetDatabase = async () => {
     if (!resetPassword) return alert('Password required');
     if (!resetStoreId) return alert('Please select a scope');
-    
     if (!window.confirm(`WARNING: Are you sure you want to reset data for ${resetStoreId === 'all' ? 'ALL STORES' : 'selected store'}? This cannot be undone.`)) return;
 
     try {
       setResetLoading(true);
-      await api.post('/system/reset', { 
+      await api.post('/system/reset', {
         password: resetPassword,
         storeId: resetStoreId,
         includeUsers
       });
       alert('Reset successful');
-      setShowResetModal(false);
       setResetPassword('');
       setResetStoreId('');
       setIncludeUsers(false);
       await fetchPortalStores();
+      await fetchBackupArtifacts();
     } catch (err) {
       console.error(err);
       alert(err.response?.data?.message || 'Reset failed');
@@ -308,14 +284,14 @@ const Portal = () => {
       const response = await api.get('/system/backup-file', {
         responseType: 'blob'
       });
-      const blob = new Blob([response.data], { type: 'application/json' });
+      const blob = new Blob([response.data], { type: 'application/gzip' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       const now = new Date();
       const iso = now.toISOString();
       const timestamp = iso.replace(/[:.]/g, '-');
       link.href = url;
-      link.download = `expo-backup-${timestamp}.json`;
+      link.download = `expo-backup-${timestamp}.archive.gz`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -347,11 +323,11 @@ const Portal = () => {
   const handleDownloadBackupArtifact = async (backup) => {
     try {
       const response = await api.get(`/system/backups/${backup._id}/download`, { responseType: 'blob' });
-      const blob = new Blob([response.data], { type: 'application/zip' });
+      const blob = new Blob([response.data], { type: 'application/gzip' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = backup.fileName || `${backup.name || 'backup'}.zip`;
+      link.download = backup.fileName || `${backup.name || 'backup'}.archive.gz`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -417,22 +393,6 @@ const Portal = () => {
     }
   };
 
-  const handleEmergencyRestore = async () => {
-    if (emergencyRestoreLoading) return;
-    if (!window.confirm('Emergency restore will restore the latest full backup immediately. Continue?')) return;
-    try {
-      setEmergencyRestoreLoading(true);
-      const res = await api.post('/system/backups/emergency-restore');
-      const report = extractRestoreReport(res.data);
-      setLastRestoreReport(report);
-      alert('Emergency restore completed. Review restore report below.');
-    } catch (error) {
-      alert('Emergency restore failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setEmergencyRestoreLoading(false);
-    }
-  };
-
   const validateRestoreFile = async (file) => {
     if (!file) return;
     const { valid, errors } = validateBackupFiles([file]);
@@ -493,7 +453,7 @@ const Portal = () => {
     }
   };
 
-  const allowedBackupTypes = ['application/json', 'text/plain', 'application/zip', 'application/x-zip-compressed', 'multipart/x-zip'];
+  const allowedBackupTypes = ['application/gzip', 'application/x-gzip', 'application/octet-stream'];
   const maxBackupFileSize = 1024 * 1024 * 1024;
 
   const validateBackupFiles = (files) => {
@@ -501,7 +461,7 @@ const Portal = () => {
     const errors = [];
     files.forEach((file) => {
       const lowerName = file.name.toLowerCase();
-      const byName = lowerName.endsWith('.json') || lowerName.endsWith('.zip');
+      const byName = lowerName.endsWith('.archive.gz') || lowerName.endsWith('.archive') || lowerName.endsWith('.gz');
       const byMime = allowedBackupTypes.includes(file.type) || file.type === '';
       if (!byName && !byMime) {
         errors.push(`${file.name}: invalid type`);
@@ -589,92 +549,6 @@ const Portal = () => {
       alert('Bulk restore failed: ' + (error.response?.data?.message || error.message));
     } finally {
       setBulkApplying(false);
-    }
-  };
-
-  const handlePreviewRestoreToTime = async () => {
-    if (!restoreTargetTimestamp) return alert('Select target timestamp first.');
-    try {
-      const res = await api.post('/system/resilience/restore-to-time/preview', {
-        targetTimestamp: restoreTargetTimestamp
-      });
-      setRestoreToTimePreview(res.data || null);
-    } catch (error) {
-      alert('Preview failed: ' + (error.response?.data?.message || error.message));
-    }
-  };
-
-  const handleApplyRestoreToTime = async () => {
-    if (!restoreTargetTimestamp) return alert('Select target timestamp first.');
-    if (!window.confirm('Restore-to-time will overwrite current state to the selected point. Continue?')) return;
-    try {
-      setRestoreToTimeLoading(true);
-      await api.post('/system/resilience/restore-to-time/apply', {
-        targetTimestamp: restoreTargetTimestamp
-      });
-      await fetchResilienceStatus();
-      await fetchBackupArtifacts();
-      alert('Restore-to-time completed.');
-    } catch (error) {
-      alert('Restore-to-time failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setRestoreToTimeLoading(false);
-    }
-  };
-
-  const handleShadowSync = async (fullResync = false) => {
-    try {
-      setShadowSyncLoading(true);
-      await api.post('/system/resilience/shadow/sync', { fullResync });
-      await fetchResilienceStatus();
-      alert(fullResync ? 'Full shadow resync completed.' : 'Shadow sync completed.');
-    } catch (error) {
-      alert('Shadow sync failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setShadowSyncLoading(false);
-    }
-  };
-
-  const handleVerifyLatestBackup = async () => {
-    try {
-      setVerifyResilienceLoading(true);
-      await api.post('/system/resilience/verify-latest');
-      await fetchResilienceStatus();
-      alert('Backup verification completed.');
-    } catch (error) {
-      alert('Backup verification failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setVerifyResilienceLoading(false);
-    }
-  };
-
-  const handlePromoteShadow = async () => {
-    if (!window.confirm('Promote shadow database to primary now?')) return;
-    try {
-      setPromoteShadowLoading(true);
-      await api.post('/system/resilience/shadow/promote', { confirm: 'PROMOTE' });
-      await fetchResilienceStatus();
-      await fetchBackupArtifacts();
-      alert('Shadow promoted successfully.');
-    } catch (error) {
-      alert('Promotion failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setPromoteShadowLoading(false);
-    }
-  };
-
-  const handleFailbackLatest = async () => {
-    if (!window.confirm('Failback to latest backup now?')) return;
-    try {
-      setFailbackLoading(true);
-      await api.post('/system/resilience/shadow/failback', {});
-      await fetchResilienceStatus();
-      await fetchBackupArtifacts();
-      alert('Failback completed.');
-    } catch (error) {
-      alert('Failback failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setFailbackLoading(false);
     }
   };
 
@@ -833,10 +707,7 @@ const Portal = () => {
                       </div>
                     </div>
                     <button
-                      onClick={() => {
-                        setResetStoreId(store._id);
-                        setShowResetModal(true);
-                      }}
+                      onClick={() => setShowResetModal(true)}
                       className="w-full sm:w-auto px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium text-sm transition-colors shadow-sm"
                     >
                       Review & Approve
@@ -966,8 +837,8 @@ const Portal = () => {
                  <Database size={20} className="md:w-[24px] md:h-[24px]" />
                </div>
                <div>
-                 <h3 className="text-base md:text-lg font-bold text-slate-900 mb-0.5 md:mb-1 group-hover:text-red-600 transition-colors">System Reset</h3>
-                 <p className="text-slate-500 text-xs md:text-sm">Database Maintenance & Config</p>
+                <h3 className="text-base md:text-lg font-bold text-slate-900 mb-0.5 md:mb-1 group-hover:text-red-600 transition-colors">Backup & Restore</h3>
+                <p className="text-slate-500 text-xs md:text-sm">Mongodump backup management</p>
                </div>
                <Settings size={18} className="ml-auto text-slate-400 group-hover:text-red-500 group-hover:rotate-45 transition-all md:w-[20px] md:h-[20px]" />
              </div>
@@ -1210,89 +1081,6 @@ const Portal = () => {
               </div>
             </div>
 
-            {/* Enterprise Backup Readiness */}
-            <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 shadow-sm md:col-span-2">
-              <div className="flex items-center gap-4 md:gap-5">
-                <div className="p-3 md:p-4 bg-emerald-50 rounded-lg text-emerald-600 border border-emerald-100">
-                  <CheckCircle2 size={20} className="md:w-[24px] md:h-[24px]" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-base md:text-lg font-bold text-slate-900 mb-1">Enterprise Backup Readiness</h3>
-                  <p className="text-slate-500 text-xs md:text-sm mb-3">
-                    Live status for backup verification, checksum-chain audit, and PITR archival.
-                  </p>
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
-                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
-                      <div className="text-slate-500">Verification</div>
-                      <div className="font-semibold text-slate-800">{resilienceStatus?.verification?.status || 'unknown'}</div>
-                    </div>
-                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
-                      <div className="text-slate-500">Chain Audit</div>
-                      <div className="font-semibold text-slate-800">{resilienceStatus?.backupAudit?.ok ? 'ok' : 'not-ok'}</div>
-                    </div>
-                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
-                      <div className="text-slate-500">PITR Last Archive</div>
-                      <div className="font-semibold text-slate-800">{resilienceStatus?.pitr?.lastArchivedAt ? new Date(resilienceStatus.pitr.lastArchivedAt).toLocaleString() : 'never'}</div>
-                    </div>
-                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
-                      <div className="text-slate-500">Shadow Lag</div>
-                      <div className="font-semibold text-slate-800">{Number(resilienceStatus?.shadow?.lag || 0)}</div>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={handleVerifyLatestBackup}
-                      disabled={verifyResilienceLoading}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-50"
-                    >
-                      <CheckCircle2 size={14} />
-                      {verifyResilienceLoading ? 'Verifying...' : 'Verify Latest Backup'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await api.post('/system/resilience/audit-backups');
-                          await fetchResilienceStatus();
-                          alert('Backup chain audit completed.');
-                        } catch (error) {
-                          alert('Audit failed: ' + (error.response?.data?.message || error.message));
-                        }
-                      }}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-700 text-white text-xs hover:bg-black"
-                    >
-                      <ShieldCheck size={14} />
-                      Run Chain Audit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await api.post('/system/resilience/pitr/archive', {});
-                          await fetchResilienceStatus();
-                          alert('PITR archive completed.');
-                        } catch (error) {
-                          alert('PITR archive failed: ' + (error.response?.data?.message || error.message));
-                        }
-                      }}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700"
-                    >
-                      <UploadCloud size={14} />
-                      Run PITR Archive
-                    </button>
-                    <button
-                      type="button"
-                      onClick={fetchResilienceStatus}
-                      disabled={resilienceLoading}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50"
-                    >
-                      {resilienceLoading ? 'Refreshing...' : 'Refresh Status'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
         )}
@@ -1303,7 +1091,7 @@ const Portal = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-3 md:gap-4">
            <p className="text-xs md:text-sm">© {new Date().getFullYear()} Expo City Dubai. All rights reserved.</p>
            <div className="flex gap-4 md:gap-6 text-xs md:text-sm opacity-80">
-             <span>v2.5.0 (Enterprise)</span>
+             <span>v2.5.0</span>
              <span className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-green-500"></div> System Status: Online</span>
            </div>
         </div>
@@ -1314,7 +1102,7 @@ const Portal = () => {
         onClose={() => setShowPasswordModal(false)} 
       />
 
-      {/* Reset Database Modal */}
+      {/* Backup & Restore Modal */}
       {showResetModal && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 transition-opacity">
           <div className="bg-white rounded-2xl p-0 max-w-6xl w-[95vw] max-h-[92vh] shadow-2xl overflow-hidden animate-scale-in">
@@ -1325,8 +1113,8 @@ const Portal = () => {
                     <AlertTriangle size={24} />
                  </div>
                  <div>
-                    <h2 className="text-lg font-bold text-red-900">Reset Database</h2>
-                    <p className="text-sm text-red-600">Critical Action Warning</p>
+                    <h2 className="text-lg font-bold text-red-900">Backup & Restore</h2>
+                    <p className="text-sm text-red-600">Backup & Restore</p>
                  </div>
               </div>
               <button 
@@ -1340,14 +1128,12 @@ const Portal = () => {
             <div className="p-6 overflow-y-auto max-h-[calc(92vh-120px)]">
               <div className="bg-yellow-50 border border-yellow-100 rounded-lg p-4 mb-6">
                  <p className="text-sm text-yellow-800 leading-relaxed">
-                   <strong>Warning:</strong> This action will permanently delete all transactional data (Assets, Requests, Purchase Orders) for the selected scope. <br/><br/>
-                   <span className="font-semibold">Safe Data:</span> {includeUsers ? 'Products and Categories' : 'Users, Products, and Categories'} will be <span className="underline">preserved</span>.
-                   {includeUsers && <span className="block mt-2 font-bold text-red-600">USERS (Admins/Technicians) WILL BE DELETED!</span>}
+                   <strong>Backup/Restore:</strong> Use this panel to create and restore `mongodump` backup archives only.
                  </p>
               </div>
 
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3 xl:col-span-8">
+              <div className="grid grid-cols-1 gap-5">
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
                   <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
                     <Database size={16} className="text-slate-600" />
                     Backup & Restore
@@ -1388,7 +1174,7 @@ const Portal = () => {
                       <span className="font-semibold text-slate-800">Upload Backup File From USB / Computer</span>
                       <input
                         type="file"
-                        accept="application/zip,.zip,application/json,.json,text/plain"
+                        accept="application/gzip,.archive.gz,.archive,.gz,application/octet-stream"
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (file) {
@@ -1516,33 +1302,35 @@ const Portal = () => {
                     </div>
                   </div>
                 </div>
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-5 xl:col-span-4 h-fit">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Select Target Scope</label>
-                  <div className="relative">
-                    <select 
-                      value={resetStoreId} 
+
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-4">
+                  <h3 className="text-sm font-semibold text-red-800 flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-red-700" />
+                    Reset Database
+                  </h3>
+                  <p className="text-xs text-red-700">
+                    This action removes transactional data for the selected scope.
+                  </p>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">Select Target Scope</label>
+                    <select
+                      value={resetStoreId}
                       onChange={(e) => setResetStoreId(e.target.value)}
-                      className="w-full appearance-none border border-slate-300 rounded-lg p-3 pr-10 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none bg-white text-slate-900 transition-shadow"
+                      className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none bg-white text-slate-900"
                     >
                       <option value="">-- Select Store to Reset --</option>
                       <option value="all">⚠️ ENTIRE SYSTEM (All Stores)</option>
-                      {stores.map(store => (
+                      {stores.map((store) => (
                         <option key={store._id} value={store._id}>{store.name}</option>
                       ))}
                     </select>
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                       <Store size={16} />
-                    </div>
                   </div>
-                </div>
 
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Deletion Options</label>
-                  <div className="space-y-3">
-                    <label className="flex items-center p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
-                      <input 
-                        type="radio" 
+                  <div className="space-y-2">
+                    <label className="flex items-center p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-white transition-colors bg-white">
+                      <input
+                        type="radio"
                         name="deletionOption"
                         checked={!includeUsers}
                         onChange={() => setIncludeUsers(false)}
@@ -1550,12 +1338,12 @@ const Portal = () => {
                       />
                       <div className="ml-3">
                         <span className="block text-sm font-medium text-slate-900">Data Only (Standard)</span>
-                        <span className="block text-xs text-slate-500">Deletes assets & logs. Keeps all users.</span>
+                        <span className="block text-xs text-slate-500">Deletes assets and logs. Keeps all users.</span>
                       </div>
                     </label>
-                    <label className="flex items-center p-3 border border-red-200 bg-red-50/30 rounded-lg cursor-pointer hover:bg-red-50 transition-colors">
-                      <input 
-                        type="radio" 
+                    <label className="flex items-center p-3 border border-red-200 rounded-lg cursor-pointer hover:bg-red-100 transition-colors bg-red-50/50">
+                      <input
+                        type="radio"
                         name="deletionOption"
                         checked={includeUsers}
                         onChange={() => setIncludeUsers(true)}
@@ -1563,42 +1351,39 @@ const Portal = () => {
                       />
                       <div className="ml-3">
                         <span className="block text-sm font-bold text-red-700">Full Wipe (Data + Users)</span>
-                        <span className="block text-xs text-red-600">Deletes data AND all Admins/Technicians.</span>
+                        <span className="block text-xs text-red-600">Deletes data and all Admins/Technicians.</span>
                       </div>
                     </label>
                   </div>
-                </div>
 
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Super Admin Password</label>
-                  <input 
-                    type="password" 
-                    value={resetPassword}
-                    onChange={(e) => setResetPassword(e.target.value)}
-                    className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-shadow"
-                    placeholder="Enter password to confirm..."
-                  />
-                </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">Super Admin Password</label>
+                    <input
+                      type="password"
+                      value={resetPassword}
+                      onChange={(e) => setResetPassword(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-shadow"
+                      placeholder="Enter password to confirm..."
+                    />
+                  </div>
 
-                <div className="pt-2">
-                  <button 
+                  <button
                     onClick={handleResetDatabase}
                     disabled={resetLoading || !resetStoreId || !resetPassword}
-                    className="w-full bg-red-600 text-white py-3.5 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-bold shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+                    className="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-bold shadow-sm flex items-center justify-center gap-2"
                   >
                     {resetLoading ? (
                       <>
-                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                         <span>Processing Reset...</span>
                       </>
                     ) : (
                       <>
-                        <Database size={18} />
+                        <Database size={16} />
                         <span>Confirm Database Reset</span>
                       </>
                     )}
                   </button>
-                </div>
                 </div>
               </div>
             </div>
