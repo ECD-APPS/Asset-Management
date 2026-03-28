@@ -164,7 +164,7 @@ Access URL:
 From Web VM:
 
 ```bash
-curl -I http://10.96.133.197:5000/healthz
+curl -I http://10.96.133.197:5000/api/healthz
 ```
 
 From App VM:
@@ -180,14 +180,14 @@ From browser:
 From Web VM, validate App API path:
 
 ```bash
-curl -I http://10.96.133.197:5000/healthz
+curl -I http://10.96.133.197:5000/api/healthz
 ```
 
 Credential verification checklist:
 
 ```bash
 # On App VM
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 - Login test in browser for:
@@ -201,7 +201,7 @@ Restart persistence test:
 ```bash
 # App VM
 pm2 restart expo-app
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 Then re-test the same logins to confirm persisted availability.
@@ -231,7 +231,7 @@ Run:
 
 ```bash
 cd /opt/Expo
-APP_DIR=/opt/Expo SERVICE_NAME=expo-app HEALTH_URL=http://127.0.0.1:5000/healthz ./scripts/deploy-app-safe.sh
+APP_DIR=/opt/Expo SERVICE_NAME=expo-app HEALTH_URL=http://127.0.0.1:5000/api/healthz ./scripts/deploy-app-safe.sh
 ```
 
 What it does:
@@ -239,7 +239,7 @@ What it does:
 - pulls latest git changes
 - installs dependencies
 - restarts PM2 service
-- checks `/healthz`
+- checks `/api/healthz`
 - auto-restores previous state if any step fails
 
 ### Web VM script

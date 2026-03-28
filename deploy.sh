@@ -89,20 +89,6 @@ create_pre_deploy_backup_if_possible() {
   fi
 }
 
-create_pre_deploy_journal_marker() {
-  if compose ps --services --filter "status=running" | grep -q "^app$"; then
-    echo "Creating pre-deploy journal marker..."
-    run_in_app_container_node "const mongoose=require('mongoose'); const {appendJournalEntry}=require('./utils/resilienceManager'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await appendJournalEntry({opType:'marker', collectionName:'system', metadata:{label:'pre-deploy', ts:new Date().toISOString()}}); await mongoose.disconnect();})();" || {
-      echo "Warning: pre-deploy journal marker failed. Deployment will continue." >&2
-    }
-  fi
-}
-
-post_deploy_resilience_checks() {
-  echo "Running post-deploy resilience checks..."
-  run_in_app_container_node "const mongoose=require('mongoose'); const {syncShadowDatabase,verifyLatestBackupRestore,getResilienceStatus}=require('./utils/resilienceManager'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await syncShadowDatabase({fullResync:false,actor:null}); await verifyLatestBackupRestore(); const s=await getResilienceStatus(); if((s?.verification?.status||'unknown')==='failed'){ throw new Error('Latest backup verification failed'); } await mongoose.disconnect();})();"
-}
-
 verify_health() {
   local deadline=$(( $(date +%s) + VERIFY_TIMEOUT_SECONDS ))
   echo "Verifying health (timeout: ${VERIFY_TIMEOUT_SECONDS}s)..."
@@ -142,11 +128,9 @@ case "$ACTION" in
     ;;
   safe-release)
     create_pre_deploy_backup_if_possible
-    create_pre_deploy_journal_marker
     record_release_metadata
     echo "Starting safe release deployment..."
     compose up -d --build --remove-orphans
-    post_deploy_resilience_checks
     if ! verify_health; then
       echo "Safe release verification failed. Use rollback helper below." >&2
       print_rollback_help

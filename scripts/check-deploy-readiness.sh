@@ -93,8 +93,8 @@ if [[ "$ROLE" == "app" ]]; then
     fail "server/package.json not found"
   fi
   check_tcp "$DB_IP" "$DB_PORT"
-  if curl -sS "http://127.0.0.1:${APP_PORT}/healthz" >/dev/null 2>&1; then
-    ok "Local health endpoint responds at :${APP_PORT}/healthz"
+  if curl -sS "http://127.0.0.1:${APP_PORT}/api/healthz" >/dev/null 2>&1; then
+    ok "Local health endpoint responds at :${APP_PORT}/api/healthz"
   else
     warn "Local health endpoint not reachable yet. Start app with PM2 and re-run."
   fi
@@ -103,14 +103,10 @@ if [[ "$ROLE" == "app" ]]; then
   else
     warn "API readiness endpoint not reachable yet."
   fi
-  if command -v mongosh >/dev/null 2>&1; then
-    if mongosh --quiet --eval "db.hello().setName ? 0 : 1" >/dev/null 2>&1; then
-      ok "MongoDB replica set detected (required for PITR)."
-    else
-      warn "MongoDB replica set not detected from this host. Enterprise PITR requires replica set mode."
-    fi
+  if command -v mongodump >/dev/null 2>&1 && command -v mongorestore >/dev/null 2>&1; then
+    ok "mongodump/mongorestore available (matches app backup/restore flow)."
   else
-    warn "mongosh not found; skipping replica set check."
+    warn "mongodump/mongorestore not on PATH. Install MongoDB Database Tools if this host runs backups or restore jobs."
   fi
 elif [[ "$ROLE" == "web" ]]; then
   print_header "Web VM Readiness"

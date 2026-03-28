@@ -18,9 +18,9 @@ help:
 	@echo "  make ps-prod        - Show production containers"
 	@echo "  make pull-prod      - Pull base images"
 	@echo "  make deploy-prod    - Validate, build, and start"
-	@echo "  make safe-release-prod - Precheck, backup, deploy, verify"
+	@echo "  make safe-release-prod - Precheck, mongodump pre-backup (if app up), deploy, verify"
 	@echo "  make verify-prod    - Verify API/Web health endpoints"
-	@echo "  make verify-resilience-prod - Run shadow sync + backup verification checks"
+	@echo "  make verify-resilience-prod - Alias: health verify (legacy resilience checks removed)"
 	@echo "  make rollback-help-prod - Show rollback helper commands"
 
 validate-prod:
@@ -60,7 +60,8 @@ verify-prod:
 	@./deploy.sh verify
 
 verify-resilience-prod:
-	@docker compose --env-file "$(ENV_FILE)" -p "$(PROJECT_NAME)" $(COMPOSE_FILES) exec -T app node -e "const mongoose=require('mongoose'); const {syncShadowDatabase,verifyLatestBackupRestore}=require('./utils/resilienceManager'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await syncShadowDatabase({fullResync:false,actor:null}); await verifyLatestBackupRestore(); await mongoose.disconnect();})();"
+	@echo "verify-resilience-prod: shadow/PITR verification was removed; running ./deploy.sh verify"
+	@./deploy.sh verify
 
 rollback-help-prod:
 	@./deploy.sh rollback-help

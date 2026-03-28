@@ -61,7 +61,7 @@ Important:
 ./deploy.sh safe-release
 ```
 
-This runs prechecks, creates pre-deploy backup + journal marker (if app is running), deploys, runs shadow-sync and backup verification checks, then verifies API + web health.
+This runs prechecks, creates a pre-deploy `mongodump` backup artifact when the app container is already running, deploys, then verifies API + web health endpoints.
 
 ### Option B: Makefile
 
@@ -96,7 +96,7 @@ Or run automated verification:
 ./deploy.sh verify
 ```
 
-Run resilience verification only:
+Optional Makefile alias (same as `./deploy.sh verify`):
 
 ```bash
 make verify-resilience-prod

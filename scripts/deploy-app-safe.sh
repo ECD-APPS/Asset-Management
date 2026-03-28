@@ -5,11 +5,11 @@ set -euo pipefail
 # Default assumptions:
 # - Repo lives at /opt/Expo
 # - Service name in PM2 is expo-app
-# - Health endpoint is http://127.0.0.1:5000/healthz
+# - Health endpoint is http://127.0.0.1:5000/api/healthz
 
 APP_DIR="${APP_DIR:-/opt/Expo}"
 SERVICE_NAME="${SERVICE_NAME:-expo-app}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:5000/healthz}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:5000/api/healthz}"
 READY_URL="${READY_URL:-http://127.0.0.1:5000/api/readyz}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/expo-backups/app}"
 BRANCH="${BRANCH:-main}"

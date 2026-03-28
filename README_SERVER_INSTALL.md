@@ -122,7 +122,7 @@ npm ci
 pm2 start server.js --name expo-app
 pm2 save
 pm2 startup
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 ## 5) Web VM Deployment
@@ -170,7 +170,7 @@ ROLE=db ./scripts/check-deploy-readiness.sh
 From Web VM:
 
 ```bash
-curl -I http://10.96.133.197:5000/healthz
+curl -I http://10.96.133.197:5000/api/healthz
 curl -I http://127.0.0.1/
 ```
 
@@ -178,7 +178,7 @@ From App VM:
 
 ```bash
 nc -zv 10.96.133.213 27017
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 Browser:
@@ -199,7 +199,7 @@ App VM:
 
 ```bash
 cd /opt/Expo
-APP_DIR=/opt/Expo SERVICE_NAME=expo-app HEALTH_URL=http://127.0.0.1:5000/healthz ./scripts/deploy-app-safe.sh
+APP_DIR=/opt/Expo SERVICE_NAME=expo-app HEALTH_URL=http://127.0.0.1:5000/api/healthz ./scripts/deploy-app-safe.sh
 ```
 
 Web VM:
