@@ -101,7 +101,16 @@ const filterRecipientsByNotificationPreference = async (recipients = []) => {
   });
 };
 
-const sendStoreEmail = async ({ storeId, to, subject, text, html, forceConfig, context = '' }) => {
+const sendStoreEmail = async ({
+  storeId,
+  to,
+  subject,
+  text,
+  html,
+  forceConfig,
+  context = '',
+  bypassNotificationFilter = false
+}) => {
   const cfg = forceConfig || (await getStoreEmailConfig(storeId)) || getFallbackConfig();
   if (!cfg) {
     await EmailLog.create({
@@ -115,7 +124,9 @@ const sendStoreEmail = async ({ storeId, to, subject, text, html, forceConfig, c
     return { skipped: true, reason: 'SMTP not configured for store or global fallback' };
   }
   const parsedRecipients = parseRecipients(to);
-  const filteredRecipients = await filterRecipientsByNotificationPreference(parsedRecipients);
+  const filteredRecipients = bypassNotificationFilter
+    ? parsedRecipients
+    : await filterRecipientsByNotificationPreference(parsedRecipients);
   if (filteredRecipients.length === 0) {
     await EmailLog.create({
       store: resolveStoreId(storeId),

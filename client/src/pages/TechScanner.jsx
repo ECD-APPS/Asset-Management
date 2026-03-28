@@ -9,6 +9,7 @@ const TechScanner = () => {
   const [manualSearch, setManualSearch] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [bulkAssets, setBulkAssets] = useState([]);
   const { user } = useAuth();
   const [returnCondition, setReturnCondition] = useState('New');
   
@@ -134,8 +135,29 @@ const TechScanner = () => {
     try {
       setLoading(true);
       if (action === 'collect') {
-        await api.post('/assets/collect', { assetId: asset._id, ticketNumber, installationLocation });
-        setMessage('Asset collected successfully');
+        const collectedId = asset._id;
+        await api.post('/assets/collect', { assetId: collectedId, ticketNumber, installationLocation });
+        let collectMsg = 'Asset collected successfully';
+        const askGatePass = window.confirm(
+          'Generate gate pass now? It will be saved for admin approval; email is sent only after an admin approves.'
+        );
+        if (askGatePass) {
+          try {
+            const gp = await api.post('/assets/collect-gatepass', {
+              assetIds: [collectedId],
+              ticketNumber,
+              installationLocation,
+              justification: 'Technician single collection'
+            });
+            collectMsg += gp?.data?.passNumber ? ` Gate Pass: ${gp.data.passNumber}.` : ' Gate pass saved.';
+            if (gp?.data?.pendingApproval) {
+              collectMsg += ' Pending admin approval — you will receive email after approval.';
+            }
+          } catch (error) {
+            collectMsg += ` Gate pass failed: ${error?.response?.data?.message || 'unknown error'}.`;
+          }
+        }
+        setMessage(collectMsg);
       } else {
         await api.post('/assets/faulty', { assetId: asset._id, ticketNumber });
         setMessage('Asset reported faulty');
@@ -165,6 +187,96 @@ const TechScanner = () => {
       setAsset(pickBestScannerMatch(res.data, asset.serial_number));
     } catch (error) {
       setMessage(error.response?.data?.message || 'Return failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const canCollectAsset = (a) => {
+    if (!a) return false;
+    if (a.reserved) return false;
+    if (a.assigned_to) return false;
+    if (a.status === 'Missing') return false;
+    return !String(a.condition || '').toLowerCase().includes('faulty');
+  };
+
+  const addCurrentToBulk = () => {
+    if (!asset?._id) return;
+    if (!canCollectAsset(asset)) {
+      setMessage('This asset cannot be added for bulk collect');
+      return;
+    }
+    setBulkAssets((prev) => (prev.some((a) => a._id === asset._id) ? prev : [...prev, asset]));
+    setMessage('Asset added to bulk list');
+    setAsset(null);
+    setManualSearch('');
+  };
+
+  const removeFromBulk = (id) => {
+    setBulkAssets((prev) => prev.filter((a) => a._id !== id));
+  };
+
+  const handleBulkCollect = async () => {
+    if (loading) return;
+    if (bulkAssets.length === 0) {
+      setMessage('Add assets to bulk list first');
+      return;
+    }
+    if (!ticketNumber) {
+      setMessage('Please enter a Ticket Number');
+      return;
+    }
+    if (!installationLocation) {
+      setMessage('Please enter Installation Location');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const successes = [];
+      const failed = [];
+
+      for (const item of bulkAssets) {
+        try {
+          await api.post('/assets/collect', {
+            assetId: item._id,
+            ticketNumber,
+            installationLocation
+          });
+          successes.push(item);
+        } catch (error) {
+          failed.push({
+            item,
+            reason: error?.response?.data?.message || 'Collect failed'
+          });
+        }
+      }
+
+      let gatePassInfo = '';
+      if (successes.length > 0) {
+        const askGatePass = window.confirm(
+          `Collected ${successes.length} asset(s). Generate gate pass? It will await admin approval; email sends only after approval.`
+        );
+        if (askGatePass) {
+          try {
+            const gp = await api.post('/assets/collect-gatepass', {
+              assetIds: successes.map((a) => a._id),
+              ticketNumber,
+              installationLocation,
+              justification: `Technician bulk collection (${successes.length} assets)`
+            });
+            gatePassInfo = gp?.data?.passNumber ? ` Gate Pass: ${gp.data.passNumber}.` : ' Gate pass saved.';
+            if (gp?.data?.pendingApproval) {
+              gatePassInfo += ' Pending admin approval — technician gets email after approval.';
+            }
+          } catch (error) {
+            gatePassInfo = ` Gate pass failed: ${error?.response?.data?.message || 'unknown error'}.`;
+          }
+        }
+      }
+
+      setBulkAssets((prev) => prev.filter((a) => !successes.some((s) => s._id === a._id)));
+      setMessage(`Bulk collect done. Success: ${successes.length}, Failed: ${failed.length}.${gatePassInfo}`);
     } finally {
       setLoading(false);
     }
@@ -223,6 +335,45 @@ const TechScanner = () => {
               </button>
             </div>
           </div>
+
+          {bulkAssets.length > 0 && (
+            <div className="bg-white border rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="font-semibold">Bulk List ({bulkAssets.length})</p>
+                <button
+                  type="button"
+                  onClick={() => setBulkAssets([])}
+                  className="text-xs text-red-600 hover:underline"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="space-y-1 max-h-40 overflow-auto">
+                {bulkAssets.map((a) => (
+                  <div key={a._id} className="flex items-center justify-between text-sm border rounded px-2 py-1">
+                    <span>{a.serial_number} - {a.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFromBulk(a._id)}
+                      className="text-red-600 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={handleBulkCollect}
+                  disabled={loading || bulkAssets.length === 0}
+                  className={`py-2 rounded text-white font-medium ${loading || bulkAssets.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-700 hover:bg-green-800'}`}
+                >
+                  {loading ? 'Processing...' : `Collect ${bulkAssets.length} Asset(s)`}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -348,6 +499,14 @@ const TechScanner = () => {
           </div>
 
           <div className="space-y-4">
+            <button
+              type="button"
+              onClick={addCurrentToBulk}
+              disabled={!canCollectAsset(asset) || loading}
+              className={`w-full py-2 rounded font-medium ${!canCollectAsset(asset) || loading ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}
+            >
+              Add To Bulk List
+            </button>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Ticket Number</label>
               <input 

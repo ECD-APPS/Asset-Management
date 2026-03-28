@@ -17,6 +17,14 @@ const passSchema = new mongoose.Schema({
     enum: ['Active', 'Completed', 'Cancelled'],
     default: 'Active'
   },
+  /** Technician-requested gate passes start as pending; admin approves before email is sent. */
+  approvalStatus: {
+    type: String,
+    enum: ['pending', 'approved'],
+    default: 'approved'
+  },
+  technicianNotifyEmail: { type: String, default: '' },
+  approvedAt: Date,
   // People involved
   requested_by: String,
   provided_by: String,

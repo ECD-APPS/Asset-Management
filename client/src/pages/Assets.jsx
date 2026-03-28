@@ -136,6 +136,17 @@ const Assets = () => {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [showRecentUploads, setShowRecentUploads] = useState(false);
   const [prevVisibleColumns, setPrevVisibleColumns] = useState(null);
+
+  const displayedAssets = useMemo(() => {
+    const selectedSet = new Set(selectedIds);
+    const selectedRows = [];
+    const normalRows = [];
+    assets.forEach((asset) => {
+      if (selectedSet.has(asset._id)) selectedRows.push(asset);
+      else normalRows.push(asset);
+    });
+    return [...selectedRows, ...normalRows];
+  }, [assets, selectedIds]);
   
   // Custom Confirmation Modal State
   const [confirmModal, setConfirmModal] = useState({
@@ -2237,7 +2248,7 @@ const Assets = () => {
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-slate-100">
-            {assets.map((asset) => (
+            {displayedAssets.map((asset) => (
               <tr key={asset._id} className={`hover:bg-slate-50 ${asset.isDuplicate ? 'bg-yellow-50' : ''} cursor-pointer`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
                 {user?.role !== 'Viewer' && (
                   <td className="px-3 py-2 md:px-4 md:py-4 text-center" onClick={(e) => e.stopPropagation()}>
@@ -2253,7 +2264,7 @@ const Assets = () => {
 
       {/* Mobile Card View */}
       <div className="md:hidden space-y-4 mb-4">
-        {assets.map((asset) => (
+        {displayedAssets.map((asset) => (
           <div key={asset._id} className={`bg-white p-4 rounded-lg shadow-sm border ${asset.isDuplicate ? 'border-yellow-400 bg-yellow-50' : 'border-gray-200'}`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
             <div className="flex justify-between items-start mb-3">
               <div>

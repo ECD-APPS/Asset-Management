@@ -1,9 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const Pass = require('../models/Pass');
-const Asset = require('../models/Asset');
 const Store = require('../models/Store');
+const ActivityLog = require('../models/ActivityLog');
 const { protect, admin } = require('../middleware/authMiddleware');
+const { sendStoreEmail } = require('../utils/storeEmail');
+const {
+  buildTechnicianGatePassEmailText,
+  buildTechnicianGatePassEmailHtml
+} = require('../utils/gatePassEmail');
 
 const getScopedStoreId = (req) => String(req.activeStore || req.user?.assignedStore || '').trim();
 const getStoreIds = async (storeId) => {
@@ -114,13 +119,82 @@ router.post('/', protect, admin, async (req, res) => {
       collected_by,
       approved_by,
       justification,
-      store: targetStoreId
+      store: targetStoreId,
+      approvalStatus: 'approved',
+      technicianNotifyEmail: '',
+      approvedAt: new Date()
     });
 
     const savedPass = await pass.save();
     res.status(201).json(savedPass);
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+});
+
+// Approve technician-submitted gate pass (final email to technician)
+router.post('/:id/approve', protect, admin, async (req, res) => {
+  try {
+    const existing = await Pass.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Pass not found' });
+    if (!(await canAccessPass(req, existing.store))) {
+      return res.status(404).json({ message: 'Pass not found' });
+    }
+    if (existing.approvalStatus !== 'pending') {
+      return res.status(400).json({ message: 'This pass is not pending admin approval' });
+    }
+
+    const adminName = String(req.user.name || '').trim();
+    existing.approved_by = adminName;
+    if (!String(existing.provided_by || '').trim()) {
+      existing.provided_by = adminName;
+    }
+    existing.approvalStatus = 'approved';
+    existing.approvedAt = new Date();
+    const saved = await existing.save();
+
+    let emailResult = { skipped: true, reason: 'No technician notify email on file' };
+    const techEmail = String(saved.technicianNotifyEmail || '').trim();
+    if (techEmail) {
+      try {
+        const appBase = String(process.env.PUBLIC_APP_URL || process.env.CLIENT_URL || '')
+          .trim()
+          .replace(/\/+$/, '');
+        const appLink = appBase ? `${appBase}/passes` : '';
+        emailResult = await sendStoreEmail({
+          storeId: saved.store || null,
+          to: techEmail,
+          subject: `Gate Pass EXPO CITY DUBAI — ${saved.file_no || saved.pass_number}`,
+          text: buildTechnicianGatePassEmailText(saved),
+          html: buildTechnicianGatePassEmailHtml(saved, { appLink }),
+          context: 'technician-gatepass-approved',
+          bypassNotificationFilter: true
+        });
+      } catch (err) {
+        console.error('Gate pass approval email error:', err.message);
+        emailResult = { skipped: true, reason: err.message || 'Email send failed' };
+      }
+    }
+
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Approve Collection Gate Pass',
+      details: `Approved gate pass ${saved.pass_number}; email ${
+        emailResult.skipped ? `not sent (${emailResult.reason})` : 'sent to technician'
+      }`,
+      store: saved.store || null
+    });
+
+    res.json({
+      message: 'Gate pass approved',
+      pass: saved,
+      emailSent: emailResult.skipped === false,
+      emailSkippedReason: emailResult.skipped ? emailResult.reason : undefined
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 

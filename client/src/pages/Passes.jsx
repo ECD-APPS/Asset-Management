@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
 import { useReactToPrint } from 'react-to-print';
-import { QrCode, Printer, Plus, X, Eye, Edit, Trash2, Lock } from 'lucide-react';
+import { QrCode, Printer, Plus, X, Eye, Edit, Trash2, Lock, Download, CheckCircle2 } from 'lucide-react';
 import PropTypes from 'prop-types';
+import QRCode from 'qrcode';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 
 const PasswordModal = ({ isOpen, onClose, onConfirm }) => {
   const [password, setPassword] = useState('');
@@ -67,6 +70,49 @@ PasswordModal.propTypes = {
   onConfirm: PropTypes.func.isRequired,
 };
 
+const PassReferenceQr = ({ pass }) => {
+  const [qrDataUrl, setQrDataUrl] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    const payload = [
+      'Expo Stores - Gate Pass',
+      `Ref: ${pass?.file_no || pass?.pass_number || '-'}`,
+      `Type: ${pass?.type || 'Security Handover'}`,
+      `From: ${pass?.origin || '-'}`,
+      `To: ${pass?.destination || '-'}`,
+      `Requested By: ${pass?.requested_by || pass?.issued_to?.name || '-'}`,
+      `Created: ${pass?.createdAt || ''}`
+    ].join('\n');
+
+    QRCode.toDataURL(payload, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 116
+    })
+      .then((url) => {
+        if (mounted) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (mounted) setQrDataUrl('');
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [pass]);
+
+  if (qrDataUrl) {
+    return <img src={qrDataUrl} alt="Pass Reference QR" className="w-[100px] h-[100px] object-contain bg-white p-1 border-2 border-slate-500 rounded-sm" />;
+  }
+
+  return <QrCode size={42} className="text-slate-700" />;
+};
+
+PassReferenceQr.propTypes = {
+  pass: PropTypes.object
+};
+
 const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
   if (!pass) return null;
   
@@ -76,38 +122,63 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase().replace(/ /g, '-');
   };
+  const formatDateTime = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
 
   return (
-    <div style={{ position: 'absolute', top: '-10000px', left: '-10000px' }}>
-      <div ref={refInstance} className="p-8 bg-white text-black font-sans min-h-screen">
-        <div className="max-w-[297mm] mx-auto">
+    <div className="print-template-hidden" style={{ position: 'absolute', top: '-10000px', left: '-10000px' }}>
+      <div ref={refInstance} className="bg-white text-black font-sans pass-print-root">
+        <div
+          className="mx-auto border-2 border-slate-700 relative pass-print-sheet"
+          style={{ width: '297mm', padding: '10mm' }}
+        >
+          <img
+            src={gatePassLogoUrl || '/gatepass-logo.svg'}
+            alt=""
+            className="absolute pointer-events-none select-none"
+            style={{ width: '105mm', opacity: 0.05, top: '50%', left: '50%', transform: 'translate(-50%, -45%)' }}
+          />
           {/* Header */}
-          <div className="flex justify-between items-start mb-6">
-            <div className="text-sm font-semibold text-gray-700 mt-2">
-              Security Technology, Expo City Dubai
-            </div>
+          <div className="grid grid-cols-3 items-center mb-3 pb-2 border-b border-slate-300">
             <div className="flex items-center gap-2">
-               <div className="text-right border-l-2 border-amber-400 pl-3">
-                  <div className="flex items-center gap-2">
-                     <img src={gatePassLogoUrl || '/gatepass-logo.svg'} alt="Expo City Dubai" className="w-16 h-16 object-contain" />
-                     <div className="text-left">
-                        <div className="text-xl font-bold text-gray-900 leading-none">EXPO</div>
-                        <div className="text-xl font-bold text-gray-900 leading-none">CITY</div>
-                        <div className="text-xl font-bold text-gray-900 leading-none">DUBAI</div>
-                     </div>
-                  </div>
-               </div>
+              <PassReferenceQr pass={pass} />
+            </div>
+            <div className="text-center font-black text-2xl tracking-[0.07em] text-[#0b3a53]">
+              GATE PASS EXPO CITY DUBAI
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <img src={gatePassLogoUrl || '/gatepass-logo.svg'} alt="Expo City Dubai" className="w-14 h-14 object-contain" />
+              <div className="text-left">
+                <div className="text-base font-bold text-gray-900 leading-none tracking-wide">EXPO</div>
+                <div className="text-base font-bold text-gray-900 leading-none tracking-wide">CITY</div>
+                <div className="text-base font-bold text-gray-900 leading-none tracking-wide">DUBAI</div>
+              </div>
             </div>
           </div>
 
           {/* Title Bar */}
-          <div className="bg-[#005f73] text-white px-4 py-2 flex justify-between items-center font-bold text-sm mb-0">
+          <div className="bg-[#0b3a53] text-white px-4 py-2.5 flex justify-between items-center font-bold text-xs tracking-wide mb-0 border-y border-[#082838]">
             <span>SECURITY HANDOVER</span>
             <span>DATE {formatDate(pass.createdAt)}</span>
           </div>
 
+          {pass.approvalStatus === 'pending' && (
+            <div className="bg-amber-100 border border-amber-400 text-amber-950 text-center text-[11px] font-bold py-2 px-3">
+              PENDING ADMIN APPROVAL — Final email to technician is sent only after approval.
+            </div>
+          )}
+
           {/* Info Block */}
-          <div className="border border-slate-400 border-t-0 text-xs mb-8">
+          <div className="border border-slate-400 border-t-0 text-[11px] mb-5">
             <div className="grid grid-cols-2 border-b border-slate-400">
               <div className="p-2 border-r border-slate-400 bg-slate-100 flex">
                 <span className="font-bold w-32">FILE NO.:</span> 
@@ -132,65 +203,106 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
             </div>
             <div className="p-2 flex bg-slate-50">
                <span className="font-bold w-32">APPROVED BY:</span>
-               <span>{pass.approved_by || ''}</span>
+               <span>
+                 {pass.approved_by ||
+                   (pass.approvalStatus === 'pending' ? '— (pending admin approval)' : '')}
+               </span>
             </div>
           </div>
 
           {/* Movement */}
-          <div className="grid grid-cols-2 gap-20 mb-6 text-xs">
+          <div className="grid grid-cols-2 gap-14 mb-4 text-[11px]">
             <div>
-               <div className="font-bold text-slate-500 mb-1">MOVING FROM</div>
-               <div className="font-bold text-lg border-b border-gray-300 pb-1">{pass.origin}</div>
+               <div className="font-bold text-slate-500 mb-1 tracking-wide">MOVING FROM</div>
+               <div className="font-bold text-base border-b border-gray-300 pb-1">{pass.origin}</div>
             </div>
             <div>
-               <div className="font-bold text-slate-500 mb-1">MOVING TO</div>
-               <div className="font-bold text-lg border-b border-gray-300 pb-1">{pass.destination}</div>
+               <div className="font-bold text-slate-500 mb-1 tracking-wide">MOVING TO</div>
+               <div className="font-bold text-base border-b border-gray-300 pb-1">{pass.destination}</div>
             </div>
           </div>
 
           {/* Assets Table */}
-          <table className="w-full border-collapse border border-black text-center mb-6 text-[10px]">
+          <table className="w-full border-collapse border border-slate-700 text-center mb-5 text-[10px] pass-print-table">
             <thead className="bg-[#005f73] text-white">
               <tr>
-                <th className="border border-black p-2 font-bold w-10">S.No</th>
-                <th className="border border-black p-2 font-bold">Model Number</th>
-                <th className="border border-black p-2 font-bold">Serial Number</th>
-                <th className="border border-black p-2 font-bold">Manufacturer</th>
-                <th className="border border-black p-2 font-bold">Status</th>
-                <th className="border border-black p-2 font-bold">Remarks</th>
+                <th className="border border-slate-700 p-2 font-bold w-10">S.No</th>
+                <th className="border border-slate-700 p-2 font-bold">Model Number</th>
+                <th className="border border-slate-700 p-2 font-bold">Serial Number</th>
+                <th className="border border-slate-700 p-2 font-bold">Manufacturer</th>
+                <th className="border border-slate-700 p-2 font-bold">Status</th>
+                <th className="border border-slate-700 p-2 font-bold">Remarks</th>
               </tr>
             </thead>
             <tbody>
               {(pass.assets || []).map((item, i) => (
                 <tr key={i} className="text-black">
-                  <td className="border border-black p-2">{i + 1}</td>
-                  <td className="border border-black p-2">{item.model || '-'}</td>
-                  <td className="border border-black p-2 font-mono">{item.serial_number}</td>
-                  <td className="border border-black p-2">{item.brand || '-'}</td>
-                  <td className="border border-black p-2">{item.status || '-'}</td>
-                  <td className="border border-black p-2">{item.remarks || '-'}</td>
+                  <td className="border border-slate-700 p-1.5">{i + 1}</td>
+                  <td className="border border-slate-700 p-1.5">{item.model || '-'}</td>
+                  <td className="border border-slate-700 p-1.5 font-mono">{item.serial_number}</td>
+                  <td className="border border-slate-700 p-1.5">{item.brand || '-'}</td>
+                  <td className="border border-slate-700 p-1.5">{item.status || '-'}</td>
+                  <td className="border border-slate-700 p-1.5">{item.remarks || '-'}</td>
                 </tr>
-              ))}
-              {/* Empty rows to fill space if needed, mimicking a fixed form */}
-              {Array.from({ length: Math.max(0, 5 - pass.assets.length) }).map((_, idx) => (
-                 <tr key={`empty-${idx}`}>
-                   <td className="border border-black p-2">&nbsp;</td>
-                   <td className="border border-black p-2"></td>
-                   <td className="border border-black p-2"></td>
-                   <td className="border border-black p-2"></td>
-                   <td className="border border-black p-2"></td>
-                   <td className="border border-black p-2"></td>
-                 </tr>
               ))}
             </tbody>
           </table>
 
           {/* Footer */}
-          <div className="text-xs border-t border-gray-200 pt-4">
+          <div className="text-[11px] border-t border-gray-300 pt-3">
             <span className="font-bold">JUSTIFICATION:</span> {pass.justification || pass.notes}
           </div>
-          
-          <div className="mt-8 text-[10px] text-gray-400 text-right">
+
+          <div className="mt-3 border border-slate-400 rounded-sm text-[10px] pass-print-meta">
+            <div className="grid grid-cols-3">
+              <div className="p-2 border-r border-slate-300">
+                <div className="uppercase font-semibold text-slate-500">Document No.</div>
+                <div className="font-mono">{pass.file_no || pass.pass_number || '-'}</div>
+              </div>
+              <div className="p-2 border-r border-slate-300">
+                <div className="uppercase font-semibold text-slate-500">Created On</div>
+                <div>{formatDateTime(pass.createdAt)}</div>
+              </div>
+              <div className="p-2">
+                <div className="uppercase font-semibold text-slate-500">Pass Type</div>
+                <div>{pass.type || 'Security Handover'}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-12 gap-3 items-stretch pass-print-signatures">
+            <div className="col-span-9 grid grid-cols-4 gap-4 text-[10px]">
+              <div className="border-t border-slate-500 pt-1 text-center">
+                <div className="font-semibold">Requested By</div>
+                <div className="text-slate-600">{pass.requested_by || pass.issued_to?.name || '-'}</div>
+              </div>
+              <div className="border-t border-slate-500 pt-1 text-center">
+                <div className="font-semibold">Collected By</div>
+                <div className="text-slate-600">{pass.collected_by || pass.issued_to?.name || '-'}</div>
+              </div>
+              <div className="border-t border-slate-500 pt-1 text-center">
+                <div className="font-semibold">Approved By</div>
+                <div className="text-slate-600">{pass.approved_by || '-'}</div>
+              </div>
+              <div className="border-t border-slate-500 pt-1 text-center">
+                <div className="font-semibold">Security Verification</div>
+                <div className="text-slate-600">Name / Sign / Stamp</div>
+              </div>
+            </div>
+            <div className="col-span-3 border border-slate-400 rounded-sm p-2 text-[10px] bg-slate-50">
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-slate-700">Reference QR</div>
+                <QrCode size={16} className="text-slate-700" />
+              </div>
+              <div className="mt-2 text-slate-600 leading-4">
+                <div className="font-mono break-all">#{pass.file_no || pass.pass_number || '-'}</div>
+                <div>{formatDateTime(pass.createdAt)}</div>
+                <div className="uppercase tracking-wide">{pass.type || 'Security Handover'}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 text-[10px] text-gray-400 text-right">
              Generated by Store Management System
           </div>
         </div>
@@ -205,7 +317,16 @@ PassTemplate.propTypes = {
   gatePassLogoUrl: PropTypes.string
 };
 
-const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
+const ViewModal = ({
+  pass,
+  onClose,
+  onPrint,
+  onDownload,
+  onApprove,
+  approveLoading,
+  gatePassLogoUrl,
+  previewRef
+}) => {
   if (!pass) return null;
 
   // Format date as 11-NOV-2025
@@ -214,18 +335,45 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase().replace(/ /g, '-');
   };
+  const formatDateTime = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] overflow-y-auto relative">
-        <div className="sticky top-0 bg-white z-10 border-b p-4 flex justify-between items-center">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto pass-preview-modal">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] overflow-y-auto relative pass-preview-card">
+        <div className="sticky top-0 bg-white z-10 border-b p-4 flex justify-between items-center no-print">
            <h2 className="text-lg font-bold">Pass Preview</h2>
-           <div className="flex gap-2">
+           <div className="flex gap-2 flex-wrap justify-end">
+              {pass.approvalStatus === 'pending' && typeof onApprove === 'function' && (
+                <button
+                  type="button"
+                  onClick={onApprove}
+                  disabled={approveLoading}
+                  className="bg-emerald-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-emerald-700 text-sm disabled:opacity-60"
+                >
+                  <CheckCircle2 size={16} /> Approve &amp; email tech
+                </button>
+              )}
               <button 
                 onClick={onPrint}
                 className="bg-amber-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-amber-700 text-sm"
               >
                 <Printer size={16} /> Print / Save PDF
+              </button>
+              <button
+                onClick={onDownload}
+                className="bg-slate-700 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-slate-800 text-sm"
+              >
+                <Download size={16} /> Download PDF
               </button>
               <button 
                 onClick={onClose}
@@ -237,32 +385,43 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
         </div>
         
         {/* Preview Content (Visual Duplicate of Print Template) */}
-        <div className="p-8 bg-gray-50 flex justify-center">
-          <div className="bg-white p-8 shadow-sm border w-full max-w-[210mm]">
+        <div className="p-8 bg-gray-50 flex justify-center pass-print-root">
+          <div ref={previewRef} className="bg-white p-8 shadow-sm border-2 border-slate-700 w-full max-w-[297mm] relative overflow-hidden pass-print-sheet">
+             <img
+               src={gatePassLogoUrl || '/gatepass-logo.svg'}
+               alt=""
+               className="absolute pointer-events-none select-none"
+               style={{ width: '78mm', opacity: 0.05, top: '50%', left: '50%', transform: 'translate(-50%, -45%)' }}
+             />
              {/* Header */}
-             <div className="flex justify-between items-start mb-6">
-                <div className="text-sm font-semibold text-gray-700 mt-2">
-                  Security Technology, Expo City Dubai
-                </div>
+             <div className="grid grid-cols-3 items-center mb-4 pb-2 border-b border-slate-300">
                 <div className="flex items-center gap-2">
-                   <div className="text-right border-l-2 border-amber-400 pl-3">
-                      <div className="flex items-center gap-2">
-                         <img src={gatePassLogoUrl || '/gatepass-logo.svg'} alt="Expo City Dubai" className="w-16 h-16 object-contain" />
-                         <div className="text-left">
-                            <div className="text-lg font-bold text-gray-900 leading-none">EXPO</div>
-                            <div className="text-lg font-bold text-gray-900 leading-none">CITY</div>
-                            <div className="text-lg font-bold text-gray-900 leading-none">DUBAI</div>
-                         </div>
-                      </div>
-                   </div>
+                  <PassReferenceQr pass={pass} />
+                </div>
+                <div className="text-center font-black text-2xl tracking-[0.07em] text-[#0b3a53]">
+                  GATE PASS EXPO CITY DUBAI
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <img src={gatePassLogoUrl || '/gatepass-logo.svg'} alt="Expo City Dubai" className="w-16 h-16 object-contain" />
+                  <div className="text-left">
+                    <div className="text-base font-bold text-gray-900 leading-none">EXPO</div>
+                    <div className="text-base font-bold text-gray-900 leading-none">CITY</div>
+                    <div className="text-base font-bold text-gray-900 leading-none">DUBAI</div>
+                  </div>
                 </div>
               </div>
 
               {/* Title Bar */}
-              <div className="bg-[#005f73] text-white px-4 py-2 flex justify-between items-center font-bold text-sm mb-0">
+              <div className="bg-[#0b3a53] text-white px-4 py-2.5 flex justify-between items-center font-bold text-sm mb-0 border-y border-[#082838]">
                 <span>SECURITY HANDOVER</span>
                 <span>DATE {formatDate(pass.createdAt)}</span>
               </div>
+
+              {pass.approvalStatus === 'pending' && (
+                <div className="bg-amber-100 border border-amber-400 text-amber-950 text-center text-xs font-bold py-2 px-3">
+                  PENDING ADMIN APPROVAL — Final email to technician is sent only after approval.
+                </div>
+              )}
 
               {/* Info Block */}
               <div className="border border-slate-400 border-t-0 text-xs mb-8">
@@ -290,7 +449,10 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
                 </div>
                 <div className="p-2 flex bg-slate-50">
                    <span className="font-bold w-32">APPROVED BY:</span>
-                   <span>{pass.approved_by || ''}</span>
+                   <span>
+                     {pass.approved_by ||
+                       (pass.approvalStatus === 'pending' ? '— (pending admin approval)' : '')}
+                   </span>
                 </div>
               </div>
 
@@ -307,7 +469,7 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
               </div>
 
               {/* Assets Table */}
-              <table className="w-full border-collapse border border-black text-center mb-6 text-[10px]">
+              <table className="w-full border-collapse border border-black text-center mb-6 text-[10px] pass-print-table">
                 <thead className="bg-[#005f73] text-white">
                   <tr>
                     <th className="border border-black p-2 font-bold w-10">S.No</th>
@@ -336,6 +498,53 @@ const ViewModal = ({ pass, onClose, onPrint, gatePassLogoUrl }) => {
               <div className="text-xs border-t border-gray-200 pt-4">
                 <span className="font-bold">JUSTIFICATION:</span> {pass.justification || pass.notes}
               </div>
+              <div className="mt-3 border border-slate-300 rounded-sm text-[10px] pass-print-meta">
+                <div className="grid grid-cols-3">
+                  <div className="p-2 border-r border-slate-300">
+                    <div className="uppercase font-semibold text-slate-500">Document No.</div>
+                    <div className="font-mono">{pass.file_no || pass.pass_number || '-'}</div>
+                  </div>
+                  <div className="p-2 border-r border-slate-300">
+                    <div className="uppercase font-semibold text-slate-500">Created On</div>
+                    <div>{formatDateTime(pass.createdAt)}</div>
+                  </div>
+                  <div className="p-2">
+                    <div className="uppercase font-semibold text-slate-500">Pass Type</div>
+                    <div>{pass.type || 'Security Handover'}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-12 gap-3 items-stretch pass-print-signatures">
+                <div className="col-span-9 grid grid-cols-4 gap-4 text-[10px]">
+                  <div className="border-t border-slate-500 pt-1 text-center">
+                    <div className="font-semibold">Requested By</div>
+                    <div className="text-slate-600">{pass.requested_by || pass.issued_to?.name || '-'}</div>
+                  </div>
+                  <div className="border-t border-slate-500 pt-1 text-center">
+                    <div className="font-semibold">Collected By</div>
+                    <div className="text-slate-600">{pass.collected_by || pass.issued_to?.name || '-'}</div>
+                  </div>
+                  <div className="border-t border-slate-500 pt-1 text-center">
+                    <div className="font-semibold">Approved By</div>
+                    <div className="text-slate-600">{pass.approved_by || '-'}</div>
+                  </div>
+                  <div className="border-t border-slate-500 pt-1 text-center">
+                    <div className="font-semibold">Security Verification</div>
+                    <div className="text-slate-600">Name / Sign / Stamp</div>
+                  </div>
+                </div>
+                <div className="col-span-3 border border-slate-400 rounded-sm p-2 text-[10px] bg-slate-50">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-700">Reference QR</div>
+                    <QrCode size={16} className="text-slate-700" />
+                  </div>
+                  <div className="mt-2 text-slate-600 leading-4">
+                    <div className="font-mono break-all">#{pass.file_no || pass.pass_number || '-'}</div>
+                    <div>{formatDateTime(pass.createdAt)}</div>
+                    <div className="uppercase tracking-wide">{pass.type || 'Security Handover'}</div>
+                  </div>
+                </div>
+              </div>
           </div>
         </div>
       </div>
@@ -347,6 +556,10 @@ ViewModal.propTypes = {
   pass: PropTypes.object,
   onClose: PropTypes.func.isRequired,
   onPrint: PropTypes.func,
+  onDownload: PropTypes.func,
+  onApprove: PropTypes.func,
+  approveLoading: PropTypes.bool,
+  previewRef: PropTypes.object,
   gatePassLogoUrl: PropTypes.string
 };
 
@@ -365,13 +578,36 @@ const Passes = () => {
     passData: null
   });
   const [gatePassLogoUrl, setGatePassLogoUrl] = useState('/gatepass-logo.svg');
+  const [approveLoadingId, setApproveLoadingId] = useState(null);
 
   const printRef = useRef();
+  const previewRef = useRef();
   const printTimerRef = useRef(null);
+  const printPageStyle = `
+    @page { size: A4 landscape; margin: 8mm; }
+    @media print {
+      html, body { width: 297mm; height: auto; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body { margin: 0 !important; background: #ffffff !important; }
+      .pass-print-root { width: 100% !important; margin: 0 !important; }
+      .pass-print-sheet {
+        width: 100% !important;
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
+        break-inside: auto !important;
+        page-break-inside: auto !important;
+      }
+      .pass-print-table { width: 100% !important; table-layout: fixed !important; }
+      .pass-print-table thead { display: table-header-group !important; }
+      .pass-print-table tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+      .pass-print-meta, .pass-print-signatures { break-inside: avoid !important; page-break-inside: avoid !important; }
+    }
+  `;
   const handlePrint = useReactToPrint({
     content: () => printRef.current,
     documentTitle: 'Gate Pass',
-    removeAfterPrint: true
+    removeAfterPrint: true,
+    pageStyle: printPageStyle
   });
 
   const [formData, setFormData] = useState({
@@ -412,6 +648,27 @@ const Passes = () => {
     }
   };
 
+  const handleApprovePass = async (pass, { refreshView = false } = {}) => {
+    if (!pass?._id) return;
+    setApproveLoadingId(String(pass._id));
+    try {
+      const { data } = await api.post(`/passes/${pass._id}/approve`);
+      const msg = data.emailSent
+        ? 'Gate pass approved. Email sent to technician.'
+        : `Gate pass approved. ${data.emailSkippedReason || 'Email not sent.'}`;
+      alert(msg);
+      await loadPasses();
+      if (refreshView && viewPass && String(viewPass._id) === String(pass._id) && data.pass) {
+        setViewPass(data.pass);
+        setSelectedPass(data.pass);
+      }
+    } catch (e) {
+      alert(e.response?.data?.message || 'Approve failed');
+    } finally {
+      setApproveLoadingId(null);
+    }
+  };
+
   useEffect(() => {
     loadPasses();
   }, []);
@@ -426,6 +683,90 @@ const Passes = () => {
       }
     };
     loadGatePassLogo();
+  }, []);
+
+  useEffect(() => {
+    const styleEl = document.createElement('style');
+    styleEl.setAttribute('id', 'passes-global-print-style');
+    styleEl.textContent = `
+      @page {
+        size: A4 landscape;
+        margin: 8mm;
+      }
+
+      @media print {
+        html, body {
+          width: 297mm;
+          height: auto;
+          margin: 0 !important;
+          padding: 0 !important;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+          background: #ffffff !important;
+        }
+
+        .pass-print-root {
+          position: static !important;
+          width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #ffffff !important;
+        }
+
+        .pass-print-sheet {
+          width: 100% !important;
+          min-height: auto !important;
+          height: auto !important;
+          box-sizing: border-box !important;
+          page-break-after: auto !important;
+        }
+
+        .pass-print-table {
+          width: 100% !important;
+          table-layout: fixed !important;
+        }
+
+        .pass-print-table thead {
+          display: table-header-group !important;
+        }
+
+        .pass-print-table tr,
+        .pass-print-signatures,
+        .pass-print-meta {
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
+        }
+
+        .no-print {
+          display: none !important;
+        }
+
+        .print-template-hidden {
+          display: none !important;
+        }
+
+        .pass-preview-modal {
+          position: static !important;
+          inset: auto !important;
+          background: #ffffff !important;
+          padding: 0 !important;
+          overflow: visible !important;
+        }
+
+        .pass-preview-card {
+          width: 100% !important;
+          max-width: none !important;
+          max-height: none !important;
+          border: none !important;
+          border-radius: 0 !important;
+          box-shadow: none !important;
+          overflow: visible !important;
+        }
+      }
+    `;
+
+    document.head.appendChild(styleEl);
+    return () => styleEl.remove();
   }, []);
 
   const handlePasswordConfirm = () => {
@@ -631,6 +972,46 @@ const Passes = () => {
       handlePrint();
     }, 500);
   };
+
+  const handleDownloadPdf = async () => {
+    try {
+      const target = previewRef.current;
+      if (!target || !viewPass) {
+        alert('Open gate pass preview first, then download.');
+        return;
+      }
+
+      const canvas = await html2canvas(target, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pageWidth;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+      let heightLeft = imgHeight;
+      let position = 0;
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+
+      const safeName = `${(viewPass.file_no || viewPass.pass_number || 'gatepass').toString().replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+      pdf.save(safeName);
+    } catch (error) {
+      console.error('PDF download failed', error);
+      alert('Download failed. Please try again.');
+    }
+  };
   
   useEffect(() => {
     return () => {
@@ -655,6 +1036,10 @@ const Passes = () => {
         pass={viewPass} 
         onClose={() => setViewPass(null)} 
         onPrint={() => openPrint(viewPass)}
+        onDownload={handleDownloadPdf}
+        onApprove={viewPass?.approvalStatus === 'pending' ? () => handleApprovePass(viewPass, { refreshView: true }) : undefined}
+        approveLoading={Boolean(viewPass?._id && approveLoadingId === String(viewPass._id))}
+        previewRef={previewRef}
         gatePassLogoUrl={gatePassLogoUrl}
       />
 
@@ -681,6 +1066,8 @@ const Passes = () => {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Requested By</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Admin approval</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Approved by</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
             </tr>
           </thead>
@@ -706,8 +1093,33 @@ const Passes = () => {
                     {pass.status}
                   </span>
                 </td>
+                <td className="px-6 py-4">
+                  {pass.approvalStatus === 'pending' ? (
+                    <span className="px-2 py-1 rounded text-xs font-semibold bg-amber-100 text-amber-900">
+                      Pending
+                    </span>
+                  ) : (
+                    <span className="px-2 py-1 rounded text-xs font-semibold bg-emerald-100 text-emerald-900">
+                      Approved
+                    </span>
+                  )}
+                </td>
+                <td className="px-6 py-4 text-sm text-gray-700 max-w-[140px]">
+                  {pass.approved_by || '—'}
+                </td>
                 <td className="px-6 py-4 text-right">
                   <div className="flex justify-end gap-2">
+                    {pass.approvalStatus === 'pending' && (
+                      <button
+                        type="button"
+                        onClick={() => handleApprovePass(pass)}
+                        disabled={approveLoadingId === String(pass._id)}
+                        className="text-emerald-600 hover:text-emerald-800 p-1 disabled:opacity-50"
+                        title="Approve gate pass and email technician"
+                      >
+                        <CheckCircle2 size={18} />
+                      </button>
+                    )}
                     <button 
                       onClick={() => openView(pass)}
                       className="text-blue-600 hover:text-blue-800 p-1"

@@ -185,19 +185,23 @@ async function notifyAssetEvent({ asset, recipientEmail, subject, lines = [] }) 
   }
 }
 
-async function createAssignmentGatePass({
-  asset,
-  allAssets,
-  issuedBy,
-  recipientName,
-  recipientEmail,
-  recipientPhone,
-  recipientCompany,
-  ticketNumber,
-  origin,
-  destination,
-  justification
-}) {
+async function createAssignmentGatePass(
+  {
+    asset,
+    allAssets,
+    issuedBy,
+    recipientName,
+    recipientEmail,
+    recipientPhone,
+    recipientCompany,
+    ticketNumber,
+    origin,
+    destination,
+    justification
+  },
+  options = {}
+) {
+  const pendingAdminApproval = options.pendingAdminApproval === true;
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const prefix = 'OUT';
   const todayRegex = new RegExp(`^${prefix}-${dateStr}`);
@@ -232,9 +236,12 @@ async function createAssignmentGatePass({
     ticket_no: ticketNumber || '',
     type: 'Outbound',
     requested_by: String(recipientName || '').trim(),
-    provided_by: String(issuedBy?.name || '').trim(),
+    provided_by: pendingAdminApproval ? '' : String(issuedBy?.name || '').trim(),
     collected_by: String(recipientName || '').trim(),
-    approved_by: String(issuedBy?.name || '').trim(),
+    approved_by: pendingAdminApproval ? '' : String(issuedBy?.name || '').trim(),
+    approvalStatus: pendingAdminApproval ? 'pending' : 'approved',
+    technicianNotifyEmail: pendingAdminApproval ? String(recipientEmail || '').trim() : '',
+    approvedAt: pendingAdminApproval ? undefined : new Date(),
     assets: passAssetEntries,
     issued_to: {
       name: String(recipientName || '').trim() || 'Recipient',
@@ -3355,6 +3362,80 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
     res.json(asset);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// @desc    Generate gate pass after technician bulk collection
+// @route   POST /api/assets/collect-gatepass
+// @access  Private/Technician
+router.post('/collect-gatepass', protect, restrictViewer, async (req, res) => {
+  const { assetIds, ticketNumber, installationLocation, justification } = req.body || {};
+  try {
+    const ids = Array.isArray(assetIds) ? assetIds.map((id) => String(id || '').trim()).filter(Boolean) : [];
+    if (ids.length === 0) {
+      return res.status(400).json({ message: 'No assets selected for gate pass' });
+    }
+    if (!ticketNumber) {
+      return res.status(400).json({ message: 'Ticket number is required for gate pass' });
+    }
+
+    const assets = await Asset.find({ _id: { $in: ids } });
+    if (assets.length !== ids.length) {
+      return res.status(404).json({ message: 'One or more assets were not found' });
+    }
+
+    const uniqueById = new Map();
+    assets.forEach((asset) => uniqueById.set(String(asset._id), asset));
+    const orderedAssets = ids.map((id) => uniqueById.get(id)).filter(Boolean);
+
+    for (const asset of orderedAssets) {
+      if (!hasAssetStoreAccess(req, asset.store)) {
+        return res.status(403).json({ message: 'One or more assets are outside your store scope' });
+      }
+      if (String(asset.assigned_to || '') !== String(req.user._id || '')) {
+        return res.status(400).json({ message: `Asset ${asset.serial_number || asset._id} is not assigned to you` });
+      }
+      if (asset.disposed === true) {
+        return res.status(400).json({ message: `Asset ${asset.serial_number || asset._id} is disposed` });
+      }
+    }
+
+    const pass = await createAssignmentGatePass(
+      {
+        asset: orderedAssets[0],
+        allAssets: orderedAssets,
+        issuedBy: req.user,
+        recipientName: req.user.name || 'Technician',
+        recipientEmail: req.user.email || '',
+        recipientPhone: req.user.phone || '',
+        recipientCompany: 'Expo Stores',
+        ticketNumber,
+        origin: orderedAssets[0]?.location || 'Store',
+        destination: String(installationLocation || '').trim() || req.user.name || 'Technician',
+        justification: String(justification || '').trim() || `Technician bulk collection (${orderedAssets.length} assets)`
+      },
+      { pendingAdminApproval: true }
+    );
+
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Generate Collection Gate Pass',
+      details: `Submitted gate pass ${pass.pass_number} for ${orderedAssets.length} collected asset(s) — pending admin approval`,
+      store: orderedAssets[0]?.store || null
+    });
+
+    return res.status(201).json({
+      message: 'Gate pass saved. An admin must approve it before the final copy is emailed to the technician.',
+      passNumber: pass.pass_number,
+      passId: pass._id,
+      pendingApproval: true,
+      emailSent: false,
+      emailSkippedReason: 'Awaiting admin approval'
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 });
 
