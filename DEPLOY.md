@@ -107,11 +107,13 @@ make verify-resilience-prod
 ## 4) Regular Update Deployment
 
 ```bash
-git pull
+git fetch origin
+git checkout main
+git pull --ff-only origin main
 ./deploy.sh safe-release
 ```
 
-This rebuilds changed images and recreates services safely.
+This rebuilds changed images and recreates services safely. Use `--ff-only` to avoid accidental merge commits on production hosts.
 
 ## 5) Common Operations
 
@@ -153,7 +155,7 @@ After rollback, create a hotfix branch and investigate before re-updating.
 
 ### Error: placeholder secrets detected
 
-- Replace `replace_with_secure_random_value` in `.env.docker`.
+- Replace placeholder values in `.env.docker` (same patterns as `deploy.sh` / `make validate-prod`: `COOKIE_SECRET`, `EMAIL_CONFIG_ENCRYPTION_KEY`, `EMERGENCY_RESET_SECRET`, etc.).
 
 ### Web opens but API fails
 
@@ -188,5 +190,5 @@ docker image prune -f
 For daily use, your team only needs:
 
 ```bash
-git pull && ./deploy.sh safe-release
+git pull --ff-only origin main && ./deploy.sh safe-release
 ```

@@ -6,6 +6,7 @@ set -euo pipefail
 # - Repo lives at /opt/Expo
 # - Built site is copied to /var/www/expo/client/dist
 # - Nginx site file is /etc/nginx/sites-available/expo
+# - Post-deploy health hits /healthz (repo nginx.conf proxies to API; stricter than "/" SPA)
 
 APP_DIR="${APP_DIR:-/opt/Expo}"
 WEB_ROOT="${WEB_ROOT:-/var/www/expo/client}"
@@ -13,7 +14,7 @@ DIST_DIR="${WEB_ROOT}/dist"
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/expo}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/expo-backups/web}"
 BRANCH="${BRANCH:-main}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/healthz}"
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_PATH="${BACKUP_ROOT}/backup-${TIMESTAMP}"

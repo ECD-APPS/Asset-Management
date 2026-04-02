@@ -25,7 +25,9 @@ help:
 
 validate-prod:
 	@test -f "$(ENV_FILE)" || (echo "Missing $(ENV_FILE). Copy .env.docker.example to $(ENV_FILE) and update secrets."; exit 1)
-	@grep -q "replace_with_secure_random_value" "$(ENV_FILE)" && (echo "$(ENV_FILE) still contains placeholder secrets. Update it before deploy."; exit 1) || true
+	@if grep -Ei "replace_with_secure_random_value|replace_with_64_hex_chars_or_base64_32_bytes|change_this_to_a_secure_random_string|change_me_to_random_32_bytes|emergency_unlock" "$(ENV_FILE)" >/dev/null 2>&1; then \
+		echo "$(ENV_FILE) still contains placeholder/insecure secret values. Update COOKIE_SECRET, EMERGENCY_RESET_SECRET, EMAIL_CONFIG_ENCRYPTION_KEY, etc."; exit 1; \
+	fi
 	@$(COMPOSE) --env-file "$(ENV_FILE)" -p "$(PROJECT_NAME)" $(COMPOSE_FILES) config > /dev/null
 	@echo "Production compose config is valid."
 

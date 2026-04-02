@@ -152,6 +152,8 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl reload nginx
 curl -I http://127.0.0.1/
+curl -fsS http://127.0.0.1/healthz >/dev/null && echo "OK: /healthz"
+curl -fsS http://127.0.0.1/api/healthz >/dev/null && echo "OK: /api/healthz"
 ```
 
 ## 6) Readiness Preflight (All VMs)
@@ -172,6 +174,8 @@ From Web VM:
 ```bash
 curl -I http://10.96.133.197:5000/api/healthz
 curl -I http://127.0.0.1/
+curl -fsS http://127.0.0.1/healthz >/dev/null && echo "OK: nginx /healthz -> app"
+curl -fsS http://127.0.0.1/api/healthz >/dev/null && echo "OK: nginx /api/"
 ```
 
 From App VM:
@@ -206,7 +210,7 @@ Web VM:
 
 ```bash
 cd /opt/Expo
-APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo HEALTH_URL=http://127.0.0.1/ ./scripts/deploy-web-safe.sh
+APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo HEALTH_URL=http://127.0.0.1/healthz ./scripts/deploy-web-safe.sh
 ```
 
 ## 9) Backup and Restore (mongodump/mongorestore)

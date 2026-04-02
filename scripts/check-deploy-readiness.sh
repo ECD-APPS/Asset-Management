@@ -122,6 +122,26 @@ elif [[ "$ROLE" == "web" ]]; then
   else
     warn "Nginx :80 not responding yet. Reload nginx after deploy."
   fi
+  if curl -sS "http://127.0.0.1/healthz" >/dev/null 2>&1; then
+    ok "Nginx /healthz proxies to API (matches repo nginx.conf)"
+  else
+    warn "Nginx /healthz not OK yet. Ensure site uses repo nginx.conf with /healthz location."
+  fi
+  if curl -sS "http://127.0.0.1/api/healthz" >/dev/null 2>&1; then
+    ok "Nginx /api/healthz reaches API"
+  else
+    warn "Nginx /api/healthz not OK yet. Check upstream APP_IP:APP_PORT and nginx config."
+  fi
+  if curl -sS "http://127.0.0.1/healthz" >/dev/null 2>&1; then
+    ok "Nginx proxies /healthz to API (repo nginx.conf)"
+  else
+    warn "GET /healthz not OK. Ensure sites-enabled uses repo nginx.conf (includes /healthz → backend)."
+  fi
+  if curl -sS "http://127.0.0.1/api/healthz" >/dev/null 2>&1; then
+    ok "Nginx proxies /api/healthz to API"
+  else
+    warn "GET /api/healthz not OK yet (backend down or nginx config not deployed)."
+  fi
 elif [[ "$ROLE" == "db" ]]; then
   print_header "DB VM Readiness"
   if command -v mongod >/dev/null 2>&1; then

@@ -8,6 +8,14 @@ App baseline:
 - Auth is HTTP-only cookie based (no JWT token auth).
 - Backups/restores use `mongodump` and `mongorestore` archive flow.
 
+**Where to deploy from this repo**
+
+| Mode | Doc |
+|------|-----|
+| Docker Compose (single host) | `DEPLOY.md`, `./deploy.sh safe-release`, `Makefile` |
+| 3-tier VMs (this IP guide + install steps) | `README.md`, `README_SERVER_INSTALL.md`, `MASTER_GEMINI_INSTRUCTIONS.md` |
+| One Linux box, Node + Mongo (no Docker) | `README_LOCAL.md` |
+
 ## IP-Only Access (Final)
 
 - End users must access the app via Web VM IP: `http://10.96.133.181`
@@ -151,10 +159,11 @@ npm ci
 npm run build
 ```
 
-Use repo `nginx.conf`:
+Use repo `nginx.conf` (keep in sync with `nginx.docker.conf` behavior):
 - serves frontend static files
+- proxies `/healthz` and `/readyz` to the app (same as API server paths)
 - proxies `/api/*` and `/uploads/*` to App API upstream
-- for `deploy-web-safe.sh`, set upstream at runtime with `APP_UPSTREAM=10.96.133.197:5000`
+- for `deploy-web-safe.sh`, set upstream at runtime with `APP_UPSTREAM=10.96.133.197:5000` (default health check uses `http://127.0.0.1/healthz` after nginx reload)
 
 Access URL:
 - `http://10.96.133.181`
@@ -250,7 +259,7 @@ Run:
 
 ```bash
 cd /opt/Expo
-APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo HEALTH_URL=http://127.0.0.1/ ./scripts/deploy-web-safe.sh
+APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo HEALTH_URL=http://127.0.0.1/healthz ./scripts/deploy-web-safe.sh
 ```
 
 What it does:
@@ -259,4 +268,5 @@ What it does:
 - builds frontend
 - swaps deployed files atomically
 - validates and reloads nginx
+- checks **`/healthz`** through nginx (default `HEALTH_URL`; confirms API reachability, not only static `index.html`)
 - auto-restores previous dist + nginx config on failure

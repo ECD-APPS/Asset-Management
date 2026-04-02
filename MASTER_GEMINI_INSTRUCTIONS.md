@@ -188,7 +188,7 @@ npm ci --omit=dev
 pm2 start server.js --name expo-app --cwd /opt/Expo/server
 pm2 save
 pm2 startup
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 ---
@@ -229,6 +229,8 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl reload nginx
 curl -I http://127.0.0.1/
+curl -fsS http://127.0.0.1/healthz >/dev/null && echo "OK: nginx /healthz -> API"
+curl -fsS http://127.0.0.1/api/healthz >/dev/null && echo "OK: nginx /api/healthz"
 ```
 
 ---
@@ -273,9 +275,9 @@ cd /opt/Expo
 git fetch origin
 git checkout main
 git pull --ff-only origin main
-APP_DIR=/opt/Expo SERVICE_NAME=expo-app HEALTH_URL=http://127.0.0.1:5000/healthz ./scripts/deploy-app-safe.sh
+APP_DIR=/opt/Expo SERVICE_NAME=expo-app HEALTH_URL=http://127.0.0.1:5000/api/healthz ./scripts/deploy-app-safe.sh
 pm2 status
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 ### 5.2 Web VM Safe Update
@@ -285,9 +287,10 @@ cd /opt/Expo
 git fetch origin
 git checkout main
 git pull --ff-only origin main
-APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo APP_UPSTREAM=10.96.133.197:5000 HEALTH_URL=http://127.0.0.1/ ./scripts/deploy-web-safe.sh
+APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo APP_UPSTREAM=10.96.133.197:5000 HEALTH_URL=http://127.0.0.1/healthz ./scripts/deploy-web-safe.sh
 sudo nginx -t
 curl -I http://127.0.0.1/
+curl -fsS http://127.0.0.1/healthz >/dev/null && echo "OK: web tier healthz"
 ```
 
 ---
@@ -297,15 +300,17 @@ curl -I http://127.0.0.1/
 From **Web VM**:
 
 ```bash
-curl -I http://10.96.133.197:5000/healthz
+curl -I http://10.96.133.197:5000/api/healthz
 curl -I http://127.0.0.1/
+curl -fsS http://127.0.0.1/healthz >/dev/null && echo "OK: nginx proxies /healthz to app"
+curl -fsS http://127.0.0.1/api/healthz >/dev/null && echo "OK: nginx /api/"
 ```
 
 From **App VM**:
 
 ```bash
 nc -zv 10.96.133.213 27017
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 curl -sS http://127.0.0.1:5000/api/readyz
 ```
 
@@ -343,7 +348,7 @@ If app update fails:
 ```bash
 pm2 logs expo-app --lines 200
 pm2 restart expo-app --update-env
-curl -sS http://127.0.0.1:5000/healthz
+curl -sS http://127.0.0.1:5000/api/healthz
 ```
 
 If web update fails:
@@ -352,6 +357,7 @@ If web update fails:
 sudo nginx -t
 sudo systemctl reload nginx
 curl -I http://127.0.0.1/
+curl -fsS http://127.0.0.1/healthz || true
 ```
 
 Git rollback (both app-vm and web-vm if needed):

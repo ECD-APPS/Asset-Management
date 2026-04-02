@@ -9,13 +9,19 @@ App baseline for local/single-server:
 ## Prerequisites
 
 - Ubuntu/Linux machine
-- Node.js 20 LTS+
+- **Node.js 20.x** (matches repo `engines`: `>=20.0.0 <21`)
 - npm
 - MongoDB installed locally and running
 
 ## 1) Install dependencies
 
-From project root:
+From project root (recommended one-shot):
+
+```bash
+npm run install:all
+```
+
+Or manually:
 
 ```bash
 npm install
@@ -85,17 +91,17 @@ If your backend is configured to another port, use that port.
 
 ## 6) Run as one service on `localhost:3000` (production-style)
 
-Build once:
+Build once (from your clone path, e.g. `/opt/Expo`):
 
 ```bash
-cd /home/muhammad-tariq-imran/Expo
+cd /path/to/Expo
 npm run build:prod
 ```
 
 Start app (serves frontend + API from one process):
 
 ```bash
-cd /home/muhammad-tariq-imran/Expo
+cd /path/to/Expo
 npm run start:prod:3000
 ```
 
@@ -121,3 +127,7 @@ COOKIE_SECURE=false
   - verify `MONGO_URI` database exists and is reachable
 - Frontend not opening:
   - ensure `npm run dev -- --host --port 5173` is running in `client/`
+
+## 7) Docker Compose (optional)
+
+To run Mongo + API + Nginx web on one host with containers, use **`DEPLOY.md`**, copy **`.env.docker.example`** → **`.env.docker`**, then **`./deploy.sh safe-release`** (or **`make safe-release-prod`**). Typical URLs: web **`http://localhost:3000`**, API **`http://localhost:5000`**.
