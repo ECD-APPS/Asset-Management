@@ -107,7 +107,11 @@ const normalizeStats = (raw) => {
     growth: Array.isArray(src.growth) ? src.growth : [],
     lowStockThreshold: Number(src.lowStockThreshold || 5),
     lowStockItems: Array.isArray(src.lowStockItems) ? src.lowStockItems : [],
-    maintenanceVendors: src.maintenanceVendors && typeof src.maintenanceVendors === 'object' ? src.maintenanceVendors : { Siemens: 0, G42: 0, Other: 0 }
+    maintenanceVendors: src.maintenanceVendors && typeof src.maintenanceVendors === 'object' ? src.maintenanceVendors : { Siemens: 0, G42: 0, Other: 0 },
+    maintenanceVendorAssets:
+      src.maintenanceVendorAssets && typeof src.maintenanceVendorAssets === 'object'
+        ? src.maintenanceVendorAssets
+        : { Siemens: 0, G42: 0, Other: 0 }
   };
 };
 

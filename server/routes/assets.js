@@ -1183,7 +1183,8 @@ router.get('/stats', protect, async (req, res) => {
       growthStats,
       usageBreakdownCounts,
       assetTypeCountAgg,
-      maintenanceVendorCounts
+      maintenanceVendorCounts,
+      maintenanceVendorAssetCounts
     ] = await Promise.all([
       // Total should represent full fleet (including disposed) for consistent KPI math.
       countAssets(disposedScopeFilter),
@@ -1347,6 +1348,40 @@ router.get('/stats', protect, async (req, res) => {
           }
         },
         { $group: { _id: '$vendorBucket', count: { $sum: quantityExpr } } }
+      ]),
+      Asset.aggregate([
+        { $match: filter },
+        {
+          $project: {
+            effectiveMv: buildEffectiveMaintenanceVendorStringExpr()
+          }
+        },
+        {
+          $project: {
+            vendorKey: buildMongoNormalizeMaintenanceVendorKeyExpr('$effectiveMv'),
+            effLo: {
+              $toLower: {
+                $trim: {
+                  input: { $toString: { $ifNull: ['$effectiveMv', ''] } }
+                }
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            vendorBucket: {
+              $switch: {
+                branches: [
+                  { case: { $eq: ['$vendorKey', 'g42'] }, then: 'G42' },
+                  { case: { $regexMatch: { input: '$effLo', regex: /siemens/ } }, then: 'Siemens' }
+                ],
+                default: 'Other'
+              }
+            }
+          }
+        },
+        { $group: { _id: '$vendorBucket', count: { $sum: 1 } } }
       ])
     ]);
 
@@ -1424,6 +1459,11 @@ router.get('/stats', protect, async (req, res) => {
         Siemens: 0,
         G42: 0,
         Other: 0
+      },
+      maintenanceVendorAssets: {
+        Siemens: 0,
+        G42: 0,
+        Other: 0
       }
     };
 
@@ -1442,6 +1482,11 @@ router.get('/stats', protect, async (req, res) => {
     maintenanceVendorCounts.forEach((item) => {
       if (item?._id && Object.prototype.hasOwnProperty.call(stats.maintenanceVendors, item._id)) {
         stats.maintenanceVendors[item._id] = item.count;
+      }
+    });
+    maintenanceVendorAssetCounts.forEach((item) => {
+      if (item?._id && Object.prototype.hasOwnProperty.call(stats.maintenanceVendorAssets, item._id)) {
+        stats.maintenanceVendorAssets[item._id] = item.count;
       }
     });
 

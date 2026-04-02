@@ -275,6 +275,7 @@ const DashboardCharts = ({
   const locations = stats?.locations;
   const products = stats?.products;
   const maintenanceVendors = stats?.maintenanceVendors;
+  const maintenanceVendorAssets = stats?.maintenanceVendorAssets;
   const safeOverview = overview || {
     total: 0,
     totalQuantity: 0,
@@ -526,6 +527,12 @@ const DashboardCharts = ({
     Number(safeOverview.repairedQuantity || 0) +
     Number(safeOverview.underRepairWorkshopQuantity || 0) +
     Number(safeOverview.disposedQuantity || 0);
+  const siemensQty = Number(maintenanceVendors?.Siemens || 0);
+  const g42Qty = Number(maintenanceVendors?.G42 || 0);
+  const otherVendorQty = Number(maintenanceVendors?.Other || 0);
+  const siemensAssets = Number(maintenanceVendorAssets?.Siemens || 0);
+  const g42Assets = Number(maintenanceVendorAssets?.G42 || 0);
+  const otherVendorAssets = Number(maintenanceVendorAssets?.Other || 0);
   const showWidget = (key) => chartWidgets?.[key] !== false;
 
   const navigateToAssets = (status) => {
@@ -669,6 +676,7 @@ const DashboardCharts = ({
             <PieChart size={18} className="text-app-accent shrink-0" />
             {siemensVendorPie.title}
           </h3>
+          <p className="text-[10px] text-app-muted font-medium tabular-nums mb-1">Total assets: {siemensAssets} | Quantity: {siemensQty}</p>
           <p className="text-xs text-app-muted mb-4">Siemens-maintained assets vs the rest of the fleet.</p>
           <Chart options={siemensVendorPie.options} series={siemensVendorPie.series} type={siemensVendorPie.type} height={siemensVendorPie.height} />
         </div>}
@@ -678,6 +686,7 @@ const DashboardCharts = ({
             <PieChart size={18} className="text-app-accent shrink-0" />
             {g42VendorPie.title}
           </h3>
+          <p className="text-[10px] text-app-muted font-medium tabular-nums mb-1">Total assets: {g42Assets} | Quantity: {g42Qty}</p>
           <p className="text-xs text-app-muted mb-4">G42-maintained assets vs the rest of the fleet.</p>
           <Chart options={g42VendorPie.options} series={g42VendorPie.series} type={g42VendorPie.type} height={g42VendorPie.height} />
         </div>}
@@ -687,6 +696,9 @@ const DashboardCharts = ({
             <PieChart size={18} className="text-app-accent shrink-0" />
             {maintenanceVendorPie.title}
           </h3>
+          <p className="text-[10px] text-app-muted font-medium tabular-nums mb-1">
+            Total assets: {siemensAssets + g42Assets + otherVendorAssets} | Quantity: {siemensQty + g42Qty + otherVendorQty}
+          </p>
           <p className="text-xs text-app-muted mb-3">Compare vendors and jump to filtered assets.</p>
           <div className="mb-4 flex flex-wrap gap-2">
             {['Siemens', 'G42'].map((vendor) => (
