@@ -8,17 +8,12 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   Bell,
-  Plus,
   ArrowDownLeft,
-  Search,
-  MapPin,
   ArrowRight,
   Package,
   LayoutDashboard,
   Sparkles,
   Clock,
-  ChevronRight,
-  ShieldCheck
 } from 'lucide-react';
 
 const formatRelativeTime = (iso) => {
@@ -41,14 +36,28 @@ const normalizeStats = (raw) => {
     ...src,
     overview: {
       total: Number(overview.total || 0),
+      totalQuantity: Number(overview.totalQuantity || 0),
       inUse: Number(overview.inUse || 0),
+      inUseQuantity: Number(overview.inUseQuantity || 0),
       inStore: Number(overview.inStore || 0),
+      inStoreQuantity: Number(overview.inStoreQuantity || 0),
       missing: Number(overview.missing || 0),
+      missingQuantity: Number(overview.missingQuantity || 0),
       disposed: Number(overview.disposed || 0),
+      disposedQuantity: Number(overview.disposedQuantity || 0),
+      reserved: Number(overview.reserved || 0),
+      reservedQuantity: Number(overview.reservedQuantity || 0),
+      repaired: Number(overview.repaired || 0),
+      repairedQuantity: Number(overview.repairedQuantity || 0),
+      underRepairWorkshop: Number(overview.underRepairWorkshop || 0),
+      underRepairWorkshopQuantity: Number(overview.underRepairWorkshopQuantity || 0),
       faulty: Number(overview.faulty || 0),
+      faultyQuantity: Number(overview.faultyQuantity || 0),
+      lowStock: Number(overview.lowStock || 0),
       pendingReturns: Number(overview.pendingReturns || 0),
       pendingRequests: Number(overview.pendingRequests || 0),
-      assetTypes: Number(overview.assetTypes || 0)
+      assetTypes: Number(overview.assetTypes || 0),
+      activeTotal: Number(overview.activeTotal || 0)
     },
     conditions: src.conditions && typeof src.conditions === 'object' ? src.conditions : {},
     products: Array.isArray(src.products) ? src.products : [],
@@ -56,6 +65,8 @@ const normalizeStats = (raw) => {
     locations: Array.isArray(src.locations) ? src.locations : [],
     categories: Array.isArray(src.categories) ? src.categories : [],
     growth: Array.isArray(src.growth) ? src.growth : [],
+    lowStockThreshold: Number(src.lowStockThreshold || 5),
+    lowStockItems: Array.isArray(src.lowStockItems) ? src.lowStockItems : [],
     maintenanceVendors: src.maintenanceVendors && typeof src.maintenanceVendors === 'object' ? src.maintenanceVendors : { Siemens: 0, G42: 0, Other: 0 }
   };
 };
@@ -65,12 +76,19 @@ const Dashboard = () => {
   const { theme } = useTheme();
   const [searchParams] = useSearchParams();
   const [stats, setStats] = useState(null);
+  const [consumablesStats, setConsumablesStats] = useState(null);
+  const [toolsStats, setToolsStats] = useState(null);
+  const [consumablesError, setConsumablesError] = useState('');
+  const [toolsError, setToolsError] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [systemOk, setSystemOk] = useState(true);
   const [_HEALTH, setHealth] = useState({ backend: false, db: false });
   const [recentAssets, setRecentAssets] = useState([]);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [showLowStockPanel, setShowLowStockPanel] = useState(false);
+  const lowStockTriggerRef = useRef(null);
+  const lowStockOverlayRef = useRef(null);
   const fetchSeqRef = useRef(0);
 
   const dashboardVendor = useMemo(() => {
@@ -120,6 +138,27 @@ const Dashboard = () => {
           if (isStale()) return;
           setStats(normalizeStats(statsResponse.data));
           setRecentAssets(recentResponse.data?.assets || recentResponse.data?.items || []);
+          setConsumablesError('');
+          setToolsError('');
+          try {
+            const [consumablesResponse, toolsResponse] = await Promise.all([
+              api.get('/consumables/stats'),
+              api.get('/tools/stats')
+            ]);
+            setConsumablesStats(consumablesResponse.data || {});
+            setToolsStats(toolsResponse.data || {});
+          } catch (e) {
+            // Consumables/tools are "nice to have" widgets; don't block the main dashboard.
+            console.warn('Failed to load consumables/tools stats:', e);
+            setConsumablesStats({});
+            setToolsStats({});
+            const msg =
+              e?.response?.data?.message ||
+              e?.message ||
+              'Unknown error';
+            setConsumablesError(msg);
+            setToolsError(msg);
+          }
           setLastUpdated(new Date());
           lastError = null;
           break;
@@ -172,6 +211,19 @@ const Dashboard = () => {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const onDocClick = (event) => {
+      const t = event.target;
+      if (lowStockTriggerRef.current?.contains(t)) return;
+      if (lowStockOverlayRef.current?.contains(t)) return;
+      setShowLowStockPanel(false);
+    };
+    if (showLowStockPanel) {
+      document.addEventListener('mousedown', onDocClick);
+    }
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [showLowStockPanel]);
+
   if (loading) return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 bg-app-page px-4">
       <div className="relative h-16 w-16">
@@ -205,11 +257,17 @@ const Dashboard = () => {
   );
 
   const o = stats?.overview || {};
-  const utilPct = o.total > 0 ? Math.round((o.inUse / o.total) * 100) : 0;
+  const consumablesTotalQty = consumablesStats?.totalQuantity ?? 0;
+  const consumablesLowStockQty = consumablesStats?.lowStockQuantity ?? 0;
+  const consumablesItems = consumablesStats?.itemCount ?? 0;
+  const toolsTotal = toolsStats?.total ?? 0;
+  const toolsAvailable = toolsStats?.available ?? 0;
+  const toolsIssued = toolsStats?.issued ?? 0;
+  const toolsMaintenance = toolsStats?.maintenance ?? 0;
 
   return (
     <div className="min-h-screen bg-app-page space-y-6 text-app-main pb-10">
-      <div className="relative overflow-hidden rounded-2xl border border-app-card bg-app-card shadow-sm">
+      <div className="relative overflow-visible rounded-2xl border border-app-card bg-app-card shadow-sm">
         <div className="absolute left-0 top-0 h-full w-1 bg-[rgb(var(--accent-color))]" aria-hidden />
         <div className="p-5 md:p-7 pl-6 md:pl-8">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
@@ -242,6 +300,21 @@ const Dashboard = () => {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <div className="relative" ref={lowStockTriggerRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowLowStockPanel((prev) => !prev)}
+                  className="relative inline-flex items-center justify-center h-9 w-9 rounded-full border border-app-card bg-app-elevated text-app-main hover:bg-app-card transition-colors"
+                  title="Low stock notifications"
+                >
+                  <Bell className="h-4 w-4" />
+                  {(stats?.overview?.lowStock || 0) > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-rose-600 text-white text-[10px] leading-[1.1rem] text-center font-bold">
+                      {stats.overview.lowStock > 99 ? '99+' : stats.overview.lowStock}
+                    </span>
+                  )}
+                </button>
+              </div>
               <div
                 className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold border ${
                   _HEALTH.db ? 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20' : 'bg-rose-500/10 text-rose-700 border-rose-500/20'
@@ -258,24 +331,28 @@ const Dashboard = () => {
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Utilization</p>
-          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{utilPct}%</p>
-          <p className="text-[11px] text-app-muted mt-0.5">{o.inUse ?? 0} in use</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Consumables</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{consumablesTotalQty}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">
+            {consumablesError ? `Error: ${consumablesError}` : `${consumablesItems} items in stock`}
+          </p>
         </div>
         <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">In store</p>
-          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{o.inStore ?? 0}</p>
-          <p className="text-[11px] text-app-muted mt-0.5">Available</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Tools</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{toolsAvailable}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">
+            {toolsError ? `Error: ${toolsError}` : `${toolsTotal} total tools`}
+          </p>
         </div>
         <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Attention</p>
-          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{(o.faulty || 0) + (o.missing || 0)}</p>
-          <p className="text-[11px] text-app-muted mt-0.5">Faulty + missing</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Low stock</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{consumablesLowStockQty}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">Consumables at/below min qty</p>
         </div>
         <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Queue</p>
-          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{(o.pendingRequests || 0) + (o.pendingReturns || 0)}</p>
-          <p className="text-[11px] text-app-muted mt-0.5">Requests + returns</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Tools status</p>
+          <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{toolsIssued + toolsMaintenance}</p>
+          <p className="text-[11px] text-app-muted mt-0.5">{toolsIssued} issued + {toolsMaintenance} maintenance</p>
         </div>
       </div>
 
@@ -330,73 +407,6 @@ const Dashboard = () => {
           )}
         </div>
       )}
-
-      <section aria-label="Quick shortcuts">
-        <div className="flex items-center justify-between gap-2 mb-3 px-0.5">
-          <h2 className="text-xs font-bold uppercase tracking-widest text-app-muted">Shortcuts</h2>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {user?.role !== 'Viewer' && (
-            <>
-              <Link
-                to="/assets?action=add"
-                className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
-              >
-                <div className="p-3 bg-indigo-500/10 text-indigo-600 rounded-xl group-hover:bg-indigo-500/20 transition-colors">
-                  <Plus className="w-6 h-6" />
-                </div>
-                <div>
-                  <span className="font-bold text-app-main text-sm block">Add new asset</span>
-                  <span className="text-[11px] text-app-muted mt-0.5 block">Register hardware</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
-              </Link>
-
-              <Link
-                to="/receive-process"
-                className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
-              >
-                <div className="p-3 bg-purple-500/10 text-purple-600 rounded-xl group-hover:bg-purple-500/20 transition-colors">
-                  <ArrowDownLeft className="w-6 h-6" />
-                </div>
-                <div>
-                  <span className="font-bold text-app-main text-sm block">Receive / return</span>
-                  <span className="text-[11px] text-app-muted mt-0.5 block">Process movement</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
-              </Link>
-            </>
-          )}
-
-          <Link
-            to={assetsLink}
-            className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
-          >
-            <div className="p-3 bg-emerald-500/10 text-emerald-600 rounded-xl group-hover:bg-emerald-500/20 transition-colors">
-              <Search className="w-6 h-6" />
-            </div>
-            <div>
-              <span className="font-bold text-app-main text-sm block">Search assets</span>
-              <span className="text-[11px] text-app-muted mt-0.5 block">Filtered list</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
-          </Link>
-
-          <Link
-            to="/stores"
-            className="group bg-app-card p-4 rounded-2xl border border-app-card flex flex-col items-start gap-3 hover:shadow-lg hover:border-[rgb(var(--accent-color))]/25 hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--accent-color))] focus-visible:ring-offset-2 focus-visible:ring-offset-app-page"
-          >
-            <div className="p-3 bg-orange-500/10 text-orange-600 rounded-xl group-hover:bg-orange-500/20 transition-colors">
-              <MapPin className="w-6 h-6" />
-            </div>
-            <div>
-              <span className="font-bold text-app-main text-sm block">Locations</span>
-              <span className="text-[11px] text-app-muted mt-0.5 block">Stores & sites</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-app-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto -mt-2" />
-          </Link>
-        </div>
-      </section>
 
       <section aria-label="Analytics and charts" className="space-y-2">
         <h2 className="text-xs font-bold uppercase tracking-widest text-app-muted px-0.5">Analytics</h2>
@@ -479,6 +489,51 @@ const Dashboard = () => {
           </table>
         </div>
       </div>
+
+      {showLowStockPanel && (
+        <div className="fixed inset-0 z-[9999]" ref={lowStockOverlayRef}>
+          <button
+            type="button"
+            aria-label="Close low stock panel"
+            className="absolute inset-0 bg-black/30 cursor-default border-0 p-0"
+            onMouseDown={() => setShowLowStockPanel(false)}
+          />
+          <div className="absolute top-0 right-0 z-10 h-full w-[26rem] max-w-[94vw] bg-white shadow-2xl border-l border-slate-200 flex flex-col">
+            <div className="px-4 py-3 border-b border-slate-200 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Low stock alerts</p>
+                <p className="text-xs text-slate-500">
+                  {(stats?.overview?.lowStock || 0)} item(s) at or below qty {stats?.lowStockThreshold || 5}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLowStockPanel(false)}
+                className="text-slate-500 hover:text-slate-700 text-sm font-semibold"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {(stats?.lowStockItems || []).length === 0 ? (
+                <div className="px-4 py-6 text-sm text-slate-500">No low stock items.</div>
+              ) : (
+                stats.lowStockItems.map((item) => (
+                  <div key={item._id} className="px-4 py-3 border-b border-slate-100">
+                    <div className="text-sm font-semibold text-slate-900">{item.name || 'Unnamed'}</div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Qty: {Number(item.quantity || 0)} | Serial: {item.serial_number || 'N/A'}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Status: {item.status || 'N/A'} | Location: {item.location || 'N/A'}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

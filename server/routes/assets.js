@@ -10,6 +10,7 @@ const ActivityLog = require('../models/ActivityLog');
 const Request = require('../models/Request');
 const Pass = require('../models/Pass');
 const CollectionApproval = require('../models/CollectionApproval');
+const AssetImportUpdateBatch = require('../models/AssetImportUpdateBatch');
 const { protect, admin, restrictViewer } = require('../middleware/authMiddleware');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
@@ -40,6 +41,16 @@ const hasAssetStoreAccess = (req, storeId) => {
   const scopedStoreId = getScopedStoreId(req);
   if (!scopedStoreId) return false;
   return String(storeId || '') === scopedStoreId;
+};
+
+const hasAssetStoreAccessDeep = async (req, storeId) => {
+  if (req.user?.role === 'Super Admin') return true;
+  const scopedStoreId = getScopedStoreId(req);
+  if (!scopedStoreId) return false;
+  if (String(storeId || '') === String(scopedStoreId)) return true;
+  if (!mongoose.isValidObjectId(scopedStoreId)) return false;
+  const allowedIds = await getStoreIds(scopedStoreId);
+  return allowedIds.some((id) => String(id) === String(storeId || ''));
 };
 
 const resolveScopedStoreName = async (req) => {
@@ -139,6 +150,23 @@ function buildMaintenanceVendorMatchClause(maintenanceVendor) {
   return {
     $expr: {
       $eq: [normalizedField, normalizedFilter]
+    }
+  };
+}
+
+function buildExclusiveStatusBucketExpr() {
+  return {
+    $switch: {
+      branches: [
+        { case: { $eq: ['$disposed', true] }, then: 'Disposed' },
+        { case: { $eq: ['$reserved', true] }, then: 'Reserved' },
+        { case: { $in: ['$status', ['Under Repair/Workshop', 'Under Repair']] }, then: 'Under Repair/Workshop' },
+        { case: { $eq: ['$status', 'Missing'] }, then: 'Missing' },
+        { case: { $eq: ['$condition', 'Faulty'] }, then: 'Faulty' },
+        { case: { $eq: ['$condition', 'Repaired'] }, then: 'Repaired' },
+        { case: { $eq: ['$status', 'In Use'] }, then: 'In Use' }
+      ],
+      default: 'In Store'
     }
   };
 }
@@ -519,6 +547,7 @@ router.get('/', protect, async (req, res) => {
     const page = Math.max(parseInt(req.query.page || '1', 10), 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit || '25', 10), 1), 5000);
     const q = String(req.query.q || '').trim();
+    const derivedStatus = String(req.query.derived_status || '').trim();
     const status = String(req.query.status || '').trim();
     const storeId = String(req.query.store || '').trim();
     const category = ''; // Removed category filter
@@ -539,12 +568,21 @@ router.get('/', protect, async (req, res) => {
     const deliveredBy = String(req.query.delivered_by || '').trim();
     const vendorName = String(req.query.vendor_name || '').trim();
     const maintenanceVendor = String(req.query.maintenance_vendor || '').trim();
+    const deviceGroup = String(req.query.device_group || '').trim();
+    const inboundFrom = String(req.query.inbound_from || '').trim();
+    const ipAddress = String(req.query.ip_address || '').trim();
+    const building = String(req.query.building || '').trim();
+    const stateComments = String(req.query.state_comments || '').trim();
+    const remarks = String(req.query.remarks || '').trim();
+    const comments = String(req.query.comments || '').trim();
     const reservedParam = String(req.query.reserved || '').trim().toLowerCase();
     const disposedParam = String(req.query.disposed || '').trim().toLowerCase();
 
     const filter = {};
     // Exclude disposed assets by default from inventory views.
-    if (disposedParam === 'true') {
+    if (disposedParam === 'all') {
+      // Include both active and disposed assets.
+    } else if (disposedParam === 'true') {
       filter.disposed = true;
     } else if (disposedParam === 'false') {
       filter.disposed = false;
@@ -571,7 +609,14 @@ router.get('/', protect, async (req, res) => {
         { location: rx },
         { vendor_name: rx },
         { source: rx },
-        { delivered_by_name: rx }
+        { delivered_by_name: rx },
+        { device_group: rx },
+        { inbound_from: rx },
+        { ip_address: rx },
+        { building: rx },
+        { state_comments: rx },
+        { remarks: rx },
+        { comments: rx }
       ];
 
       const n = Number(q);
@@ -582,7 +627,18 @@ router.get('/', protect, async (req, res) => {
 
       filter.$or = orClauses;
     }
-    if (status) {
+    if (derivedStatus) {
+      const addAndClause = (clause) => {
+        filter.$and = [...(filter.$and || []), clause];
+      };
+      const normalizedDerived = derivedStatus === 'Under Repair' ? 'Under Repair/Workshop' : derivedStatus;
+      const supported = new Set(['In Store', 'In Use', 'Faulty', 'Missing', 'Disposed', 'Reserved', 'Repaired', 'Under Repair/Workshop']);
+      if (supported.has(normalizedDerived)) {
+        delete filter.disposed;
+        delete filter.reserved;
+        addAndClause({ $expr: { $eq: [buildExclusiveStatusBucketExpr(), normalizedDerived] } });
+      }
+    } else if (status) {
       if (status === 'In Use') {
         filter.status = 'In Use';
       } else if (status === 'In Store') {
@@ -591,6 +647,10 @@ router.get('/', protect, async (req, res) => {
         filter.status = 'Missing';
       } else if (status === 'Faulty') {
         filter.condition = 'Faulty';
+      } else if (status === 'Disposed') {
+        filter.disposed = true;
+      } else if (status === 'Under Repair/Workshop') {
+        filter.status = { $in: ['Under Repair/Workshop', 'Under Repair'] };
       } else if (status.includes(',')) {
         const allowed = new Set(['In Store', 'In Use', 'Missing']);
         const normalized = status.split(',').map((s) => s.trim()).filter((s) => allowed.has(s));
@@ -750,6 +810,13 @@ router.get('/', protect, async (req, res) => {
       const escapedVendor = vendorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.vendor_name = new RegExp(escapedVendor, 'i');
     }
+    if (deviceGroup) filter.device_group = toContainsRegex(deviceGroup);
+    if (inboundFrom) filter.inbound_from = toContainsRegex(inboundFrom);
+    if (ipAddress) filter.ip_address = toContainsRegex(ipAddress);
+    if (building) filter.building = toContainsRegex(building);
+    if (stateComments) filter.state_comments = toContainsRegex(stateComments);
+    if (remarks) filter.remarks = toContainsRegex(remarks);
+    if (comments) filter.comments = toContainsRegex(comments);
     if (maintenanceVendor) {
       const allowMaintenanceFilter = await isScyScopedContext(req);
       if (allowMaintenanceFilter) {
@@ -781,7 +848,7 @@ router.get('/', protect, async (req, res) => {
         .sort({ updatedAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
+        .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at device_group inbound_from ip_address building state_comments remarks comments disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
         .populate({
           path: 'store',
           select: 'name parentStore',
@@ -829,7 +896,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/:id([0-9a-fA-F]{24})', protect, async (req, res) => {
   try {
     const asset = await Asset.findById(req.params.id)
-      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at device_group inbound_from ip_address building state_comments remarks comments disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
       .populate({
         path: 'store',
         select: 'name parentStore',
@@ -905,6 +972,7 @@ router.get('/search-serial', protect, async (req, res) => {
 // @access  Private
 router.get('/stats', protect, async (req, res) => {
   try {
+    const LOW_STOCK_THRESHOLD = 5;
     const filter = { disposed: false };
     const maintenanceVendor = String(req.query.maintenance_vendor || '').trim();
     let targetStoreId = null;
@@ -982,6 +1050,7 @@ router.get('/stats', protect, async (req, res) => {
       ]);
       return (result[0] && result[0].total) || 0;
     };
+    const countAssets = async (match) => Asset.countDocuments(match);
 
     // Parallel execution for 5x faster stats loading
     const disposedScopeFilter = { ...filter };
@@ -989,11 +1058,10 @@ router.get('/stats', protect, async (req, res) => {
 
     const [
       totalAssets,
-      assignedCount,
-      faultyCount,
-      missingCount,
-      disposedCount,
-      inStoreCount,
+      bucketCounts,
+      fleetTotalQuantity,
+      lowStockCount,
+      lowStockItems,
       pendingReturnsCount,
       pendingRequestsCount,
       conditionCounts,
@@ -1007,40 +1075,44 @@ router.get('/stats', protect, async (req, res) => {
       assetTypeCountAgg,
       maintenanceVendorCounts
     ] = await Promise.all([
-      sumQuantity(filter),
-      sumQuantity({ 
+      // Total should represent full fleet (including disposed) for consistent KPI math.
+      countAssets(disposedScopeFilter),
+      Asset.aggregate([
+        { $match: disposedScopeFilter },
+        { $project: { bucket: buildExclusiveStatusBucketExpr() } },
+        { $group: { _id: '$bucket', count: { $sum: 1 }, qty: { $sum: quantityExpr } } }
+      ]),
+      sumQuantity(disposedScopeFilter),
+      Asset.countDocuments({
         ...filter,
-        $or: [
-          { status: 'In Use' },
-          { assigned_to: { $ne: null } },
-          { 'assigned_to_external.name': { $exists: true, $ne: '' } }
-        ]
+        quantity: { $lte: LOW_STOCK_THRESHOLD, $gte: 1 }
       }),
-      sumQuantity({ 
+      Asset.find({
         ...filter,
-        $or: [
-          { condition: 'Faulty' }
-        ]
-      }),
-      sumQuantity({ ...filter, status: 'Missing' }),
-      sumQuantity({ ...disposedScopeFilter, disposed: true }),
-      sumQuantity({ ...filter, status: 'In Store' }),
+        quantity: { $lte: LOW_STOCK_THRESHOLD, $gte: 1 }
+      })
+        .sort({ quantity: 1, updatedAt: -1 })
+        .limit(8)
+        .select('name serial_number quantity location status condition')
+        .lean(),
       Asset.countDocuments({ ...filter, return_pending: true }),
       Request.countDocuments(requestFilter),
       Asset.aggregate([
         { $match: filter },
-        { 
-          $project: { 
+        {
+          $project: {
             condBucket: {
               $switch: {
                 branches: [
                   { case: { $regexMatch: { input: { $toString: { $ifNull: ['$condition', ''] } }, regex: /new/i } }, then: 'New' },
+                  { case: { $regexMatch: { input: { $toString: { $ifNull: ['$condition', ''] } }, regex: /faulty/i } }, then: 'Faulty' },
+                  { case: { $regexMatch: { input: { $toString: { $ifNull: ['$condition', ''] } }, regex: /repaired|workshop/i } }, then: 'Repaired' },
                   { case: { $regexMatch: { input: { $toString: { $ifNull: ['$condition', ''] } }, regex: /used/i } }, then: 'Used' }
                 ],
                 default: 'Used'
               }
             }
-          } 
+          }
         },
         { $group: { _id: '$condBucket', count: { $sum: quantityExpr } } }
       ]),
@@ -1163,18 +1235,62 @@ router.get('/stats', protect, async (req, res) => {
       ])
     ]);
 
-    const inStoreExclusive = inStoreCount;
+    const bucketMap = {
+      'In Store': 0,
+      'In Use': 0,
+      Faulty: 0,
+      Missing: 0,
+      Disposed: 0,
+      Reserved: 0,
+      Repaired: 0,
+      'Under Repair/Workshop': 0
+    };
+    bucketCounts.forEach((item) => {
+      if (item?._id && Object.prototype.hasOwnProperty.call(bucketMap, item._id)) {
+        bucketMap[item._id] = Number(item.count || 0);
+      }
+    });
+    const bucketQtyMap = {
+      'In Store': 0,
+      'In Use': 0,
+      Faulty: 0,
+      Missing: 0,
+      Disposed: 0,
+      Reserved: 0,
+      Repaired: 0,
+      'Under Repair/Workshop': 0
+    };
+    bucketCounts.forEach((item) => {
+      if (item?._id && Object.prototype.hasOwnProperty.call(bucketQtyMap, item._id)) {
+        bucketQtyMap[item._id] = Number(item.qty || 0);
+      }
+    });
     const stats = {
       overview: {
-        total: totalAssets,
-        inUse: assignedCount,
-        inStore: inStoreExclusive,
-        missing: missingCount,
-        disposed: disposedCount,
-        faulty: faultyCount,
+        // Total KPI should represent ACTIVE fleet only (do not include disposed assets).
+        total: Math.max(totalAssets - bucketMap.Disposed, 0),
+        totalQuantity: Math.max(Number(fleetTotalQuantity || 0) - bucketQtyMap.Disposed, 0),
+        inUse: bucketMap['In Use'],
+        inUseQuantity: bucketQtyMap['In Use'],
+        inStore: bucketMap['In Store'],
+        inStoreQuantity: bucketQtyMap['In Store'],
+        missing: bucketMap.Missing,
+        missingQuantity: bucketQtyMap.Missing,
+        disposed: bucketMap.Disposed,
+        disposedQuantity: bucketQtyMap.Disposed,
+        reserved: bucketMap.Reserved,
+        reservedQuantity: bucketQtyMap.Reserved,
+        repaired: bucketMap.Repaired,
+        repairedQuantity: bucketQtyMap.Repaired,
+        underRepairWorkshop: bucketMap['Under Repair/Workshop'],
+        underRepairWorkshopQuantity: bucketQtyMap['Under Repair/Workshop'],
+        faulty: bucketMap.Faulty,
+        faultyQuantity: bucketQtyMap.Faulty,
+        lowStock: Number(lowStockCount || 0),
         pendingReturns: pendingReturnsCount,
         pendingRequests: pendingRequestsCount,
-        assetTypes: (assetTypeCountAgg[0] && assetTypeCountAgg[0].count) || 0
+        assetTypes: (assetTypeCountAgg[0] && assetTypeCountAgg[0].count) || 0,
+        activeTotal: Math.max(totalAssets - bucketMap.Disposed, 0)
       },
       conditions: {
         New: 0,
@@ -1187,6 +1303,8 @@ router.get('/stats', protect, async (req, res) => {
       locations: [],
       categories: [],
       growth: growthStats.map(g => ({ name: g._id, value: g.count })),
+      lowStockThreshold: LOW_STOCK_THRESHOLD,
+      lowStockItems: Array.isArray(lowStockItems) ? lowStockItems : [],
       maintenanceVendors: {
         Siemens: 0,
         G42: 0,
@@ -1237,6 +1355,7 @@ router.get('/stats', protect, async (req, res) => {
 // @access  Private
 router.get('/search', protect, async (req, res) => {
   const { query } = req.query;
+  const searchType = String(req.query?.type || req.query?.search_type || '').trim().toLowerCase();
   
   if (!query || query.trim() === '') {
     return res.json([]);
@@ -1247,13 +1366,24 @@ router.get('/search', protect, async (req, res) => {
   const escapedQuery = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   try {
-    // Search using 'contains' logic (covers full serial, last 4 digits, middle, etc.)
-    const qObj = {
-      $or: [
-        { serial_number: { $regex: new RegExp(escapedQuery, 'i') } },
-        { uniqueId: { $regex: new RegExp(escapedQuery, 'i') } }
-      ]
-    };
+    // Search using 'contains' logic.
+    // searchType:
+    //  - serial (default): serial_number + uniqueId
+    //  - rfid: rfid
+    //  - qr: qr_code
+    let qObj;
+    if (searchType === 'rfid') {
+      qObj = { $or: [{ rfid: { $regex: new RegExp(escapedQuery, 'i') } }] };
+    } else if (searchType === 'qr' || searchType === 'qrcode' || searchType === 'qr_code') {
+      qObj = { $or: [{ qr_code: { $regex: new RegExp(escapedQuery, 'i') } }] };
+    } else {
+      qObj = {
+        $or: [
+          { serial_number: { $regex: new RegExp(escapedQuery, 'i') } },
+          { uniqueId: { $regex: new RegExp(escapedQuery, 'i') } }
+        ]
+      };
+    }
     
     if (req.activeStore) {
       const storeIds = await getStoreIds(req.activeStore);
@@ -1318,6 +1448,13 @@ router.get('/template', async (req, res) => {
       'Status',
       'Condition',
       'Maintenance Vendor',
+      'Device Group',
+      'Inbound From',
+      'IP Address',
+      'Building',
+      'State Comments',
+      'Remarks',
+      'Comments',
       'Delivered By',
       'Delivered At'
     ];
@@ -1348,6 +1485,13 @@ router.get('/template', async (req, res) => {
       'In Store',
       'New',
       'Siemens',
+      'Core Security',
+      'Main Warehouse',
+      '10.0.10.42',
+      'Block A',
+      'Rack and power state verified',
+      'Initial install batch',
+      'Commissioned by infra team',
       'JOHN DOE',
       '2024-01-01 10:00'
     ];
@@ -1373,7 +1517,8 @@ router.get('/template', async (req, res) => {
 router.post('/', protect, restrictViewer, async (req, res) => {
   const {
     name, model_number, serial_number, mac_address, manufacturer, store, location, status, condition,
-    ticket_number, po_number, product_name, rfid, qr_code, quantity, vendor_name, price
+    ticket_number, po_number, product_name, rfid, qr_code, quantity, vendor_name, price,
+    device_group, inbound_from, ip_address, building, state_comments, remarks, comments
   } = req.body;
   try {
     const normName = capitalizeWords(name);
@@ -1437,6 +1582,13 @@ router.post('/', protect, restrictViewer, async (req, res) => {
       status: status || 'In Store',
       condition: condition || 'New',
       location: normLocation || '',
+      device_group: capitalizeWords(device_group || ''),
+      inbound_from: capitalizeWords(inbound_from || ''),
+      ip_address: String(ip_address || '').trim(),
+      building: capitalizeWords(building || ''),
+      state_comments: String(state_comments || '').trim(),
+      remarks: String(remarks || '').trim(),
+      comments: String(comments || '').trim(),
       quantity: qty,
       price: unitPrice,
       history: [
@@ -1538,8 +1690,16 @@ router.post('/bulk-update', protect, admin, async (req, res) => {
     const data = {};
     if (updates.status) data.status = updates.status;
     if (updates.condition) data.condition = updates.condition;
+    if (updates.reserved !== undefined) data.reserved = updates.reserved === true || String(updates.reserved).toLowerCase() === 'true';
     if (updates.manufacturer) data.manufacturer = capitalizeWords(updates.manufacturer);
     if (updates.location) data.location = capitalizeWords(updates.location);
+    if (updates.device_group !== undefined) data.device_group = capitalizeWords(updates.device_group || '');
+    if (updates.inbound_from !== undefined) data.inbound_from = capitalizeWords(updates.inbound_from || '');
+    if (updates.ip_address !== undefined) data.ip_address = String(updates.ip_address || '').trim();
+    if (updates.building !== undefined) data.building = capitalizeWords(updates.building || '');
+    if (updates.state_comments !== undefined) data.state_comments = String(updates.state_comments || '').trim();
+    if (updates.remarks !== undefined) data.remarks = String(updates.remarks || '').trim();
+    if (updates.comments !== undefined) data.comments = String(updates.comments || '').trim();
     let prodName = updates.product_name ? String(updates.product_name) : '';
     if (prodName) data.product_name = capitalizeWords(prodName);
 
@@ -1827,6 +1987,13 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       const uniqueId = await generateUniqueId(name);
       const deliveredByFromRow = norm['delivered by'] || norm['delivered_by'] || norm['deliveredby'] || '';
       const vendorNameFromRow = norm['vendor name'] || norm['vendor'] || '';
+      const deviceGroupFromRow = norm['device group'] || norm['device_group'] || '';
+      const inboundFromRow = norm['inbound from'] || norm['inbound_from'] || '';
+      const ipAddressFromRow = norm['ip address'] || norm['ip_address'] || '';
+      const buildingFromRow = norm['building'] || '';
+      const stateCommentsFromRow = norm['state comments'] || norm['state_comments'] || '';
+      const remarksFromRow = norm['remarks'] || '';
+      const commentsFromRow = norm['comments'] || '';
       const maintenanceVendorFromRow =
         norm['maintenance vendor']
         || norm['maintenance vendors']
@@ -1856,6 +2023,13 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         location: capitalizeWords(location || ''),
         vendor_name: vendorNameFromRow || '',
         delivered_by_name: deliveredByFromRow || '',
+        device_group: capitalizeWords(deviceGroupFromRow || ''),
+        inbound_from: capitalizeWords(inboundFromRow || ''),
+        ip_address: String(ipAddressFromRow || '').trim(),
+        building: capitalizeWords(buildingFromRow || ''),
+        state_comments: String(stateCommentsFromRow || '').trim(),
+        remarks: String(remarksFromRow || '').trim(),
+        comments: String(commentsFromRow || '').trim(),
         delivered_at: deliveredAtDate,
         quantity,
         price
@@ -1927,7 +2101,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
         const raw = worksheetToAoa(ws, { defval: '', blankrows: false });
         if (Array.isArray(raw) && raw.length > 0) {
           // Find header row dynamically (matches at least one known header)
-          const KNOWN = ['product name','name','model number','serial number','mac address','manufacturer','ticket number','rfid','qr code','store','store location','location','status','condition','asset type'];
+          const KNOWN = ['product name','name','model number','serial number','mac address','manufacturer','ticket number','rfid','qr code','store','store location','location','status','condition','asset type','maintenance vendor','device group','inbound from','ip address','building','state comments','remarks','comments'];
           let headerIdx = -1;
           for (let i = 0; i < raw.length; i++) {
             const row = raw[i] || [];
@@ -2106,6 +2280,13 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
 
       const deliveredByFromRow = norm['delivered by'] || norm['delivered_by'] || norm['deliveredby'] || '';
       const vendorNameFromRow = norm['vendor name'] || norm['vendor'] || '';
+      const deviceGroupFromRow = norm['device group'] || norm['device_group'] || '';
+      const inboundFromRow = norm['inbound from'] || norm['inbound_from'] || '';
+      const ipAddressFromRow = norm['ip address'] || norm['ip_address'] || '';
+      const buildingFromRow = norm['building'] || '';
+      const stateCommentsFromRow = norm['state comments'] || norm['state_comments'] || '';
+      const remarksFromRow = norm['remarks'] || '';
+      const commentsFromRow = norm['comments'] || '';
       const maintenanceVendorFromRow =
         norm['maintenance vendor']
         || norm['maintenance vendors']
@@ -2183,6 +2364,13 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
           location: String(location || '').trim() ? String(location).toUpperCase() : (storeName ? storeName.toUpperCase() : 'UNKNOWN'),
           vendor_name: vendorNameFromRow || reqVendorName || '',
           delivered_by_name: deliveredByFromRow || reqDeliveredByName || '',
+          device_group: String(deviceGroupFromRow || '').toUpperCase(),
+          inbound_from: String(inboundFromRow || '').toUpperCase(),
+          ip_address: String(ipAddressFromRow || '').trim(),
+          building: String(buildingFromRow || '').toUpperCase(),
+          state_comments: String(stateCommentsFromRow || '').trim(),
+          remarks: String(remarksFromRow || '').trim(),
+          comments: String(commentsFromRow || '').trim(),
           delivered_at: deliveredAtDate,
           quantity,
           price
@@ -2212,17 +2400,25 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     }
 
     const existingPairSet = new Set();
+    const existingDocsByPair = new Map();
     const CHUNK = 500;
     for (let i = 0; i < queryPairs.length; i += CHUNK) {
       const chunk = queryPairs.slice(i, i + CHUNK);
       // eslint-disable-next-line no-await-in-loop
-      const existing = await Asset.find({ $or: chunk }).select('store serial_number').lean();
+      const existing = await Asset.find({ $or: chunk })
+        .select('store serial_number name model_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code status condition product_name source location vendor_name delivered_by_name device_group inbound_from ip_address building state_comments remarks comments delivered_at quantity price customFields')
+        .lean();
       existing.forEach((doc) => {
-        existingPairSet.add(`${String(doc.store)}::${String(doc.serial_number || '').trim().toLowerCase()}`);
+        const pairKey = `${String(doc.store)}::${String(doc.serial_number || '').trim().toLowerCase()}`;
+        existingPairSet.add(pairKey);
+        existingDocsByPair.set(pairKey, doc);
       });
     }
 
     const docsToInsert = [];
+    const warnings = [];
+    const updatedRows = [];
+    const importUpdateEntries = [];
     for (const row of parsedAssets) {
       const serialKey = String(row.serialStr || '').trim().toLowerCase();
       const storeKey = String(row.storeId || '').trim();
@@ -2244,13 +2440,83 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       fileSeenSerials.add(pair);
 
       if (existingPairSet.has(pair) && !(allowDuplicates && isAdminUser)) {
-        duplicates.push({
-          serial: row.serialStr,
-          reason: isAdminUser
-            ? 'Duplicate serial exists in same store (enable Allow duplicates to force add)'
-            : 'Duplicate serial exists in same store (Admin permission required)',
-          asset: row.assetData
+        const existingDoc = existingDocsByPair.get(pair);
+        if (!existingDoc) {
+          duplicates.push({
+            serial: row.serialStr,
+            reason: isAdminUser
+              ? 'Duplicate serial exists in same store (enable Allow duplicates to force add)'
+              : 'Duplicate serial exists in same store (Admin permission required)',
+            asset: row.assetData
+          });
+          continue;
+        }
+
+        const compareKeys = [
+          'name', 'model_number', 'mac_address', 'manufacturer', 'ticket_number', 'po_number', 'rfid', 'qr_code',
+          'status', 'condition', 'product_name', 'source', 'location', 'vendor_name', 'delivered_by_name',
+          'device_group', 'inbound_from', 'ip_address', 'building', 'state_comments', 'remarks', 'comments',
+          'quantity', 'price'
+        ];
+        const patch = {};
+        const changedFields = [];
+        compareKeys.forEach((key) => {
+          const nextValue = row.assetData[key];
+          const prevValue = existingDoc[key];
+          if (key === 'delivered_at') return;
+          if (String(prevValue ?? '') !== String(nextValue ?? '')) {
+            patch[key] = nextValue;
+            changedFields.push(key);
+          }
         });
+
+        const incomingDeliveredAt = row.assetData.delivered_at ? new Date(row.assetData.delivered_at) : null;
+        const existingDeliveredAt = existingDoc.delivered_at ? new Date(existingDoc.delivered_at) : null;
+        if (
+          incomingDeliveredAt
+          && (!existingDeliveredAt || incomingDeliveredAt.getTime() !== existingDeliveredAt.getTime())
+        ) {
+          patch.delivered_at = incomingDeliveredAt;
+          changedFields.push('delivered_at');
+        }
+
+        const incomingMaintenanceVendor = String(row.assetData?.customFields?.maintenance_vendor || '').trim();
+        if (incomingMaintenanceVendor) {
+          const existingMaintenanceVendor = String(existingDoc?.customFields?.maintenance_vendor || '').trim();
+          if (incomingMaintenanceVendor !== existingMaintenanceVendor) {
+            patch.customFields = {
+              ...(existingDoc.customFields && typeof existingDoc.customFields === 'object' ? existingDoc.customFields : {}),
+              maintenance_vendor: incomingMaintenanceVendor
+            };
+            changedFields.push('maintenance_vendor');
+          }
+        }
+
+        if (changedFields.length > 0) {
+          const previousValues = {};
+          const nextValues = {};
+          changedFields.forEach((field) => {
+            previousValues[field] = existingDoc[field];
+            nextValues[field] = patch[field];
+          });
+          // eslint-disable-next-line no-await-in-loop
+          await Asset.updateOne({ _id: existingDoc._id }, { $set: patch });
+          updatedCount.v += 1;
+          updatedRows.push({
+            serial: row.serialStr,
+            changed_fields: changedFields
+          });
+          importUpdateEntries.push({
+            assetId: existingDoc._id,
+            serial: row.serialStr,
+            changedFields,
+            previousValues,
+            nextValues
+          });
+          warnings.push(`Updated serial ${row.serialStr}: ${changedFields.join(', ')}`);
+        } else {
+          warnings.push(`No change for serial ${row.serialStr}`);
+        }
         continue;
       }
 
@@ -2282,12 +2548,27 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       const q = Number(a?.quantity);
       return sum + (Number.isFinite(q) && q > 0 ? q : 1);
     }, 0);
+    const totalColumnsUpdated = updatedRows.reduce((sum, row) => sum + (Array.isArray(row.changed_fields) ? row.changed_fields.length : 0), 0);
+    let importUpdateBatchId = null;
+    let importUpdateBatchCreatedAt = null;
+    if (importUpdateEntries.length > 0) {
+      const batchDoc = await AssetImportUpdateBatch.create({
+        importBatchId,
+        createdBy: req.user?._id,
+        store: req.activeStore || null,
+        updates: importUpdateEntries,
+        totalRowsUpdated: importUpdateEntries.length,
+        totalColumnsUpdated
+      });
+      importUpdateBatchId = String(batchDoc._id);
+      importUpdateBatchCreatedAt = batchDoc.createdAt || new Date();
+    }
     await ActivityLog.create({
       user: req.user.name,
       email: req.user.email,
       role: req.user.role,
       action: 'Bulk Upsert Assets',
-      details: `Import completed. Created ${createdCount.v} records, Quantity ${totalQuantityCreated}`,
+      details: `Import completed. Created ${createdCount.v} records, Updated ${updatedCount.v} records, Columns changed ${totalColumnsUpdated}, Quantity ${totalQuantityCreated}`,
       store: req.activeStore
     });
     const suffix = invalidRows.length
@@ -2297,8 +2578,14 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       message: `Processed ${createdCount.v + updatedCount.v} assets (created ${createdCount.v}, updated ${updatedCount.v})${suffix}`,
       totals: {
         records_created: createdCount.v,
-        quantity_created: totalQuantityCreated
+        quantity_created: totalQuantityCreated,
+        records_updated: updatedCount.v,
+        columns_updated: totalColumnsUpdated
       },
+      warnings,
+      updated_rows: updatedRows,
+      import_update_batch_id: importUpdateBatchId,
+      import_update_batch_created_at: importUpdateBatchCreatedAt,
       skipped_duplicates: duplicates,
       invalid_rows: invalidRows
     });
@@ -2313,6 +2600,70 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
   }
 });
 
+// @desc    Revert latest import updates batch
+// @route   POST /api/assets/import/revert-last
+// @access  Private/Admin
+router.post('/import/revert-last', protect, admin, async (req, res) => {
+  try {
+    const q = {
+      revertedAt: null
+    };
+    if (req.user?.role !== 'Super Admin') {
+      const scopedStoreId = getScopedStoreId(req);
+      if (!scopedStoreId) {
+        return res.status(403).json({ message: 'Store context is required to revert import updates' });
+      }
+      q.store = scopedStoreId;
+    } else if (req.activeStore) {
+      q.store = req.activeStore;
+    }
+
+    const batch = await AssetImportUpdateBatch.findOne(q).sort({ createdAt: -1 }).lean();
+    if (!batch || !Array.isArray(batch.updates) || batch.updates.length === 0) {
+      return res.status(404).json({ message: 'No reversible import update batch found' });
+    }
+
+    const ops = [];
+    for (const entry of batch.updates) {
+      const assetId = entry?.assetId;
+      const previousValues = entry?.previousValues && typeof entry.previousValues === 'object' ? entry.previousValues : null;
+      if (!assetId || !previousValues) continue;
+      ops.push({
+        updateOne: {
+          filter: { _id: assetId },
+          update: { $set: previousValues }
+        }
+      });
+    }
+    if (ops.length === 0) {
+      return res.status(400).json({ message: 'No reversible field changes found in latest batch' });
+    }
+
+    await Asset.bulkWrite(ops, { ordered: false });
+    await AssetImportUpdateBatch.updateOne(
+      { _id: batch._id },
+      { $set: { revertedAt: new Date(), revertedBy: req.user?._id || null } }
+    );
+
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Revert Import Updates',
+      details: `Reverted ${ops.length} asset updates from import batch ${batch.importBatchId || batch._id}`,
+      store: req.activeStore || batch.store || null
+    });
+
+    return res.json({
+      message: `Reverted ${ops.length} updated asset(s) from latest import batch`,
+      reverted_assets: ops.length,
+      import_batch_id: batch.importBatchId || ''
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to revert latest import updates' });
+  }
+});
+
 // @desc    Download asset report
 // @route   GET /api/assets/export
 // @access  Private/Admin
@@ -2320,33 +2671,72 @@ router.get('/export', protect, admin, async (req, res) => {
   try {
     const assets = await Asset.find().populate('store').populate('assigned_to');
 
+    // Export columns aligned with the bulk import Excel headers
+    // so re-importing the exported file doesn't cause field mismatches.
     const headerMain = [
-      'PRODUCT NAME','NAME','MODEL NUMBER','SERIAL NUMBER',
-      'MAC ADDRESS','MANUFACTURER','TICKET NUMBER','RFID','QR CODE','STORE','LOCATION',
-      'STATUS','CONDITION','UNIQUE ID','ASSIGNED TO','VENDOR NAME','SOURCE','DELIVERED BY','DELIVERED AT','UPDATED AT'
+      'Category',
+      'Product Type',
+      'Product Name',
+      'Model Number',
+      'Quantity',
+      'Serial Number',
+      'MAC Address',
+      'Manufacturer',
+      'Ticket Number',
+      'PO Number',
+      'Vendor Name',
+      'Price',
+      'RFID',
+      'QR Code',
+      'Store Location',
+      'Status',
+      'Condition',
+      'Maintenance Vendor',
+      'Device Group',
+      'Location',
+      'Inbound From',
+      'IP Address',
+      'Building',
+      'State Comments',
+      'Remarks',
+      'Comments',
+      'Delivered By',
+      'Delivered At'
     ];
-    const rowsMain = assets.map(a => ([
-      a.product_name || '',
-      a.name || '',
-      a.model_number || '',
-      a.serial_number || '',
-      a.mac_address || '',
-      a.manufacturer || '',
-      a.ticket_number || '',
-      a.rfid || '',
-      a.qr_code || '',
-      a.store ? a.store.name : 'N/A',
-      a.location || '',
-      a.status || '',
-      a.condition || 'New / Excellent',
-      a.uniqueId || '',
-      a.assigned_to ? a.assigned_to.name : '',
-      a.vendor_name || '',
-      a.source || '',
-      a.delivered_by_name || '',
-      a.delivered_at || '',
-      a.updatedAt || ''
-    ]));
+
+    const rowsMain = assets.map((a) => {
+      const maintenanceVendor = a?.customFields?.maintenance_vendor || '';
+      return ([
+        '', // Category (not stored as a first-class field)
+        '', // Product Type (not stored as a first-class field)
+        a.product_name || '',
+        a.model_number || '',
+        a.quantity ?? '',
+        a.serial_number || '',
+        a.mac_address || '',
+        a.manufacturer || '',
+        a.ticket_number || '',
+        a.po_number || '',
+        a.vendor_name || '',
+        typeof a.price === 'number' ? a.price : '',
+        a.rfid || '',
+        a.qr_code || '',
+        a.store ? a.store.name : '',
+        a.status || '',
+        a.condition || '',
+        maintenanceVendor,
+        a.device_group || '',
+        a.location || '',
+        a.inbound_from || '',
+        a.ip_address || '',
+        a.building || '',
+        a.state_comments || '',
+        a.remarks || '',
+        a.comments || '',
+        a.delivered_by_name || '',
+        a.delivered_at || ''
+      ]);
+    });
 
     const headerHistory = ['UNIQUE ID','NAME','ACTION','TICKET/DETAILS','USER','DATE'];
     const rowsHistory = [];
@@ -2365,11 +2755,13 @@ router.get('/export', protect, admin, async (req, res) => {
     const wsMain = wb.addWorksheet('ASSETS');
     wsMain.addRows([headerMain, ...rowsMain]);
     wsMain.columns = [
-      { width: 24 },{ width: 22 },{ width: 24 },{ width: 22 },{ width: 16 },{ width: 16 },
-      { width: 18 },{ width: 18 },{ width: 16 },{ width: 12 },{ width: 12 },{ width: 16 },{ width: 24 },
-      { width: 12 },{ width: 20 },{ width: 14 },{ width: 22 },{ width: 18 },{ width: 22 },{ width: 22 },{ width: 22 }
+      { width: 16 },{ width: 16 },{ width: 22 },{ width: 18 },{ width: 12 },{ width: 16 },
+      { width: 16 },{ width: 16 },{ width: 16 },{ width: 12 },{ width: 16 },{ width: 12 },
+      { width: 12 },{ width: 12 },{ width: 18 },{ width: 12 },{ width: 16 },{ width: 20 },
+      { width: 16 },{ width: 16 },{ width: 14 },{ width: 16 },{ width: 14 },{ width: 18 },
+      { width: 14 },{ width: 18 },{ width: 14 },{ width: 18 }
     ];
-    wsMain.autoFilter = 'A1:U1';
+    wsMain.autoFilter = 'A1:AB1';
 
     const wsHist = wb.addWorksheet('HISTORY');
     wsHist.addRows([headerHistory, ...rowsHistory]);
@@ -2411,6 +2803,13 @@ router.get('/import-template', protect, admin, async (req, res) => {
         'Store Location': '',
         'Status': '',
         'Condition': '',
+        'Device Group': '',
+        'Inbound From': '',
+        'IP Address': '',
+        'Building': '',
+        'State Comments': '',
+        'Remarks': '',
+        'Comments': '',
         'Delivered By': '',
         'Delivered At': ''
       }
@@ -2490,6 +2889,7 @@ router.post('/assign', protect, admin, async (req, res) => {
   const {
     assetId,
     assetIds,
+    assignQuantity,
     technicianId,
     ticketNumber,
     otherRecipient,
@@ -2519,28 +2919,97 @@ router.post('/assign', protect, admin, async (req, res) => {
     if (assets.length !== normalizedIds.length) {
       return res.status(404).json({ message: 'One or more assets were not found' });
     }
-    if (!assets.every((asset) => hasAssetStoreAccess(req, asset.store))) {
+    const accessChecks = await Promise.all(assets.map((asset) => hasAssetStoreAccessDeep(req, asset.store)));
+    if (!accessChecks.every(Boolean)) {
       return res.status(403).json({ message: 'One or more assets are outside your store scope' });
     }
 
-    const disposedAssets = assets.filter((a) => a.disposed === true);
-    if (disposedAssets.length > 0) {
+    const isFaultyCondition = (a) => String(a?.condition || '').trim().toLowerCase() === 'faulty';
+    const disposedPre = assets.filter((a) => a.disposed === true);
+    if (disposedPre.length > 0) {
       return res.status(400).json({
-        message: `Cannot assign: ${disposedAssets.length} selected asset(s) are disposed`
+        message: `Cannot assign: ${disposedPre.length} selected asset(s) are disposed`
       });
     }
-    const reservedAssets = assets.filter((a) => a.reserved === true);
-    if (reservedAssets.length > 0) {
+    if (technicianId) {
+      const reservedPre = assets.filter((a) => a.reserved === true);
+      if (reservedPre.length > 0) {
+        return res.status(400).json({
+          message: `Cannot assign: ${reservedPre.length} selected asset(s) are reserved`
+        });
+      }
+      const faultyPre = assets.filter(isFaultyCondition);
+      if (faultyPre.length > 0) {
+        return res.status(400).json({
+          message: `Cannot assign: ${faultyPre.length} selected asset(s) are faulty and cannot be issued to technicians`
+        });
+      }
+    }
+    const alreadyAssignedPre = assets.filter(
+      (a) => a.assigned_to || (a.assigned_to_external && a.assigned_to_external.name)
+    );
+    if (alreadyAssignedPre.length > 0) {
       return res.status(400).json({
-        message: `Cannot assign: ${reservedAssets.length} selected asset(s) are reserved`
+        message: `Cannot assign: ${alreadyAssignedPre.length} selected asset(s) are already assigned`
       });
     }
 
-    const alreadyAssigned = assets.filter((a) => a.assigned_to || (a.assigned_to_external && a.assigned_to_external.name));
-    if (alreadyAssigned.length > 0) {
-      return res.status(400).json({
-        message: `Cannot assign: ${alreadyAssigned.length} selected asset(s) are already assigned`
-      });
+    // Optional partial assignment: only supported for single-asset assignment.
+    let assetsForAssignment = assets;
+    const hasAssignQuantity = assignQuantity !== undefined && assignQuantity !== null && String(assignQuantity).trim() !== '';
+    if (hasAssignQuantity) {
+      if (normalizedIds.length !== 1) {
+        return res.status(400).json({ message: 'Partial quantity assignment is only supported for a single selected asset' });
+      }
+      const srcAsset = assets[0];
+      const srcQty = Number.parseInt(srcAsset.quantity, 10) > 0 ? Number.parseInt(srcAsset.quantity, 10) : 1;
+      const qtyToAssign = Number.parseInt(assignQuantity, 10);
+      if (!Number.isFinite(qtyToAssign) || qtyToAssign <= 0) {
+        return res.status(400).json({ message: 'assignQuantity must be a positive integer' });
+      }
+      if (qtyToAssign > srcQty) {
+        return res.status(400).json({ message: `assignQuantity cannot exceed available quantity (${srcQty})` });
+      }
+
+      if (qtyToAssign < srcQty) {
+        // Keep the remainder on the original asset and create a new split row for assigned quantity.
+        srcAsset.quantity = srcQty - qtyToAssign;
+        srcAsset.history.push({
+          action: 'Split for Assignment',
+          ticket_number: ticketNumber || 'N/A',
+          user: req.user.name,
+          details: `Split ${qtyToAssign} from quantity batch for assignment; remaining ${srcAsset.quantity}`
+        });
+        await srcAsset.save();
+
+        const splitData = srcAsset.toObject();
+        delete splitData._id;
+        delete splitData.__v;
+        delete splitData.createdAt;
+        delete splitData.updatedAt;
+        // uniqueId is globally unique; split rows must get a new one.
+        splitData.uniqueId = await generateUniqueId(srcAsset?.name || srcAsset?.model_number || 'AST');
+        splitData.quantity = qtyToAssign;
+        splitData.assigned_to = null;
+        splitData.assigned_to_external = null;
+        splitData.reserved = false;
+        splitData.reserved_at = null;
+        splitData.reserved_by = '';
+        splitData.reservation_note = '';
+        splitData.return_pending = false;
+        splitData.return_request = null;
+        splitData.history = [
+          ...(Array.isArray(srcAsset.history) ? srcAsset.history.slice(-20) : []),
+          {
+            action: 'Created via Quantity Split',
+            ticket_number: ticketNumber || 'N/A',
+            user: req.user.name,
+            details: `Created split row with quantity ${qtyToAssign} for assignment`
+          }
+        ];
+        const splitAsset = new Asset(splitData);
+        assetsForAssignment = [splitAsset];
+      }
     }
 
     let gatePass = null;
@@ -2553,7 +3022,7 @@ router.post('/assign', protect, admin, async (req, res) => {
         return res.status(404).json({ message: 'Technician not found' });
       }
 
-      for (const asset of assets) {
+      for (const asset of assetsForAssignment) {
         asset.previous_status = asset.status;
         asset.assigned_to = technicianId;
         asset.assigned_to_external = null;
@@ -2629,7 +3098,7 @@ router.post('/assign', protect, admin, async (req, res) => {
     } else if (otherRecipient && otherRecipient.name) {
       const otherInfo = `Name: ${otherRecipient.name}${otherRecipient.phone ? `, Phone: ${otherRecipient.phone}` : ''}${otherRecipient.note ? `, Note: ${otherRecipient.note}` : ''}`;
 
-      for (const asset of assets) {
+      for (const asset of assetsForAssignment) {
         asset.previous_status = asset.status;
         asset.status = 'In Use';
         asset.assigned_to_external = {
@@ -2739,7 +3208,8 @@ router.post('/reserve', protect, admin, async (req, res) => {
     if (assets.length !== normalizedIds.length) {
       return res.status(404).json({ message: 'One or more assets were not found' });
     }
-    if (!assets.every((asset) => hasAssetStoreAccess(req, asset.store))) {
+    const accessChecks = await Promise.all(assets.map((asset) => hasAssetStoreAccessDeep(req, asset.store)));
+    if (!accessChecks.every(Boolean)) {
       return res.status(403).json({ message: 'One or more assets are outside your store scope' });
     }
 
@@ -2774,7 +3244,7 @@ router.post('/reserve', protect, admin, async (req, res) => {
     }
 
     const refreshed = await Asset.find({ _id: { $in: normalizedIds } })
-      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at device_group inbound_from ip_address building state_comments remarks comments disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
       .populate('store', 'name parentStore')
       .populate('assigned_to', 'name email');
 
@@ -2811,7 +3281,8 @@ router.post('/unreserve', protect, admin, async (req, res) => {
     if (assets.length !== normalizedIds.length) {
       return res.status(404).json({ message: 'One or more assets were not found' });
     }
-    if (!assets.every((asset) => hasAssetStoreAccess(req, asset.store))) {
+    const accessChecks = await Promise.all(assets.map((asset) => hasAssetStoreAccessDeep(req, asset.store)));
+    if (!accessChecks.every(Boolean)) {
       return res.status(403).json({ message: 'One or more assets are outside your store scope' });
     }
 
@@ -2839,7 +3310,7 @@ router.post('/unreserve', protect, admin, async (req, res) => {
     }
 
     const refreshed = await Asset.find({ _id: { $in: normalizedIds } })
-      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at device_group inbound_from ip_address building state_comments remarks comments disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
       .populate('store', 'name parentStore')
       .populate('assigned_to', 'name email');
 
@@ -3219,7 +3690,7 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
     if (asset.reserved === true) {
       return res.status(400).json({ message: 'Asset is reserved and cannot be issued' });
     }
-    if (asset.condition === 'Faulty' || asset.status === 'Missing') {
+    if (String(asset.condition || '').trim().toLowerCase() === 'faulty' || asset.status === 'Missing') {
       return res.status(400).json({ message: 'Asset is not available (Faulty/Missing)' });
     }
 
@@ -3861,7 +4332,8 @@ router.post('/:id/comment', protect, restrictViewer, async (req, res) => {
 router.put('/:id', protect, admin, async (req, res) => {
   const {
     name, model_number, serial_number, mac_address, manufacturer, store, location, status, condition,
-    ticket_number, po_number, product_name, rfid, qr_code, vendor_name, delivered_by_name, price, customFields
+    ticket_number, po_number, product_name, rfid, qr_code, vendor_name, delivered_by_name, price, quantity, customFields,
+    device_group, inbound_from, ip_address, building, state_comments, remarks, comments, disposed, reserved
   } = req.body;
   try {
     const asset = await Asset.findById(req.params.id);
@@ -3890,9 +4362,29 @@ router.put('/:id', protect, admin, async (req, res) => {
       if (po_number !== undefined) asset.po_number = po_number || '';
       if (vendor_name !== undefined) asset.vendor_name = capitalizeWords(vendor_name || '');
       if (delivered_by_name !== undefined) asset.delivered_by_name = capitalizeWords(delivered_by_name || '');
+      if (device_group !== undefined) asset.device_group = capitalizeWords(device_group || '');
+      if (inbound_from !== undefined) asset.inbound_from = capitalizeWords(inbound_from || '');
+      if (ip_address !== undefined) asset.ip_address = String(ip_address || '').trim();
+      if (building !== undefined) asset.building = capitalizeWords(building || '');
+      if (state_comments !== undefined) asset.state_comments = String(state_comments || '').trim();
+      if (remarks !== undefined) asset.remarks = String(remarks || '').trim();
+      if (comments !== undefined) asset.comments = String(comments || '').trim();
       if (price !== undefined && price !== '') {
         const parsedPrice = Number(price);
         if (Number.isFinite(parsedPrice)) asset.price = parsedPrice;
+      }
+      if (quantity !== undefined && quantity !== '') {
+        const parsedQty = Number.parseInt(quantity, 10);
+        if (Number.isFinite(parsedQty) && parsedQty > 0) {
+          const currentQty = Number.parseInt(asset.quantity, 10) > 0 ? Number.parseInt(asset.quantity, 10) : 1;
+          const isCurrentlyAssigned = Boolean(asset.assigned_to || (asset.assigned_to_external && asset.assigned_to_external.name));
+          if (isCurrentlyAssigned && parsedQty < currentQty) {
+            return res.status(400).json({
+              message: 'Cannot reduce quantity while asset is assigned. Unassign/split first, then update quantity.'
+            });
+          }
+          asset.quantity = parsedQty;
+        }
       }
       // Model Number Sync on edit: if no explicit product_name provided, try linking by model_number
       if (prodName) {
@@ -3914,15 +4406,50 @@ router.put('/:id', protect, admin, async (req, res) => {
       let normCondition = condition || asset.condition;
       if (typeof normStatus === 'string') {
         const s = normStatus.trim().toLowerCase();
-        if (s === 'spare' || s === 'faulty' || s === 'under repair' || s === 'disposed' || s === 'scrapped') normStatus = 'In Store';
+        if (s === 'spare' || s === 'faulty' || s === 'disposed' || s === 'scrapped') normStatus = 'In Store';
+        if (s === 'under repair' || s === 'under repair/workshop') normStatus = 'Under Repair/Workshop';
       }
       if (typeof normCondition === 'string') {
         const c = normCondition.trim().toLowerCase();
         if (c === 'under repair') normCondition = 'Repaired';
+        if (c === 'under repair/workshop') normCondition = 'Under Repair/Workshop';
+        if (c === 'workshop') normCondition = 'Workshop';
         if (c === 'disposed' || c === 'scrapped' || c === 'scrap') normCondition = 'Faulty';
+      }
+      if (
+        typeof status === 'string'
+        && (status.trim().toLowerCase() === 'under repair' || status.trim().toLowerCase() === 'under repair/workshop')
+      ) {
+        normStatus = 'Under Repair/Workshop';
+        normCondition = 'Under Repair/Workshop';
       }
       asset.status = normStatus;
       asset.condition = normCondition;
+      if (disposed !== undefined) {
+        const nextDisposed = disposed === true || String(disposed).toLowerCase() === 'true';
+        asset.disposed = nextDisposed;
+        if (nextDisposed) {
+          asset.disposed_at = asset.disposed_at || new Date();
+          asset.disposed_by = String(req.user?.name || req.user?.email || 'System');
+          asset.status = 'In Store';
+          asset.condition = 'Faulty';
+        } else {
+          asset.disposed_at = null;
+          asset.disposed_by = '';
+        }
+      }
+      if (reserved !== undefined) {
+        const nextReserved = reserved === true || String(reserved).toLowerCase() === 'true';
+        asset.reserved = nextReserved;
+        if (nextReserved) {
+          asset.reserved_at = asset.reserved_at || new Date();
+          asset.reserved_by = asset.reserved_by || String(req.user?.name || req.user?.email || '');
+        } else {
+          asset.reserved_at = null;
+          asset.reserved_by = '';
+          asset.reservation_note = '';
+        }
+      }
       if (customFields && typeof customFields === 'object' && !Array.isArray(customFields)) {
         const sanitizeCustomFields = (input) => {
           const out = {};

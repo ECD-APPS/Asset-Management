@@ -77,6 +77,32 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
+// @desc    Dashboard stats (counts by tool status)
+// @route   GET /api/tools/stats
+// @access  Private
+router.get('/stats', protect, async (req, res) => {
+  try {
+    const filter = {};
+    if (req.activeStore) {
+      filter.store = req.activeStore;
+    } else if (req.user.role !== 'Super Admin' && req.user.assignedStore) {
+      filter.store = req.user.assignedStore;
+    }
+
+    const [total, available, issued, maintenance, retired] = await Promise.all([
+      Tool.countDocuments(filter),
+      Tool.countDocuments({ ...filter, status: 'Available' }),
+      Tool.countDocuments({ ...filter, status: 'Issued' }),
+      Tool.countDocuments({ ...filter, status: 'Maintenance' }),
+      Tool.countDocuments({ ...filter, status: 'Retired' })
+    ]);
+
+    res.json({ total, available, issued, maintenance, retired });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @desc    Create tool registration entry
 // @route   POST /api/tools
 // @access  Private/Admin

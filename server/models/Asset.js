@@ -73,18 +73,18 @@ const assetSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['In Store', 'In Use', 'Missing'],
+    enum: ['In Store', 'In Use', 'Missing', 'Under Repair', 'Under Repair/Workshop'],
     default: 'In Store',
     index: true
   },
   previous_status: {
     type: String,
-    enum: ['In Store', 'In Use', 'Missing'],
+    enum: ['In Store', 'In Use', 'Missing', 'Under Repair', 'Under Repair/Workshop'],
     default: null
   },
   condition: {
     type: String,
-    enum: ['New', 'Used', 'Faulty', 'Repaired'],
+    enum: ['New', 'Used', 'Faulty', 'Repaired', 'Workshop', 'Under Repair/Workshop'],
     default: 'New',
     index: true
   },
@@ -108,6 +108,38 @@ const assetSchema = new mongoose.Schema({
     type: String,
     default: 'Initial Setup',
     index: true
+  },
+  device_group: {
+    type: String,
+    default: '',
+    index: true
+  },
+  inbound_from: {
+    type: String,
+    default: '',
+    index: true
+  },
+  ip_address: {
+    type: String,
+    default: '',
+    index: true
+  },
+  building: {
+    type: String,
+    default: '',
+    index: true
+  },
+  state_comments: {
+    type: String,
+    default: ''
+  },
+  remarks: {
+    type: String,
+    default: ''
+  },
+  comments: {
+    type: String,
+    default: ''
   },
   return_pending: {
     type: Boolean,

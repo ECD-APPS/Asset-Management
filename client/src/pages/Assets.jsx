@@ -38,6 +38,13 @@ const DEFAULT_COLUMN_DEFS = [
   { id: 'quantity', label: 'Quantity', key: 'quantity', visible: true, builtin: true },
   { id: 'vendor', label: 'Vendor', key: 'vendor_name', visible: true, builtin: true },
   { id: 'maintenanceVendor', label: 'Maintenance Vendor', key: 'maintenance_vendor', visible: true, builtin: true },
+  { id: 'deviceGroup', label: 'Device Group', key: 'device_group', visible: true, builtin: true },
+  { id: 'inboundFrom', label: 'Inbound From', key: 'inbound_from', visible: true, builtin: true },
+  { id: 'ipAddress', label: 'IP Address', key: 'ip_address', visible: true, builtin: true },
+  { id: 'building', label: 'Building', key: 'building', visible: true, builtin: true },
+  { id: 'stateComments', label: 'State Comments', key: 'state_comments', visible: true, builtin: true },
+  { id: 'remarks', label: 'Remarks', key: 'remarks', visible: true, builtin: true },
+  { id: 'comments', label: 'Comments', key: 'comments', visible: true, builtin: true },
   { id: 'source', label: 'Source', key: 'source', visible: true, builtin: true },
   { id: 'deliveredBy', label: 'Delivered By', key: 'delivered_by_name', visible: true, builtin: true },
   { id: 'deliveredAt', label: 'Delivered At', key: 'delivered_at', visible: true, builtin: true },
@@ -46,9 +53,18 @@ const DEFAULT_COLUMN_DEFS = [
   { id: 'price', label: 'Price', key: 'price', visible: true, builtin: true },
   { id: 'action', label: 'Action', key: 'action', visible: true, builtin: true }
 ];
-const ALLOWED_STATUS_FILTERS = new Set(['In Store', 'In Use', 'Missing', 'Reserved']);
+const ALLOWED_STATUS_FILTERS = new Set(['In Store', 'In Use', 'Missing', 'Reserved', 'Disposed', 'Under Repair/Workshop', 'Faulty', 'Repaired', 'Serviceable']);
 const DEFAULT_COLUMN_ORDER = DEFAULT_COLUMN_DEFS.map((column) => column.id);
 const DEFAULT_VISIBLE_COLUMNS = Object.fromEntries(DEFAULT_COLUMN_DEFS.map((column) => [column.id, column.visible !== false]));
+const REQUIRED_ASSET_COLUMN_IDS = new Set([
+  'deviceGroup',
+  'inboundFrom',
+  'ipAddress',
+  'building',
+  'stateComments',
+  'remarks',
+  'comments'
+]);
 const KNOWN_EDIT_KEYS = new Set([
   'name',
   'model_number',
@@ -56,6 +72,13 @@ const KNOWN_EDIT_KEYS = new Set([
   'ticket_number',
   'po_number',
   'vendor_name',
+  'device_group',
+  'inbound_from',
+  'ip_address',
+  'building',
+  'state_comments',
+  'remarks',
+  'comments',
   'price',
   'rfid',
   'qr_code',
@@ -94,11 +117,14 @@ const Assets = () => {
   const searchParam = searchParams.get('search');
   const productParam = searchParams.get('product');
   const statusParam = searchParams.get('status');
+  const derivedStatusParam = searchParams.get('derived_status');
+  const conditionParam = searchParams.get('condition');
   const actionParam = searchParams.get('action');
   const locationParam = searchParams.get('location');
   const storeParam = searchParams.get('store');
   const maintenanceVendorParam = searchParams.get('maintenance_vendor');
   const reservedParam = searchParams.get('reserved');
+  const disposedParam = searchParams.get('disposed');
   const { user, activeStore } = useAuth();
   const scopeHints = [
     activeStore?.name,
@@ -132,7 +158,19 @@ const Assets = () => {
   const [bulkLocationId, setBulkLocationId] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
-  const [bulkForm, setBulkForm] = useState({ status: '', condition: '', manufacturer: '', locationId: '' });
+  const [bulkForm, setBulkForm] = useState({
+    status: '',
+    condition: '',
+    manufacturer: '',
+    locationId: '',
+    device_group: '',
+    inbound_from: '',
+    ip_address: '',
+    building: '',
+    state_comments: '',
+    remarks: '',
+    comments: ''
+  });
   const [bulkLoading, setBulkLoading] = useState(false);
   const [showRecentUploads, setShowRecentUploads] = useState(false);
   const [prevVisibleColumns, setPrevVisibleColumns] = useState(null);
@@ -270,7 +308,11 @@ const Assets = () => {
         message: res.data?.message || 'Import complete',
         warnings: warningStrings,
         skipped_duplicates: skippedDuplicates,
-        invalid_rows: Array.isArray(res.data?.invalid_rows) ? res.data.invalid_rows : []
+        invalid_rows: Array.isArray(res.data?.invalid_rows) ? res.data.invalid_rows : [],
+        updated_rows: Array.isArray(res.data?.updated_rows) ? res.data.updated_rows : [],
+        totals: res.data?.totals || {},
+        import_update_batch_id: String(res.data?.import_update_batch_id || ''),
+        import_update_batch_created_at: res.data?.import_update_batch_created_at || null
       });
       alert(res.data?.message || 'Import completed');
       setShowImportModal(false);
@@ -285,39 +327,141 @@ const Assets = () => {
     }
   };
 
+  const handleRevertLastImportUpdates = async () => {
+    openConfirm(
+      'Revert Last Import Updates',
+      'This will restore previous values for assets updated by the latest import batch. Continue?',
+      async () => {
+        try {
+          setRevertingImport(true);
+          const res = await api.post('/assets/import/revert-last');
+          alert(res.data?.message || 'Latest import updates reverted');
+          await fetchAssets(undefined, { silent: true });
+          setImportInfo((prev) => (
+            prev
+              ? { ...prev, import_update_batch_id: '', import_update_batch_created_at: null }
+              : prev
+          ));
+        } catch (error) {
+          alert(error?.response?.data?.message || 'Failed to revert latest import updates');
+        } finally {
+          setRevertingImport(false);
+        }
+      },
+      'warning',
+      'Revert'
+    );
+  };
+
   const handleExportSelected = async () => {
     if (!selectedIds.length) return;
-    const rows = assets.filter(a => selectedIds.includes(a._id)).map(a => {
-      const out = {
-        'Unique ID': a.uniqueId || '',
-        'Name': a.name || '',
-        'Product Name': a.product_name || '',
-        'Model Number': a.model_number || '',
-        'Serial Number': a.serial_number || '',
-        'Serial Last 4': a.serial_last_4 || '',
-        'MAC Address': a.mac_address || '',
-        'Manufacturer': a.manufacturer || '',
-        'Ticket Number': a.ticket_number || '',
-        'RFID': a.rfid || '',
-        'QR Code': a.qr_code || '',
-        'Status': a.status || '',
-        'Previous Status': a.previous_status || '',
-        'Condition': a.condition || '',
-        'Quantity': a.quantity ?? '',
-        'Price': typeof a.price === 'number' ? a.price : '',
-        'Vendor Name': a.vendor_name || '',
-        'Source': a.source || '',
-        'Delivered By': a.delivered_by_name || '',
-        'Delivered At': a.delivered_at ? new Date(a.delivered_at).toLocaleString() : '',
-        'Store': a.store?.parentStore?.name || a.store?.name || '',
-        'Location': a.location || '',
-        'Assigned To': a.assigned_to?.name || a.assigned_to_external?.name || '',
-        'Updated At': a.updatedAt ? new Date(a.updatedAt).toLocaleString() : '',
-        'Created At': a.createdAt ? new Date(a.createdAt).toLocaleString() : ''
-      };
+    const headers = [
+      'Category',
+      'Product Type',
+      'Product Name',
+      'Model Number',
+      'Quantity',
+      'Serial Number',
+      'MAC Address',
+      'Manufacturer',
+      'Ticket Number',
+      'PO Number',
+      'Vendor Name',
+      'Price',
+      'RFID',
+      'QR Code',
+      'Store Location',
+      'Status',
+      'Condition',
+      'Maintenance Vendor',
+      'Device Group',
+      'Location',
+      'Inbound From',
+      'IP Address',
+      'Building',
+      'State Comments',
+      'Remarks',
+      'Comments',
+      'Delivered By',
+      'Delivered At'
+    ];
+
+    const rows = assets.filter((a) => selectedIds.includes(a._id)).map((a) => {
+      const maintenanceVendor = a?.customFields?.maintenance_vendor || '';
+      const deliveredAt = a?.delivered_at
+        ? new Date(a.delivered_at).toLocaleString()
+        : '';
+      const storeLocation = a?.store?.parentStore?.name || a?.store?.name || '';
+
+      const out = {};
+      headers.forEach((h) => {
+        out[h] = (() => {
+          switch (h) {
+            case 'Category':
+              return '';
+            case 'Product Type':
+              return '';
+            case 'Product Name':
+              return a.product_name || '';
+            case 'Model Number':
+              return a.model_number || '';
+            case 'Quantity':
+              return a.quantity ?? '';
+            case 'Serial Number':
+              return a.serial_number || '';
+            case 'MAC Address':
+              return a.mac_address || '';
+            case 'Manufacturer':
+              return a.manufacturer || '';
+            case 'Ticket Number':
+              return a.ticket_number || '';
+            case 'PO Number':
+              return a.po_number || '';
+            case 'Vendor Name':
+              return a.vendor_name || '';
+            case 'Price':
+              return typeof a.price === 'number' ? a.price : '';
+            case 'RFID':
+              return a.rfid || '';
+            case 'QR Code':
+              return a.qr_code || '';
+            case 'Store Location':
+              return storeLocation;
+            case 'Status':
+              return a.status || '';
+            case 'Condition':
+              return a.condition || '';
+            case 'Maintenance Vendor':
+              return maintenanceVendor;
+            case 'Device Group':
+              return a.device_group || '';
+            case 'Location':
+              return a.location || '';
+            case 'Inbound From':
+              return a.inbound_from || '';
+            case 'IP Address':
+              return a.ip_address || '';
+            case 'Building':
+              return a.building || '';
+            case 'State Comments':
+              return a.state_comments || '';
+            case 'Remarks':
+              return a.remarks || '';
+            case 'Comments':
+              return a.comments || '';
+            case 'Delivered By':
+              return a.delivered_by_name || '';
+            case 'Delivered At':
+              return deliveredAt;
+            default:
+              return '';
+          }
+        })();
+      });
       return out;
     });
-    const ws = XLSX.utils.json_to_sheet(rows);
+
+    const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Selected Assets');
     const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -348,6 +492,7 @@ const Assets = () => {
     technicianId: '',
     recipientEmail: '',
     recipientPhone: '',
+    assignQuantity: 1,
     ticketNumber: '',
     needGatePass: false,
     gatePassOrigin: '',
@@ -371,11 +516,19 @@ const Assets = () => {
     name: '',
     model_number: '',
     serial_number: '',
+    quantity: 1,
     mac_address: '',
     manufacturer: '',
     ticket_number: '',
     po_number: '',
     vendor_name: '',
+    device_group: '',
+    inbound_from: '',
+    ip_address: '',
+    building: '',
+    state_comments: '',
+    remarks: '',
+    comments: '',
     delivered_by_name: '',
     price: '',
     store: '',
@@ -395,6 +548,13 @@ const Assets = () => {
     ticket_number: '',
     po_number: '',
     vendor_name: '',
+    device_group: '',
+    inbound_from: '',
+    ip_address: '',
+    building: '',
+    state_comments: '',
+    remarks: '',
+    comments: '',
     price: '',
     store: '',
     location: '',
@@ -405,6 +565,11 @@ const Assets = () => {
   });
   const [customEditValues, setCustomEditValues] = useState({});
   const [editAssignedToId, setEditAssignedToId] = useState('');
+  const [editAssignQuantity, setEditAssignQuantity] = useState(1);
+  const [editNeedGatePass, setEditNeedGatePass] = useState(false);
+  const [editGatePassOrigin, setEditGatePassOrigin] = useState('');
+  const [editGatePassDestination, setEditGatePassDestination] = useState('');
+  const [editGatePassJustification, setEditGatePassJustification] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
   const [filterStoreId, setFilterStoreId] = useState('');
@@ -417,6 +582,7 @@ const Assets = () => {
   const [filterManufacturer, setFilterManufacturer] = useState('');
   const [filterMaintenanceVendor, setFilterMaintenanceVendor] = useState('');
   const [filterReserved, setFilterReserved] = useState('');
+  const [filterDisposed, setFilterDisposed] = useState('');
   const [filterModelNumber, setFilterModelNumber] = useState('');
   const [filterSerialNumber, setFilterSerialNumber] = useState('');
   const [filterMacAddress, setFilterMacAddress] = useState('');
@@ -447,6 +613,7 @@ const Assets = () => {
     comment: ''
   });
   const [savingComment, setSavingComment] = useState(false);
+  const [revertingImport, setRevertingImport] = useState(false);
 
   useEffect(() => {
     if (showRecentUploads) {
@@ -472,6 +639,13 @@ const Assets = () => {
         quantity: true,
         vendor: true,
         maintenanceVendor: true,
+        deviceGroup: true,
+        inboundFrom: true,
+        ipAddress: true,
+        building: true,
+        stateComments: true,
+        remarks: true,
+        comments: true,
         source: false,
         deliveredBy: true,
         deliveredAt: true,
@@ -528,6 +702,12 @@ const Assets = () => {
         if (!hasMaintenanceVendorColumn) {
           safeColumns.push({ id: 'maintenanceVendor', label: 'Maintenance Vendor', key: 'maintenance_vendor', visible: true, builtin: true });
         }
+        DEFAULT_COLUMN_DEFS.forEach((builtinColumn) => {
+          if (!REQUIRED_ASSET_COLUMN_IDS.has(builtinColumn.id)) return;
+          if (!safeColumns.some((column) => String(column.id) === String(builtinColumn.id))) {
+            safeColumns.push({ ...builtinColumn, visible: true, builtin: true });
+          }
+        });
         const nextOrder = safeColumns.map((column) => column.id);
         const nextVisible = Object.fromEntries(safeColumns.map((column) => [column.id, column.visible !== false]));
         const maintenanceColumnId = safeColumns.find((column) => {
@@ -542,6 +722,9 @@ const Assets = () => {
         if (maintenanceColumnId) {
           nextVisible[maintenanceColumnId] = true;
         }
+        REQUIRED_ASSET_COLUMN_IDS.forEach((id) => {
+          nextVisible[id] = true;
+        });
 
         setColumnDefinitions(safeColumns);
         setColumnOrder(nextOrder);
@@ -553,6 +736,10 @@ const Assets = () => {
     loadColumnsConfig();
     return () => { cancelled = true; };
   }, [activeStore]);
+
+  const isConditionFaulty = (asset) => String(asset?.condition || '').trim().toLowerCase() === 'faulty';
+  const cannotIssueToTechnician = (asset) => Boolean(asset?.reserved === true) || isConditionFaulty(asset);
+  const topAssignDisabled = selectedIds.length === 0;
 
   const handleTopEdit = () => {
     if (selectedIds.length === 0) return;
@@ -566,7 +753,7 @@ const Assets = () => {
 
   const handleTopAssign = () => {
     if (selectedIds.length === 0) return;
-    const asset = assets.find(a => a._id === selectedIds[0]);
+    const asset = assets.find((a) => String(a._id) === String(selectedIds[0]));
     if (asset) handleAssignClick(asset, selectedIds);
   };
 
@@ -642,19 +829,20 @@ const Assets = () => {
 
   // Sync category & status params from URL
   useEffect(() => {
-    const normalized = normalizeUrlStatusFilter(statusParam);
+    const normalized = normalizeUrlStatusFilter(derivedStatusParam || statusParam);
     setSearchTerm(searchParam || '');
     setFilterProductName(productParam || '');
     setFilterStatus(normalized.status);
-    setFilterCondition(normalized.condition);
+    setFilterCondition(conditionParam || normalized.condition);
     setFilterLocation(locationParam || '');
     setFilterStoreId(storeParam || '');
     // Keep vendor filter from URL (e.g. dashboard Siemens/G42 KPI click),
     // while backend still enforces SCY scope authorization.
     setFilterMaintenanceVendor(maintenanceVendorParam || '');
     setFilterReserved((reservedParam === 'true' || reservedParam === 'false') ? reservedParam : '');
+    setFilterDisposed((disposedParam === 'true' || disposedParam === 'false' || disposedParam === 'all') ? disposedParam : '');
     if (actionParam === 'add') setShowAddModal(true);
-  }, [searchParam, productParam, statusParam, actionParam, locationParam, storeParam, maintenanceVendorParam, reservedParam, isScyStoreContext, normalizeUrlStatusFilter]);
+  }, [searchParam, productParam, statusParam, derivedStatusParam, conditionParam, actionParam, locationParam, storeParam, maintenanceVendorParam, reservedParam, disposedParam, isScyStoreContext, normalizeUrlStatusFilter]);
 
 
   // Hierarchical State for Add/Import
@@ -670,11 +858,22 @@ const Assets = () => {
   }, []);
 
   const flatProducts = useMemo(() => flattenProducts(fullProducts), [fullProducts]);
+  const movementDestinationOptions = useMemo(() => {
+    const out = new Set();
+    (stores || []).forEach((s) => {
+      const name = String(s?.name || '').trim();
+      if (name) out.add(name);
+    });
+    (assets || []).forEach((a) => {
+      const loc = String(a?.location || '').trim();
+      if (loc) out.add(loc);
+    });
+    return Array.from(out);
+  }, [stores, assets]);
 
   const fetchAssets = useCallback(async (params, options) => {
     const silent = options?.silent === true;
     const requestId = ++requestIdRef.current;
-    const reservedFromStatus = filterStatus === 'Reserved';
 
     if (activeControllerRef.current) {
       activeControllerRef.current.abort();
@@ -691,14 +890,15 @@ const Assets = () => {
           limit,
           recent_upload: showRecentUploads,
           q: searchTerm || undefined,
-          status: reservedFromStatus ? undefined : (filterStatus || undefined),
+          derived_status: filterStatus || undefined,
           store: filterStoreId || undefined,
           location: filterLocation || undefined,
           condition: filterCondition || undefined, // Add condition filter
           // category removed
           manufacturer: filterManufacturer || undefined,
           maintenance_vendor: filterMaintenanceVendor || undefined,
-          reserved: reservedFromStatus ? 'true' : (filterReserved || undefined),
+          reserved: filterReserved || undefined,
+          disposed: filterDisposed || undefined,
           model_number: filterModelNumber || undefined,
           serial_number: filterSerialNumber || undefined,
           mac_address: filterMacAddress || undefined,
@@ -734,6 +934,7 @@ const Assets = () => {
     filterManufacturer,
     filterMaintenanceVendor,
     filterReserved,
+    filterDisposed,
     isScyStoreContext,
     filterModelNumber,
     filterSerialNumber,
@@ -878,6 +1079,13 @@ const Assets = () => {
         'Status',
         'Condition',
         'Maintenance Vendor',
+        'Device Group',
+        'Inbound From',
+        'IP Address',
+        'Building',
+        'State Comments',
+        'Remarks',
+        'Comments',
         'Delivered By',
         'Delivered At'
       ];
@@ -900,6 +1108,13 @@ const Assets = () => {
         'In Store',
         'New',
         'Siemens',
+        'Core Security',
+        'Main Warehouse',
+        '10.0.10.42',
+        'Block A',
+        'Rack and power state verified',
+        'Initial install batch',
+        'Commissioned by infra team',
         'JOHN DOE',
         '2024-01-01 10:00'
       ];
@@ -921,16 +1136,27 @@ const Assets = () => {
   };
 
   const setupEditForm = (assetToEdit) => {
-    const initialStatus = assetToEdit.status;
+    const initialStatus = assetToEdit.disposed
+      ? 'Disposed'
+      : (assetToEdit.reserved ? 'Reserved' : assetToEdit.status);
+    const initialCondition = assetToEdit.disposed ? 'Disposed' : (assetToEdit.condition || 'New');
     setFormData({
       name: assetToEdit.name,
       model_number: assetToEdit.model_number,
       serial_number: assetToEdit.serial_number,
+      quantity: Number.parseInt(assetToEdit.quantity, 10) > 0 ? Number.parseInt(assetToEdit.quantity, 10) : 1,
       mac_address: assetToEdit.mac_address || '',
       manufacturer: assetToEdit.manufacturer || '',
       ticket_number: assetToEdit.ticket_number || '',
       po_number: assetToEdit.po_number || '',
       vendor_name: assetToEdit.vendor_name || '',
+      device_group: assetToEdit.device_group || '',
+      inbound_from: assetToEdit.inbound_from || '',
+      ip_address: assetToEdit.ip_address || '',
+      building: assetToEdit.building || '',
+      state_comments: assetToEdit.state_comments || '',
+      remarks: assetToEdit.remarks || '',
+      comments: assetToEdit.comments || '',
       delivered_by_name: assetToEdit.delivered_by_name || '',
       price: assetToEdit.price ?? '',
       rfid: assetToEdit.rfid || '',
@@ -938,7 +1164,7 @@ const Assets = () => {
       store: assetToEdit.store?._id || assetToEdit.store || '',
       location: assetToEdit.location || '',
       status: initialStatus,
-      condition: assetToEdit.condition || 'New'
+      condition: initialCondition
     });
 
     const nextCustomValues = {};
@@ -953,6 +1179,11 @@ const Assets = () => {
     });
     setCustomEditValues(nextCustomValues);
     setEditAssignedToId(String(assetToEdit?.assigned_to?._id || assetToEdit?.assigned_to || ''));
+    setEditAssignQuantity(Math.max(1, Number.parseInt(assetToEdit?.quantity, 10) > 0 ? Number.parseInt(assetToEdit?.quantity, 10) : 1));
+    setEditNeedGatePass(false);
+    setEditGatePassOrigin(String(assetToEdit?.location || ''));
+    setEditGatePassDestination('');
+    setEditGatePassJustification('');
 
     // Populate Hierarchy
     setSelectedProduct(assetToEdit.product_name || '');
@@ -960,7 +1191,7 @@ const Assets = () => {
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    const normalized = ['status', 'condition', 'store', 'location'].includes(name)
+    const normalized = ['status', 'condition', 'store', 'location', 'quantity', 'price'].includes(name)
       ? value
       : (typeof value === 'string' ? value.toUpperCase() : value);
     setFormData({ ...formData, [name]: normalized });
@@ -1000,6 +1231,27 @@ const Assets = () => {
         product_name: selectedProduct,
         customFields: customFieldsPayload
       };
+      const markDisposed = formData.status === 'Disposed' || formData.condition === 'Disposed';
+      const markReserved = formData.status === 'Reserved';
+      const markUnderRepair = formData.status === 'Under Repair/Workshop';
+      if (markDisposed) {
+        updateData.disposed = true;
+        updateData.reserved = false;
+        updateData.status = 'In Store';
+        updateData.condition = 'Faulty';
+      } else if (editingAsset?.disposed) {
+        updateData.disposed = false;
+      }
+      if (!markDisposed) {
+        updateData.reserved = markReserved;
+        if (markReserved) {
+          updateData.status = 'In Store';
+        }
+        if (markUnderRepair) {
+          updateData.status = 'Under Repair/Workshop';
+          updateData.condition = 'Under Repair/Workshop';
+        }
+      }
 
       // Remove empty store to prevent CastError
       if (!updateData.store) {
@@ -1021,25 +1273,50 @@ const Assets = () => {
       }
 
       if (selectedTechId && String(updated?.assigned_to?._id || updated?.assigned_to || '') !== selectedTechId) {
+        if (updated?.reserved === true || String(updated?.condition || '').trim().toLowerCase() === 'faulty') {
+          throw new Error('Cannot assign: asset is faulty or reserved.');
+        }
         const selectedTech = (technicians || []).find((t) => String(t?._id) === selectedTechId);
         const targetEmail = String(selectedTech?.email || '').trim();
         if (!targetEmail) {
           throw new Error('Selected technician has no email. Cannot assign from Edit form.');
         }
+        const availableQty = Math.max(1, Number.parseInt(updated?.quantity, 10) > 0 ? Number.parseInt(updated?.quantity, 10) : 1);
+        const qtyToAssign = Number.parseInt(editAssignQuantity, 10);
+        if (!Number.isFinite(qtyToAssign) || qtyToAssign <= 0 || qtyToAssign > availableQty) {
+          throw new Error(`Assign quantity must be between 1 and ${availableQty}.`);
+        }
+        if (editNeedGatePass && !String(formData.ticket_number || '').trim()) {
+          throw new Error('Ticket number is required when gate pass is enabled.');
+        }
+        const finalOrigin = String(editGatePassOrigin || formData.location || updated?.location || '').trim();
+        const finalDestination = String(editGatePassDestination || selectedTech?.name || '').trim();
+        if (editNeedGatePass && (!finalOrigin || !finalDestination)) {
+          throw new Error('Gate pass "Moving From" and "Moving To" are required.');
+        }
         const assignRes = await api.post('/assets/assign', {
           assetId: editingAsset._id,
           assetIds: [editingAsset._id],
+          assignQuantity: qtyToAssign,
           technicianId: selectedTechId,
           recipientEmail: targetEmail,
           recipientPhone: String(selectedTech?.phone || ''),
           ticketNumber: formData.ticket_number || '',
-          needGatePass: false
+          needGatePass: Boolean(editNeedGatePass),
+          gatePassOrigin: finalOrigin,
+          gatePassDestination: finalDestination,
+          gatePassJustification: String(editGatePassJustification || '').trim()
         });
         updated = assignRes.data?.asset || updated;
       }
 
       setEditingAsset(null);
       setEditAssignedToId('');
+      setEditAssignQuantity(1);
+      setEditNeedGatePass(false);
+      setEditGatePassOrigin('');
+      setEditGatePassDestination('');
+      setEditGatePassJustification('');
       setAssets(prev => prev.map(a => a._id === updated._id ? { ...a, ...updated } : a));
       fetchAssets(undefined, { silent: true });
       fetchProducts();
@@ -1056,6 +1333,11 @@ const Assets = () => {
     setEditingAsset(null);
     setCustomEditValues({});
     setEditAssignedToId('');
+    setEditAssignQuantity(1);
+    setEditNeedGatePass(false);
+    setEditGatePassOrigin('');
+    setEditGatePassDestination('');
+    setEditGatePassJustification('');
   };
   
   const handleAddChange = (e) => {
@@ -1125,12 +1407,17 @@ const Assets = () => {
   };
 
   const handleAssignClick = (asset, ids = [asset?._id]) => {
+    const idList = (ids || []).filter(Boolean);
+    const resolved = idList
+      .map((id) => assets.find((a) => String(a._id) === String(id)))
+      .filter(Boolean);
     setAssigningAsset(asset);
     setAssigningAssetIds((ids || []).filter(Boolean));
     setAssignForm({
       technicianId: '',
       recipientEmail: '',
       recipientPhone: '',
+      assignQuantity: Math.max(1, Number.parseInt(asset?.quantity, 10) > 0 ? Number.parseInt(asset?.quantity, 10) : 1),
       ticketNumber: '',
       needGatePass: false,
       gatePassOrigin: asset?.location || '',
@@ -1145,6 +1432,15 @@ const Assets = () => {
 
   const handleAssignSubmit = async () => {
     if (assignSubmitting) return;
+    const idsForGuard = (assigningAssetIds.length ? assigningAssetIds : [assigningAsset?._id]).filter(Boolean);
+    const resolvedGuard = idsForGuard
+      .map((id) => assets.find((a) => String(a._id) === String(id)))
+      .filter(Boolean);
+    const guardList = resolvedGuard.length ? resolvedGuard : assigningAsset ? [assigningAsset] : [];
+    if (recipientType === 'Technician' && guardList.some(cannotIssueToTechnician)) {
+      alert('Faulty or reserved assets cannot be issued to technicians.');
+      return;
+    }
     if (recipientType === 'Technician' && !assignForm.technicianId) {
       alert('Please select a technician');
       return;
@@ -1177,11 +1473,20 @@ const Assets = () => {
         return;
       }
     }
+    if (assigningAssetIds.length <= 1) {
+      const availableQty = Math.max(1, Number.parseInt(assigningAsset?.quantity, 10) > 0 ? Number.parseInt(assigningAsset?.quantity, 10) : 1);
+      const qtyToAssign = Number.parseInt(assignForm.assignQuantity, 10);
+      if (!Number.isFinite(qtyToAssign) || qtyToAssign <= 0 || qtyToAssign > availableQty) {
+        alert(`Assign quantity must be between 1 and ${availableQty}`);
+        return;
+      }
+    }
     try {
       setAssignSubmitting(true);
       const payload = {
         assetId: assigningAsset._id,
         assetIds: assigningAssetIds.length > 0 ? assigningAssetIds : [assigningAsset._id],
+        assignQuantity: assigningAssetIds.length <= 1 ? assignForm.assignQuantity : undefined,
         ticketNumber: assignForm.ticketNumber,
         needGatePass: Boolean(assignForm.needGatePass),
         recipientEmail: assignForm.recipientEmail,
@@ -1206,7 +1511,7 @@ const Assets = () => {
       }
     } catch (error) {
       console.error('Error assigning asset:', error);
-      alert('Failed to assign asset');
+      alert(error?.response?.data?.message || error?.message || 'Failed to assign asset');
     } finally {
       setAssignSubmitting(false);
     }
@@ -1293,6 +1598,13 @@ const Assets = () => {
       if (bulkForm.status) updates.status = bulkForm.status;
       if (bulkForm.condition) updates.condition = bulkForm.condition;
       if (bulkForm.manufacturer) updates.manufacturer = bulkForm.manufacturer;
+      if (bulkForm.device_group) updates.device_group = bulkForm.device_group;
+      if (bulkForm.inbound_from) updates.inbound_from = bulkForm.inbound_from;
+      if (bulkForm.ip_address) updates.ip_address = bulkForm.ip_address;
+      if (bulkForm.building) updates.building = bulkForm.building;
+      if (bulkForm.state_comments) updates.state_comments = bulkForm.state_comments;
+      if (bulkForm.remarks) updates.remarks = bulkForm.remarks;
+      if (bulkForm.comments) updates.comments = bulkForm.comments;
       // category/product_type removed
       if (bulkForm.product_name) updates.product_name = bulkForm.product_name;
       if (bulkForm.locationId) {
@@ -1364,16 +1676,21 @@ const Assets = () => {
 
   const getDerivedStatus = (asset) => {
     if (asset?.reserved === true) return { label: 'Reserved', color: 'bg-amber-50 text-amber-800 border border-amber-200' };
+    if (asset?.disposed === true) return { label: 'Disposed', color: 'bg-slate-100 text-slate-700 border border-slate-300' };
     const s = asset.status;
     const cond = String(asset.condition || '').toLowerCase();
-    if (cond.includes('faulty')) return { label: 'Faulty', color: 'bg-rose-50 text-rose-700 border border-rose-100' };
-    if (cond.includes('repair')) return { label: 'Repaired', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
+    // Status should reflect the explicit status field first.
+    if (s === 'Under Repair/Workshop' || s === 'Under Repair') {
+      return { label: 'Under Repair/Workshop', color: 'bg-orange-700 text-orange-50 border border-orange-800' };
+    }
     if (s === 'In Use') return { label: 'In Use', color: 'bg-emerald-50 text-emerald-700 border border-emerald-100' };
     if (s === 'In Store') return { label: 'In Store', color: 'bg-sky-50 text-sky-700 border border-sky-100' };
     if (s === 'Missing') return { label: 'Missing', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
+    // Fallbacks for legacy/edge rows with unusual status values.
+    if (cond.includes('faulty')) return { label: 'Faulty', color: 'bg-rose-50 text-rose-700 border border-rose-100' };
+    if (cond.includes('repair')) return { label: 'Repaired', color: 'bg-orange-50 text-orange-700 border border-orange-100' };
     return { label: s || '-', color: 'bg-slate-100 text-slate-700 border border-slate-200' };
   };
-
 
   // Debounced filter/search effect
   useEffect(() => {
@@ -1616,6 +1933,13 @@ const Assets = () => {
     if (key === 'quantity') value = asset.quantity ?? '-';
     if (key === 'vendor') value = asset.vendor_name || '-';
     if (key === 'maintenanceVendor') value = getMaintenanceVendorValue(asset);
+    if (key === 'deviceGroup') value = asset.device_group || '-';
+    if (key === 'inboundFrom') value = asset.inbound_from || '-';
+    if (key === 'ipAddress') value = asset.ip_address || '-';
+    if (key === 'building') value = asset.building || '-';
+    if (key === 'stateComments') value = asset.state_comments || '-';
+    if (key === 'remarks') value = asset.remarks || '-';
+    if (key === 'comments') value = asset.comments || '-';
     if (key === 'source') value = asset.source || '-';
     if (key === 'deliveredBy') value = asset.delivered_by_name || '-';
     if (key === 'deliveredAt') value = asset.delivered_at ? new Date(asset.delivered_at).toLocaleString() : '-';
@@ -1651,6 +1975,21 @@ const Assets = () => {
           <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${derived.color}`}>
             {derived.label}
           </span>
+        </td>
+      );
+    }
+
+    if (key === 'condition') {
+      const faulty = isConditionFaulty(asset);
+      return (
+        <td key={key} className={`px-3 py-2 md:px-6 md:py-4 whitespace-nowrap text-center ${columnMeta[key]?.tdClass || ''}`}>
+          {faulty ? (
+            <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+              {value}
+            </span>
+          ) : (
+            value
+          )}
         </td>
       );
     }
@@ -1759,8 +2098,43 @@ const Assets = () => {
               )}
             </div>
           )}
+          {importInfo.updated_rows && importInfo.updated_rows.length > 0 && (
+            <div className="mt-2">
+              <div className="font-semibold text-sm">
+                Updated existing serials: {importInfo.updated_rows.length}
+                {importInfo.totals?.columns_updated ? ` (columns changed: ${importInfo.totals.columns_updated})` : ''}
+              </div>
+              <ul className="text-sm list-disc ml-5">
+                {importInfo.updated_rows.slice(0, 10).map((row, idx) => (
+                  <li key={idx}>
+                    {row.serial || '(no serial)'} - {(row.changed_fields || []).length} column(s) changed
+                  </li>
+                ))}
+              </ul>
+              {importInfo.updated_rows.length > 10 && (
+                <div className="text-xs text-gray-600 mt-1">and {importInfo.updated_rows.length - 10} more...</div>
+              )}
+            </div>
+          )}
+          {importInfo.import_update_batch_id && (
+            <div className="mt-3">
+              <div className="text-xs text-gray-700 mb-2">
+                Latest reversible import update batch: <span className="font-mono">{importInfo.import_update_batch_id}</span>
+                {importInfo.import_update_batch_created_at
+                  ? ` at ${new Date(importInfo.import_update_batch_created_at).toLocaleString()}`
+                  : ''}
+              </div>
+              <button
+                onClick={handleRevertLastImportUpdates}
+                disabled={revertingImport}
+                className={`px-3 py-1 rounded text-sm shadow-sm text-white ${revertingImport ? 'bg-red-300 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
+              >
+                {revertingImport ? 'Reverting updates...' : 'Revert Last Import Updates'}
+              </button>
+            </div>
+          )}
           <div className="mt-2 text-sm text-gray-600">
-            Excel headers supported: Category, Product Type, Product Name, Model Number, Quantity, Serial Number, MAC Address, Manufacturer, Ticket Number, PO Number, Vendor Name, Price, RFID, QR Code, Store Location, Status, Condition, Maintenance Vendor, Delivered By, Delivered At (date & time)
+            Excel headers supported: Category, Product Type, Product Name, Model Number, Quantity, Serial Number, MAC Address, Manufacturer, Ticket Number, PO Number, Vendor Name, Price, RFID, QR Code, Store Location, Status, Condition, Maintenance Vendor, Device Group, Inbound From, IP Address, Building, State Comments, Remarks, Comments, Delivered By, Delivered At (date & time)
           </div>
         </div>
       )}
@@ -1921,18 +2295,21 @@ const Assets = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-center">
           <input
             type="text"
-            placeholder="Search (Name, Model, Serial, MAC, Unique ID, Manufacturer)..."
+            placeholder="Search (Name, Model, Serial, MAC, Unique ID, Manufacturer, Device Group, IP, Building, Remarks)..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="h-10 px-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
           />
-          <select
+          <input
+            type="text"
+            list="assets-location-options"
+            placeholder="All Locations"
             value={filterLocation}
             onChange={(e) => {
               const nextLocation = e.target.value;
               setFilterLocation(nextLocation);
               if (!nextLocation) {
-                // If user explicitly chooses "All Locations", clear hidden location-originated store filter too.
+                // If user clears location, clear hidden location-originated store filter too.
                 setFilterStoreId('');
                 if (location.search) {
                   navigate('/assets', { replace: true });
@@ -1940,10 +2317,12 @@ const Assets = () => {
               }
             }}
             className="h-10 px-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-          >
-            <option value="">All Locations</option>
-            {stores.map(s => <option key={s._id} value={s.name}>{s.name}</option>)}
-          </select>
+          />
+          <datalist id="assets-location-options">
+            {stores.map((s) => (
+              <option key={s._id} value={s.name} />
+            ))}
+          </datalist>
           <select
             value={filterCondition}
             onChange={(e) => setFilterCondition(e.target.value)}
@@ -1965,6 +2344,8 @@ const Assets = () => {
             <option value="In Use">In Use</option>
             <option value="Missing">Missing</option>
             <option value="Reserved">Reserved</option>
+            <option value="Disposed">Disposed</option>
+            <option value="Under Repair/Workshop">Under Repair/Workshop</option>
           </select>
           {isScyStoreContext && (
             <select
@@ -2042,6 +2423,7 @@ const Assets = () => {
                 setFilterStoreId('');
                 setFilterManufacturer(''); setFilterMaintenanceVendor(''); setFilterProductName('');
                 setFilterReserved('');
+                setFilterDisposed('');
                 setFilterModelNumber(''); setFilterSerialNumber(''); setFilterMacAddress('');
                 setFilterTicket(''); setFilterRfid(''); setFilterQr('');
                 setFilterDateFrom(''); setFilterDateTo('');
@@ -2078,9 +2460,9 @@ const Assets = () => {
                   </button>
                   <button
                     onClick={handleTopAssign}
-                disabled={selectedIds.length === 0}
-                className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${selectedIds.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
-                title="Assign selected asset(s)"
+                disabled={topAssignDisabled}
+                className={`inline-flex items-center gap-2 h-10 px-4 rounded-xl text-sm shadow-sm ${topAssignDisabled ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} border`}
+                title={topAssignDisabled && selectedIds.length > 0 ? 'Faulty or reserved assets cannot be issued to technicians' : 'Assign selected asset(s)'}
                   >
                     <UserCheck size={16} />
                 {selectedIds.length > 1 ? 'Bulk Assign' : 'Assign'}
@@ -2288,7 +2670,13 @@ const Assets = () => {
               </div>
               <div className="col-span-2">
                 <span className="text-xs text-gray-500 block">Condition</span>
-                <span className="font-medium">{asset.condition || 'New / Excellent'}</span>
+                {isConditionFaulty(asset) ? (
+                  <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                    {asset.condition || 'Faulty'}
+                  </span>
+                ) : (
+                  <span className="font-medium">{asset.condition || 'New / Excellent'}</span>
+                )}
               </div>
               <div className="col-span-2">
                 <span className="text-xs text-gray-500 block">Status</span>
@@ -2541,6 +2929,24 @@ const Assets = () => {
                   )}
                 </div>
               )}
+
+              {assigningAssetIds.length <= 1 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Assign Quantity</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={Math.max(1, Number.parseInt(assigningAsset?.quantity, 10) > 0 ? Number.parseInt(assigningAsset?.quantity, 10) : 1)}
+                    value={assignForm.assignQuantity}
+                    onChange={(e) => setAssignForm((prev) => ({ ...prev, assignQuantity: Number.parseInt(e.target.value, 10) || 1 }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Available: {Math.max(1, Number.parseInt(assigningAsset?.quantity, 10) > 0 ? Number.parseInt(assigningAsset?.quantity, 10) : 1)}.
+                    If you assign less than available, remaining quantity stays in store.
+                  </p>
+                </div>
+              )}
               
               {recipientType === 'Other' && (
                 <div className="grid grid-cols-1 gap-3">
@@ -2632,6 +3038,7 @@ const Assets = () => {
                     <label className="block text-sm font-medium text-gray-700">Moving To (Gate Pass)</label>
                     <input
                       type="text"
+                      list="movement-destination-options"
                       value={assignForm.gatePassDestination}
                       onChange={(e) => setAssignForm({ ...assignForm, gatePassDestination: e.target.value })}
                       placeholder="Destination"
@@ -2776,6 +3183,34 @@ const Assets = () => {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-gray-700">Device Group</label>
+                <input type="text" name="device_group" value={formData.device_group || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Inbound From</label>
+                <input type="text" name="inbound_from" value={formData.inbound_from || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">IP Address</label>
+                <input type="text" name="ip_address" value={formData.ip_address || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Building</label>
+                <input type="text" name="building" value={formData.building || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">State Comments</label>
+                <input type="text" name="state_comments" value={formData.state_comments || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Remarks</label>
+                <input type="text" name="remarks" value={formData.remarks || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700">Comments</label>
+                <input type="text" name="comments" value={formData.comments || ''} onChange={handleInputChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-700">Delivered By</label>
                 <input
                   type="text"
@@ -2796,6 +3231,24 @@ const Assets = () => {
                   onChange={handleInputChange}
                   className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Quantity</label>
+                <input
+                  type="number"
+                  min="1"
+                  name="quantity"
+                  value={formData.quantity ?? 1}
+                  onChange={handleInputChange}
+                  className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                />
+                {Boolean(editingAsset?.assigned_to || editingAsset?.assigned_to_external?.name) &&
+                  Number.parseInt(formData.quantity, 10) > 0 &&
+                  Number.parseInt(formData.quantity, 10) < (Number.parseInt(editingAsset?.quantity, 10) > 0 ? Number.parseInt(editingAsset?.quantity, 10) : 1) && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Warning: this asset is assigned. Reducing quantity is blocked; unassign or split first.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700">RFID</label>
@@ -2864,6 +3317,7 @@ const Assets = () => {
                   <option value="Used">Used</option>
                   <option value="Faulty">Faulty</option>
                   <option value="Repaired">Repaired</option>
+                  <option value="Under Repair/Workshop">Under Repair/Workshop</option>
                 </select>
               </div>
               <div>
@@ -2877,13 +3331,26 @@ const Assets = () => {
                   <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
                   <option value="Missing">Missing</option>
+                  <option value="Reserved">Reserved</option>
+                  <option value="Disposed">Disposed</option>
+                  <option value="Under Repair/Workshop">Under Repair/Workshop</option>
                 </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700">Assigned To</label>
                 <select
                   value={editAssignedToId}
-                  onChange={(e) => setEditAssignedToId(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const blocked =
+                      String(formData.condition || '').trim().toLowerCase() === 'faulty'
+                      || editingAsset?.reserved === true;
+                    if (blocked && v) {
+                      alert('Faulty or reserved assets cannot be issued to technicians.');
+                      return;
+                    }
+                    setEditAssignedToId(v);
+                  }}
                   className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                 >
                   <option value="">Unassigned</option>
@@ -2894,6 +3361,59 @@ const Assets = () => {
                   ))}
                 </select>
               </div>
+              {editAssignedToId && (
+                <div className="md:col-span-2 border border-indigo-100 rounded-md p-3 bg-indigo-50/40">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600">Assign Quantity</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, Number.parseInt(formData?.quantity, 10) > 0 ? Number.parseInt(formData?.quantity, 10) : 1)}
+                        value={editAssignQuantity}
+                        onChange={(e) => setEditAssignQuantity(Number.parseInt(e.target.value, 10) || 1)}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Available: {Math.max(1, Number.parseInt(formData?.quantity, 10) > 0 ? Number.parseInt(formData?.quantity, 10) : 1)}.
+                        Remaining quantity stays in store if you assign less.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-sm font-medium text-gray-700">Create Gate Pass and email technician?</label>
+                    <div className="flex items-center gap-4 text-sm">
+                      <label className="inline-flex items-center gap-1">
+                        <input type="radio" checked={editNeedGatePass === true} onChange={() => setEditNeedGatePass(true)} />
+                        Yes
+                      </label>
+                      <label className="inline-flex items-center gap-1">
+                        <input type="radio" checked={editNeedGatePass === false} onChange={() => setEditNeedGatePass(false)} />
+                        No
+                      </label>
+                    </div>
+                  </div>
+                  {editNeedGatePass && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600">Moving From *</label>
+                        <input type="text" value={editGatePassOrigin} onChange={(e) => setEditGatePassOrigin(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600">Moving To *</label>
+                        <input type="text" list="movement-destination-options" value={editGatePassDestination} onChange={(e) => setEditGatePassDestination(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm" placeholder="Technician / destination" />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-medium text-gray-600">Justification (optional)</label>
+                        <input type="text" value={editGatePassJustification} onChange={(e) => setEditGatePassJustification(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm" />
+                      </div>
+                      <div className="md:col-span-2 text-xs text-gray-600">
+                        Ticket Number is required when gate pass is enabled. Gate pass + assignment email will be sent through existing assign flow.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {customEditableColumns.length > 0 && (
                 <div className="md:col-span-2 border-t border-gray-100 pt-3 mt-1">
                   <h3 className="text-sm font-semibold text-gray-700 mb-2">Custom Columns</h3>
@@ -3051,6 +3571,34 @@ const Assets = () => {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-gray-700">Device Group</label>
+                <input type="text" name="device_group" value={addForm.device_group || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Inbound From</label>
+                <input type="text" name="inbound_from" value={addForm.inbound_from || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">IP Address</label>
+                <input type="text" name="ip_address" value={addForm.ip_address || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Building</label>
+                <input type="text" name="building" value={addForm.building || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">State Comments</label>
+                <input type="text" name="state_comments" value={addForm.state_comments || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Remarks</label>
+                <input type="text" name="remarks" value={addForm.remarks || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700">Comments</label>
+                <input type="text" name="comments" value={addForm.comments || ''} onChange={handleAddChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-700">Price</label>
                 <input
                   type="number"
@@ -3129,6 +3677,7 @@ const Assets = () => {
                   <option value="Used">Used</option>
                   <option value="Faulty">Faulty</option>
                   <option value="Repaired">Repaired</option>
+                  <option value="Disposed">Disposed</option>
                 </select>
               </div>
               <div>
@@ -3142,6 +3691,8 @@ const Assets = () => {
                   <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
                   <option value="Missing">Missing</option>
+                  <option value="Reserved">Reserved</option>
+                  <option value="Under Repair/Workshop">Under Repair/Workshop</option>
                 </select>
               </div>
             </div>
@@ -3168,15 +3719,15 @@ const Assets = () => {
       {/* Bulk Edit Modal */}
       {showBulkEditModal && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex justify-center items-center z-50">
-          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold mb-4">Bulk Edit Assets</h2>
-            <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-purple-50 p-3 rounded text-sm text-purple-800 mb-2">
                 Select fields to update for all selected assets. Leave blank to keep existing values.
               </div>
 
               {/* Product Selector for Bulk Edit */}
-              <div className="grid grid-cols-1 gap-3 border-b pb-4 mb-2">
+              <div className="grid grid-cols-1 gap-3 border-b pb-4 mb-2 md:col-span-2">
                  <div>
                     <label className="block text-sm font-medium text-gray-700">Product (Optional)</label>
                     <select
@@ -3205,6 +3756,7 @@ const Assets = () => {
                   <option value="In Store">In Store</option>
                   <option value="In Use">In Use</option>
                   <option value="Missing">Missing</option>
+                  <option value="Under Repair/Workshop">Under Repair/Workshop</option>
                 </select>
               </div>
               <div>
@@ -3244,8 +3796,36 @@ const Assets = () => {
                   ))}
                 </select>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Device Group (Optional)</label>
+                <input type="text" value={bulkForm.device_group || ''} onChange={(e) => setBulkForm({ ...bulkForm, device_group: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Inbound From (Optional)</label>
+                <input type="text" value={bulkForm.inbound_from || ''} onChange={(e) => setBulkForm({ ...bulkForm, inbound_from: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">IP Address (Optional)</label>
+                <input type="text" value={bulkForm.ip_address || ''} onChange={(e) => setBulkForm({ ...bulkForm, ip_address: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Building (Optional)</label>
+                <input type="text" value={bulkForm.building || ''} onChange={(e) => setBulkForm({ ...bulkForm, building: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">State Comments (Optional)</label>
+                <input type="text" value={bulkForm.state_comments || ''} onChange={(e) => setBulkForm({ ...bulkForm, state_comments: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Remarks (Optional)</label>
+                <input type="text" value={bulkForm.remarks || ''} onChange={(e) => setBulkForm({ ...bulkForm, remarks: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Comments (Optional)</label>
+                <input type="text" value={bulkForm.comments || ''} onChange={(e) => setBulkForm({ ...bulkForm, comments: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="No change" />
+              </div>
             </div>
-            <div className="mt-6 flex justify-end space-x-3">
+            <div className="mt-6 flex justify-end space-x-3 md:col-span-2">
               <button
                 onClick={() => setShowBulkEditModal(false)}
                 className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300"
@@ -3263,6 +3843,11 @@ const Assets = () => {
           </div>
         </div>
       )}
+      <datalist id="movement-destination-options">
+        {movementDestinationOptions.map((opt) => (
+          <option key={opt} value={opt} />
+        ))}
+      </datalist>
 
       {/* Custom Confirmation Modal */}
       {confirmModal.isOpen && (

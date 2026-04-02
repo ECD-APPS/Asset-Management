@@ -122,6 +122,55 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
+// @desc    Dashboard stats (quantities + low stock)
+// @route   GET /api/consumables/stats
+// @access  Private
+router.get('/stats', protect, async (req, res) => {
+  try {
+    const filter = {};
+    if (req.activeStore) {
+      filter.store = req.activeStore;
+    } else if (req.user.role !== 'Super Admin' && req.user.assignedStore) {
+      filter.store = req.user.assignedStore;
+    }
+
+    const rows = await Consumable.find(filter)
+      .select('name type model serial_number mac_address quantity min_quantity location comment updatedAt')
+      .sort({ quantity: 1, updatedAt: -1 })
+      .lean();
+
+    const stats = rows.reduce((acc, row) => {
+      const qty = Math.max(toNumber(row?.quantity, 0), 0);
+      const minQty = Math.max(toNumber(row?.min_quantity, 0), 0);
+      acc.totalQuantity += qty;
+      acc.itemCount += 1;
+      if (minQty > 0 && qty <= minQty) {
+        acc.lowStockCount += 1;
+        acc.lowStockQuantity += qty;
+      }
+      return acc;
+    }, { totalQuantity: 0, itemCount: 0, lowStockCount: 0, lowStockQuantity: 0 });
+
+    const lowStockItems = rows
+      .filter((row) => {
+        const qty = Math.max(toNumber(row?.quantity, 0), 0);
+        const minQty = Math.max(toNumber(row?.min_quantity, 0), 0);
+        return minQty > 0 && qty <= minQty;
+      })
+      .slice(0, 5);
+
+    res.json({
+      totalQuantity: stats.totalQuantity || 0,
+      itemCount: stats.itemCount || 0,
+      lowStockCount: stats.lowStockCount || 0,
+      lowStockQuantity: stats.lowStockQuantity || 0,
+      lowStockItems
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @desc    Create consumable
 // @route   POST /api/consumables
 // @access  Private/Admin

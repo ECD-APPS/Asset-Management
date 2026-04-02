@@ -7,6 +7,8 @@ const TechScanner = () => {
   const [ticketNumber, setTicketNumber] = useState('');
   const [installationLocation, setInstallationLocation] = useState('');
   const [manualSearch, setManualSearch] = useState('');
+  const [manualRfidSearch, setManualRfidSearch] = useState('');
+  const [manualQrSearch, setManualQrSearch] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [bulkAssets, setBulkAssets] = useState([]);
@@ -68,19 +70,26 @@ const TechScanner = () => {
     })[0] || null;
   };
 
-  const searchAsset = async (query) => {
+  const searchAsset = async (query, searchType = '') => {
     if (loading) return;
+    const q = String(query || '').trim();
+    if (!q) return;
     setLoading(true);
     setMessage('');
     setShowAddForm(false);
     try {
-      const res = await api.get('/assets/search', { params: { query } });
+      const params = { query: q, ...(searchType ? { type: searchType } : {}) };
+      const res = await api.get('/assets/search', { params });
       if (res.data.length > 0) {
-        setAsset(pickBestScannerMatch(res.data, query));
+        setAsset(pickBestScannerMatch(res.data, q));
       } else {
         setMessage('Asset not found');
         setAsset(null);
-        setAddForm(prev => ({ ...prev, serial_number: query }));
+        // If the user searched by serial, prefill serial_number; for RFID/QR we can't safely infer serial.
+        setAddForm(prev => ({
+          ...prev,
+          serial_number: searchType ? '' : q
+        }));
         setShowAddForm(true);
       }
     } catch {
@@ -317,22 +326,60 @@ const TechScanner = () => {
       {!asset && (
         <div className="space-y-6">
           <div>
-            <p className="text-center text-gray-500 mb-2">Search by last 4 digits or full serial</p>
-            <div className="flex gap-2">
-              <input 
-                type="text" 
-                value={manualSearch} 
-                onChange={(e) => setManualSearch(e.target.value)} 
-                placeholder="Last 4 digits or Serial" 
-                className="flex-1 border p-2 rounded"
-              />
-              <button 
-                onClick={() => searchAsset(manualSearch)} 
-                disabled={loading}
-                className={`text-black px-4 py-2 rounded ${loading ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
-              >
-                {loading ? 'Searching...' : 'Search'}
-              </button>
+            <p className="text-center text-gray-500 mb-2">
+              Search by serial (last 4 or full), RFID, or QR Code
+            </p>
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualSearch}
+                  onChange={(e) => setManualSearch(e.target.value)}
+                  placeholder="Last 4 digits or Serial"
+                  className="flex-1 border p-2 rounded"
+                />
+                <button
+                  onClick={() => searchAsset(manualSearch)}
+                  disabled={loading}
+                  className={`text-black px-4 py-2 rounded ${loading ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
+                >
+                  {loading ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualRfidSearch}
+                  onChange={(e) => setManualRfidSearch(e.target.value)}
+                  placeholder="RFID"
+                  className="flex-1 border p-2 rounded"
+                />
+                <button
+                  onClick={() => searchAsset(manualRfidSearch, 'rfid')}
+                  disabled={loading}
+                  className={`text-black px-4 py-2 rounded ${loading ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
+                >
+                  {loading ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualQrSearch}
+                  onChange={(e) => setManualQrSearch(e.target.value)}
+                  placeholder="QR Code"
+                  className="flex-1 border p-2 rounded"
+                />
+                <button
+                  onClick={() => searchAsset(manualQrSearch, 'qr')}
+                  disabled={loading}
+                  className={`text-black px-4 py-2 rounded ${loading ? 'bg-amber-300 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700'}`}
+                >
+                  {loading ? 'Searching...' : 'Search'}
+                </button>
+              </div>
             </div>
           </div>
 
