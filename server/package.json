@@ -11,32 +11,32 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.967.0",
-    "@aws-sdk/lib-storage": "^3.967.0",
-    "@supabase/supabase-js": "^2.78.0",
+    "@aws-sdk/client-s3": "^3.1022.0",
+    "@aws-sdk/lib-storage": "^3.1022.0",
+    "@supabase/supabase-js": "^2.101.1",
     "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",
-    "cookie-parser": "^1.4.6",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
     "exceljs": "^4.4.0",
-    "express": "^4.18.2",
+    "express": "^4.22.1",
     "express-mongo-sanitize": "^2.2.0",
-    "express-rate-limit": "^7.1.0",
-    "express-validator": "^7.0.1",
-    "helmet": "^7.0.0",
-    "mongoose": "^8.0.0",
+    "express-rate-limit": "^7.5.1",
+    "express-validator": "^7.3.2",
+    "helmet": "^7.2.0",
+    "mongoose": "^8.23.0",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
-    "nodemailer": "^8.0.0",
+    "nodemailer": "^8.0.4",
     "sharp": "^0.34.5",
     "unzipper": "^0.12.3",
-    "winston": "^3.11.0"
+    "winston": "^3.19.0"
   },
   "devDependencies": {
     "mongodb-memory-server": "^10.4.3",
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.1.14"
   },
   "engines": {
     "node": ">=20.0.0 <21"
