@@ -264,14 +264,16 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
               Gate Pass — Expo City Dubai
             </div>
             <div className="flex items-center justify-end gap-2">
-              <img
-                src={gatePassLogoUrl || '/gatepass-logo.svg'}
-                alt=""
-                className="pass-header-emblem object-contain shrink-0"
-                width={GATE_PASS_HEADER_BOX_PX}
-                height={GATE_PASS_HEADER_BOX_PX}
+              <div
+                className="pass-header-logo-wrap flex shrink-0 items-center justify-center"
                 style={{ width: GATE_PASS_HEADER_BOX_PX, height: GATE_PASS_HEADER_BOX_PX }}
-              />
+              >
+                <img
+                  src={gatePassLogoUrl || '/gatepass-logo.svg'}
+                  alt=""
+                  className="pass-header-emblem max-h-full max-w-full object-contain"
+                />
+              </div>
             </div>
           </div>
 
@@ -462,9 +464,9 @@ const ViewModal = ({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto pass-preview-modal">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] overflow-y-auto relative pass-preview-card">
-        <div className="sticky top-0 bg-white z-10 border-b p-4 flex justify-between items-center no-print">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto pass-preview-modal">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-[min(1240px,calc(100vw-1.5rem))] max-h-[92vh] overflow-hidden flex flex-col relative pass-preview-card">
+        <div className="shrink-0 sticky top-0 bg-white z-10 border-b p-3 sm:p-4 flex justify-between items-center gap-2 no-print">
            <h2 className="text-lg font-bold">Pass Preview</h2>
            <div className="flex gap-2 flex-wrap justify-end">
               {pass.approvalStatus === 'pending' && typeof onApprove === 'function' && (
@@ -498,12 +500,13 @@ const ViewModal = ({
            </div>
         </div>
         
-        {/* Preview Content (Visual Duplicate of Print Template) */}
-        <div className="p-6 bg-slate-100 flex justify-center pass-print-root">
-          <div
-            ref={previewRef}
-            className="bg-white p-8 shadow-md border-2 border-slate-800 w-full max-w-[297mm] min-h-[210mm] relative overflow-visible pass-print-sheet text-[11px] leading-snug"
-          >
+        {/* Preview: A4 landscape width 297mm; scroll horizontally if the modal is narrower */}
+        <div className="flex-1 min-h-0 overflow-auto bg-slate-100 pass-print-root">
+          <div className="p-4 sm:p-6">
+            <div
+              ref={previewRef}
+              className="pass-preview-a4-landscape bg-white p-6 sm:p-8 shadow-md border-2 border-slate-800 relative overflow-visible pass-print-sheet text-[11px] leading-snug mx-auto"
+            >
              <img
                src={gatePassLogoUrl || '/gatepass-logo.svg'}
                alt=""
@@ -519,14 +522,16 @@ const ViewModal = ({
                   Gate Pass — Expo City Dubai
                 </div>
                 <div className="flex items-center justify-end gap-2">
-                  <img
-                    src={gatePassLogoUrl || '/gatepass-logo.svg'}
-                    alt=""
-                    className="pass-header-emblem object-contain shrink-0"
-                    width={GATE_PASS_HEADER_BOX_PX}
-                    height={GATE_PASS_HEADER_BOX_PX}
+                  <div
+                    className="pass-header-logo-wrap flex shrink-0 items-center justify-center"
                     style={{ width: GATE_PASS_HEADER_BOX_PX, height: GATE_PASS_HEADER_BOX_PX }}
-                  />
+                  >
+                    <img
+                      src={gatePassLogoUrl || '/gatepass-logo.svg'}
+                      alt=""
+                      className="pass-header-emblem max-h-full max-w-full object-contain"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -668,6 +673,7 @@ const ViewModal = ({
                   </div>
                 </div>
               </div>
+            </div>
           </div>
         </div>
       </div>
@@ -723,6 +729,12 @@ const Passes = () => {
         max-width: 277mm !important;
         box-sizing: border-box !important;
       }
+      .pass-header-logo-wrap {
+        width: 30mm !important;
+        height: 30mm !important;
+        flex-shrink: 0 !important;
+        box-sizing: border-box !important;
+      }
       .pass-header-emblem {
         width: 30mm !important;
         height: 30mm !important;
@@ -733,6 +745,14 @@ const Passes = () => {
         object-fit: contain !important;
         box-sizing: border-box !important;
         flex-shrink: 0 !important;
+      }
+      .pass-header-logo-wrap .pass-header-emblem {
+        width: 100% !important;
+        height: 100% !important;
+        max-width: 100% !important;
+        max-height: 100% !important;
+        min-width: 0 !important;
+        min-height: 0 !important;
       }
       .pass-print-table { width: 100% !important; table-layout: fixed !important; }
       .pass-print-table thead { display: table-header-group !important; }
@@ -866,6 +886,13 @@ const Passes = () => {
           page-break-after: auto !important;
         }
 
+        .pass-header-logo-wrap {
+          width: 30mm !important;
+          height: 30mm !important;
+          flex-shrink: 0 !important;
+          box-sizing: border-box !important;
+        }
+
         .pass-header-emblem {
           width: 30mm !important;
           height: 30mm !important;
@@ -876,6 +903,15 @@ const Passes = () => {
           object-fit: contain !important;
           box-sizing: border-box !important;
           flex-shrink: 0 !important;
+        }
+
+        .pass-header-logo-wrap .pass-header-emblem {
+          width: 100% !important;
+          height: 100% !important;
+          max-width: 100% !important;
+          max-height: 100% !important;
+          min-width: 0 !important;
+          min-height: 0 !important;
         }
 
         .pass-print-table {
@@ -918,6 +954,23 @@ const Passes = () => {
           border-radius: 0 !important;
           box-shadow: none !important;
           overflow: visible !important;
+        }
+
+        .pass-preview-a4-landscape {
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: 277mm !important;
+        }
+      }
+
+      /* On-screen preview: A4 landscape — 297mm wide (long edge), min 210mm short edge */
+      @media screen {
+        .pass-preview-a4-landscape {
+          width: 297mm;
+          min-width: 297mm;
+          max-width: 297mm;
+          min-height: 210mm;
+          box-sizing: border-box;
         }
       }
     `;
