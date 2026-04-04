@@ -2973,20 +2973,20 @@ const Assets = () => {
         </div>
       )}
 
-      {/* Desktop Table View */}
-      <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
-        <table className="min-w-full text-sm">
+      {/* Desktop Table View — scroll X/Y inside card; wide tables get a horizontal scrollbar */}
+      <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-auto max-h-[min(72vh,calc(100dvh-14rem))] overscroll-contain [scrollbar-gutter:stable]">
+        <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-200">
+            <tr className="border-b border-slate-200">
               {user?.role !== 'Viewer' && (
-                <th className="px-3 py-2 md:px-4 md:py-3 text-center">
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 md:px-4 md:py-3 text-center shadow-[inset_0_-1px_0_0_rgb(226,232,240)]">
                   <input onClick={(e) => e.stopPropagation()} type="checkbox" checked={selectedIds.length === assets.length && assets.length > 0} onChange={toggleSelectAll} />
                 </th>
               )}
               {orderedVisibleColumns.map((key) => (
                 <th
                   key={key}
-                  className={`px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider ${columnMeta[key]?.thClass || ''}`}
+                  className={`sticky top-0 z-20 bg-slate-50 px-3 py-2 md:px-6 md:py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap shadow-[inset_0_-1px_0_0_rgb(226,232,240)] ${columnMeta[key]?.thClass || ''}`}
                 >
                   {columnDefinitionMap.get(key)?.label || columnMeta[key]?.label || key}
                 </th>
@@ -3009,7 +3009,7 @@ const Assets = () => {
       </div>
 
       {/* Mobile Card View */}
-      <div className="md:hidden space-y-4 mb-4">
+      <div className="md:hidden space-y-4 mb-4 max-h-[min(72vh,calc(100dvh-12rem))] overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]">
         {displayedAssets.map((asset) => (
           <div key={asset._id} className={`bg-white p-4 rounded-lg shadow-sm border ${asset.isDuplicate ? 'border-yellow-400 bg-yellow-50' : 'border-gray-200'}`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
             <div className="flex justify-between items-start mb-3">
