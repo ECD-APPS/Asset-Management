@@ -148,6 +148,7 @@ const buildPieConfig = ({
       chart: {
         type: 'donut',
         fontFamily: 'inherit',
+        animations: { enabled: false },
         dropShadow: vectorStyle
           ? { enabled: true, top: 8, left: 0, blur: 14, color: '#0f172a', opacity: 0.22 }
           : { enabled: false }
@@ -431,6 +432,7 @@ const DashboardCharts = ({
         type: 'bar',
         toolbar: { show: false },
         fontFamily: 'inherit',
+        animations: { enabled: false },
         dropShadow: useVectorPieStyle
           ? { enabled: true, top: 8, left: 0, blur: 12, color: '#334155', opacity: 0.24 }
           : { enabled: false }
@@ -489,7 +491,7 @@ const DashboardCharts = ({
       data: [safeOverview.repaired || 0, safeOverview.underRepairWorkshop || 0, safeOverview.disposed || 0]
     }];
     const growthOptions = {
-      chart: { type: 'area', toolbar: { show: false }, fontFamily: 'inherit', animations: { enabled: true } },
+      chart: { type: 'area', toolbar: { show: false }, fontFamily: 'inherit', animations: { enabled: false } },
       dataLabels: { enabled: false },
       stroke: { curve: 'smooth', width: 2 },
       xaxis: { categories: (growth || []).map((g) => g.name), axisBorder: { show: false }, axisTicks: { show: false } },

@@ -4,18 +4,30 @@ import { Truck, FileText, Box, CheckSquare, RefreshCw, Trash2, Database, AlertTr
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 
+/** Keep in sync with server `BASE_ASSET_COLUMNS` in routes/system.js (store default + reset). */
 const DEFAULT_ASSET_COLUMNS = [
   { id: 'uniqueId', label: 'Unique ID', key: 'uniqueId', visible: true, builtin: true },
-  { id: 'name', label: 'Name', key: 'name', visible: true, builtin: true },
+  { id: 'absCode', label: 'ABS Code', key: 'abs_code', visible: true, builtin: true },
+  { id: 'expoTag', label: 'Expo Tag', key: 'expo_tag', visible: true, builtin: true },
   { id: 'model', label: 'Model Number', key: 'model_number', visible: true, builtin: true },
   { id: 'serial', label: 'Serial Number', key: 'serial_number', visible: true, builtin: true },
-  { id: 'serialLast4', label: 'Serial Last 4', key: 'serial_last_4', visible: true, builtin: true },
-  { id: 'ticket', label: 'Ticket', key: 'ticket_number', visible: true, builtin: true },
-  { id: 'poNumber', label: 'PO Number', key: 'po_number', visible: true, builtin: true },
   { id: 'mac', label: 'MAC Address', key: 'mac_address', visible: true, builtin: true },
+  { id: 'ipAddress', label: 'IP Address', key: 'ip_address', visible: true, builtin: true },
+  { id: 'manufacturer', label: 'Manufacturer', key: 'manufacturer', visible: true, builtin: true },
+  { id: 'ticket', label: 'Ticket', key: 'ticket_number', visible: true, builtin: true },
+  { id: 'assignedTo', label: 'Assigned To', key: 'assigned_to.name', visible: true, builtin: true },
+  { id: 'inboundFrom', label: 'Inbound From', key: 'inbound_from', visible: true, builtin: true },
+  { id: 'outboundTo', label: 'Outbound To', key: 'outbound_to', visible: true, builtin: true },
+  { id: 'name', label: 'Name', key: 'name', visible: true, builtin: true },
+  { id: 'productNumber', label: 'Product Number', key: 'product_number', visible: true, builtin: true },
+  { id: 'operatingSystem', label: 'Operating System', key: 'operating_system', visible: true, builtin: true },
+  { id: 'specification', label: 'Specification', key: 'specification', visible: true, builtin: true },
+  { id: 'serviceTag', label: 'Service Tag', key: 'service_tag', visible: true, builtin: true },
+  { id: 'assignToDepartment', label: 'Assign To Department', key: 'assign_to_department', visible: true, builtin: true },
+  { id: 'serialLast4', label: 'Serial Last 4', key: 'serial_last_4', visible: true, builtin: true },
+  { id: 'poNumber', label: 'PO Number', key: 'po_number', visible: true, builtin: true },
   { id: 'rfid', label: 'RFID', key: 'rfid', visible: true, builtin: true },
   { id: 'qr', label: 'QR Code', key: 'qr_code', visible: true, builtin: true },
-  { id: 'manufacturer', label: 'Manufacturer', key: 'manufacturer', visible: true, builtin: true },
   { id: 'condition', label: 'Condition', key: 'condition', visible: true, builtin: true },
   { id: 'status', label: 'Status', key: 'status', visible: true, builtin: true },
   { id: 'prevStatus', label: 'Prev Status', key: 'previous_status', visible: true, builtin: true },
@@ -23,10 +35,15 @@ const DEFAULT_ASSET_COLUMNS = [
   { id: 'location', label: 'Location', key: 'location', visible: true, builtin: true },
   { id: 'quantity', label: 'Quantity', key: 'quantity', visible: true, builtin: true },
   { id: 'vendor', label: 'Vendor', key: 'vendor_name', visible: true, builtin: true },
+  { id: 'maintenanceVendor', label: 'Maintenance Vendor', key: 'maintenance_vendor', visible: true, builtin: true },
+  { id: 'deviceGroup', label: 'Device Group', key: 'device_group', visible: true, builtin: true },
+  { id: 'building', label: 'Building', key: 'building', visible: true, builtin: true },
+  { id: 'stateComments', label: 'State Comments', key: 'state_comments', visible: true, builtin: true },
+  { id: 'remarks', label: 'Remarks', key: 'remarks', visible: true, builtin: true },
+  { id: 'comments', label: 'Comments', key: 'comments', visible: true, builtin: true },
   { id: 'source', label: 'Source', key: 'source', visible: true, builtin: true },
   { id: 'deliveredBy', label: 'Delivered By', key: 'delivered_by_name', visible: true, builtin: true },
   { id: 'deliveredAt', label: 'Delivered At', key: 'delivered_at', visible: true, builtin: true },
-  { id: 'assignedTo', label: 'Assigned To', key: 'assigned_to.name', visible: true, builtin: true },
   { id: 'dateTime', label: 'Date & Time', key: 'updatedAt', visible: true, builtin: true },
   { id: 'price', label: 'Price', key: 'price', visible: true, builtin: true },
   { id: 'action', label: 'Action', key: 'action', visible: true, builtin: true }
@@ -109,17 +126,6 @@ const Setup = () => {
       fetchData();
     }
   }, [isMainAdmin]);
-
-  useEffect(() => {
-    if (!canManageEmail) return;
-    if (user?.role === 'Admin') {
-      const ownStoreId = resolveUserStoreId();
-      if (ownStoreId && selectedStoreId !== ownStoreId) {
-        setSelectedStoreId(ownStoreId);
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.role, user?.assignedStore]);
 
   useEffect(() => {
     if (!canManageEmail) return;
@@ -281,7 +287,11 @@ const Setup = () => {
 
   const saveAssetColumnsConfig = async () => {
     if (!effectiveEmailStoreId) {
-      alert('Store context is required.');
+      alert(
+        user?.role === 'Super Admin'
+          ? 'Select a store first (use the store dropdown under Store Email Settings, or select one below).'
+          : 'No store is assigned to your account; assign a store before saving column defaults.'
+      );
       return;
     }
     try {
@@ -613,7 +623,7 @@ const Setup = () => {
                               setDeletionRequests(prev => prev.filter(s => s._id !== store._id));
                               alert('Request rejected.');
                             } catch (e) {
-                              alert('Error: ' + e.message);
+                              alert('Error: ' + (e.response?.data?.message || e.message));
                             }
                           }}
                           className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors text-sm font-medium"
@@ -718,8 +728,8 @@ const Setup = () => {
         </div>
       )}
 
-      {/* Store Admin Deletion Request */}
-      {canManageNotificationPreferences && (
+      {/* Store Admin Deletion Request — Super Admin must use Database Management above */}
+      {user?.role === 'Admin' && (
         <div className="mt-12 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
            <div className="flex items-center justify-between mb-6">
             <div className="flex items-center">
@@ -764,6 +774,9 @@ const Setup = () => {
             <Mail className="w-6 h-6 text-indigo-600 mr-2" />
             <h2 className="text-xl font-bold text-gray-800">Notification Emails</h2>
           </div>
+          <p className="text-sm text-gray-500 mb-4">
+            These toggles apply to <strong>your admin account</strong> (who receives notification copy), not to a store record.
+          </p>
           {notifLoading ? (
             <p className="text-sm text-gray-500">Loading notification settings...</p>
           ) : (
@@ -838,8 +851,33 @@ const Setup = () => {
             <h2 className="text-xl font-bold text-gray-800">Assets Columns Customization</h2>
           </div>
           <p className="text-sm text-gray-500 mb-4">
-            Choose and reorder the columns you want to see in Assets table (for this store).
+            Default column layout for the <strong>Assets</strong> page for this store. Users can still save a personal layout from Assets unless they clear it.
           </p>
+          {user?.role === 'Super Admin' && (
+            <div className="mb-4 rounded-lg border border-amber-100 bg-amber-50/80 px-4 py-3">
+              <label className="block text-sm font-semibold text-gray-800 mb-1">Store (column defaults)</label>
+              <select
+                value={selectedStoreId}
+                onChange={(e) => setSelectedStoreId(e.target.value)}
+                className="w-full max-w-md border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+              >
+                <option value="">Select store…</option>
+                {stores.map((store) => (
+                  <option key={store._id} value={store._id}>
+                    {store.name}
+                  </option>
+                ))}
+              </select>
+              {!effectiveEmailStoreId && (
+                <p className="mt-2 text-xs text-amber-800">Pick a store to load and save column defaults.</p>
+              )}
+            </div>
+          )}
+          {user?.role === 'Admin' && !effectiveEmailStoreId && (
+            <p className="mb-4 text-sm text-amber-700 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              No store is assigned to your account; column defaults cannot be loaded until an administrator assigns you to a store.
+            </p>
+          )}
           {assetColumnsLoading ? (
             <p className="text-sm text-gray-500">Loading columns configuration...</p>
           ) : (
@@ -921,7 +959,7 @@ const Setup = () => {
                 <button
                   type="button"
                   onClick={saveAssetColumnsConfig}
-                  disabled={assetColumnsSaving}
+                  disabled={assetColumnsSaving || !effectiveEmailStoreId}
                   className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm"
                 >
                   {assetColumnsSaving ? 'Saving...' : 'Save Columns Layout'}

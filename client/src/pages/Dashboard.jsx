@@ -126,6 +126,7 @@ const Dashboard = () => {
   const [consumablesError, setConsumablesError] = useState('');
   const [toolsError, setToolsError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [systemOk, setSystemOk] = useState(true);
   const [_HEALTH, setHealth] = useState({ backend: false, db: false });
@@ -135,6 +136,16 @@ const Dashboard = () => {
   const lowStockTriggerRef = useRef(null);
   const lowStockOverlayRef = useRef(null);
   const fetchSeqRef = useRef(0);
+  const statsRef = useRef(null);
+
+  useEffect(() => {
+    statsRef.current = stats;
+  }, [stats]);
+
+  // Download chart chunk in parallel with /assets/stats so analytics paint sooner after data arrives.
+  useEffect(() => {
+    import('../components/DashboardCharts');
+  }, []);
 
   const analyticsSectionOptions = useMemo(
     () => [
@@ -296,7 +307,11 @@ const Dashboard = () => {
     const fetchStats = async () => {
       const maxAttempts = 3;
       let lastError = null;
-      if (!isStale()) setLoading(true);
+      const hadStats = Boolean(statsRef.current);
+      if (!isStale()) {
+        if (hadStats) setRefreshing(true);
+        else setLoading(true);
+      }
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           if (!isStale()) setError(null);
@@ -310,28 +325,38 @@ const Dashboard = () => {
           if (isStale()) return;
           setStats(normalizeStats(statsResponse.data));
           setRecentAssets(recentResponse.data?.assets || recentResponse.data?.items || []);
+          setLastUpdated(new Date());
+          // Core dashboard (metrics, charts, recent table) — show immediately; do not wait on consumables/tools.
+          if (!isStale()) {
+            setLoading(false);
+            setRefreshing(false);
+          }
+
+          if (!hadStats) {
+            setConsumablesStats(null);
+            setToolsStats(null);
+          }
           setConsumablesError('');
           setToolsError('');
-          try {
-            const [consumablesResponse, toolsResponse] = await Promise.all([
-              api.get('/consumables/stats'),
-              api.get('/tools/stats')
-            ]);
-            setConsumablesStats(consumablesResponse.data || {});
-            setToolsStats(toolsResponse.data || {});
-          } catch (e) {
-            // Consumables/tools are "nice to have" widgets; don't block the main dashboard.
-            console.warn('Failed to load consumables/tools stats:', e);
-            setConsumablesStats({});
-            setToolsStats({});
-            const msg =
-              e?.response?.data?.message ||
-              e?.message ||
-              'Unknown error';
-            setConsumablesError(msg);
-            setToolsError(msg);
-          }
-          setLastUpdated(new Date());
+          const extrasSeq = fetchSeq;
+          Promise.all([api.get('/consumables/stats'), api.get('/tools/stats')])
+            .then(([consumablesResponse, toolsResponse]) => {
+              if (cancelled || extrasSeq !== fetchSeqRef.current) return;
+              setConsumablesStats(consumablesResponse.data || {});
+              setToolsStats(toolsResponse.data || {});
+              setConsumablesError('');
+              setToolsError('');
+            })
+            .catch((e) => {
+              if (cancelled || extrasSeq !== fetchSeqRef.current) return;
+              console.warn('Failed to load consumables/tools stats:', e);
+              setConsumablesStats({});
+              setToolsStats({});
+              const msg = e?.response?.data?.message || e?.message || 'Unknown error';
+              setConsumablesError(msg);
+              setToolsError(msg);
+            });
+
           lastError = null;
           break;
         } catch (error) {
@@ -345,10 +370,15 @@ const Dashboard = () => {
       if (lastError) {
         if (isStale()) return;
         console.error('Error fetching stats:', lastError);
-        const scopeLabel = isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : '';
-        setError(`Failed to load ${scopeLabel}dashboard data. Please try refreshing.`);
+        if (!statsRef.current) {
+          const scopeLabel = isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : '';
+          setError(`Failed to load ${scopeLabel}dashboard data. Please try refreshing.`);
+        }
       }
-      if (!isStale()) setLoading(false);
+      if (!isStale()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     };
 
     fetchStats();
@@ -396,7 +426,7 @@ const Dashboard = () => {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [showLowStockPanel]);
 
-  if (loading) return (
+  if (loading && !stats) return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center gap-5 bg-app-page px-4">
       <div className="relative h-16 w-16">
         <div className="absolute inset-0 rounded-full border-2 border-app-card" />
@@ -409,7 +439,7 @@ const Dashboard = () => {
     </div>
   );
 
-  if (error) return (
+  if (error && !stats) return (
     <div className="min-h-screen bg-app-page flex items-center justify-center p-6">
       <div className="bg-app-card p-8 rounded-2xl text-center max-w-md w-full border border-app-card shadow-lg">
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-500/10">
@@ -467,6 +497,9 @@ const Dashboard = () => {
                   <span className="inline-flex items-center gap-1 rounded-full border border-app-card bg-app-elevated px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-app-muted">
                     <Sparkles className="h-3 w-3 text-app-accent" />
                     Live
+                    {refreshing && (
+                      <span className="ml-1 inline-flex h-1.5 w-1.5 rounded-full bg-app-accent animate-pulse" title="Refreshing data" aria-hidden />
+                    )}
                   </span>
                 </div>
                 <p className="text-app-muted mt-1.5 text-sm leading-relaxed">
@@ -537,18 +570,30 @@ const Dashboard = () => {
         {showConsumablesBanner && (
           <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
             <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Consumables</p>
-            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{consumablesTotalQty}</p>
+            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">
+              {consumablesStats === null ? (
+                <span className="inline-block h-7 w-14 rounded-md bg-app-card animate-pulse" aria-hidden />
+              ) : (
+                consumablesTotalQty
+              )}
+            </p>
             <p className="text-[11px] text-app-muted mt-0.5">
-              {consumablesError ? `Error: ${consumablesError}` : `${consumablesItems} items in stock`}
+              {consumablesError ? `Error: ${consumablesError}` : consumablesStats === null ? 'Loading…' : `${consumablesItems} items in stock`}
             </p>
           </div>
         )}
         {showToolsBanner && (
           <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
             <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Tools</p>
-            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{toolsAvailable}</p>
+            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">
+              {toolsStats === null ? (
+                <span className="inline-block h-7 w-14 rounded-md bg-app-card animate-pulse" aria-hidden />
+              ) : (
+                toolsAvailable
+              )}
+            </p>
             <p className="text-[11px] text-app-muted mt-0.5">
-              {toolsError ? `Error: ${toolsError}` : `${toolsTotal} total tools`}
+              {toolsError ? `Error: ${toolsError}` : toolsStats === null ? 'Loading…' : `${toolsTotal} total tools`}
             </p>
           </div>
         )}
@@ -561,19 +606,35 @@ const Dashboard = () => {
             }`}
           >
             <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Low stock</p>
-            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{consumablesLowStockQty}</p>
+            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">
+              {consumablesStats === null ? (
+                <span className="inline-block h-7 w-14 rounded-md bg-app-card animate-pulse" aria-hidden />
+              ) : (
+                consumablesLowStockQty
+              )}
+            </p>
             <p className="text-[11px] text-app-muted mt-0.5">
-              {consumablesLowStockCount > 0
-                ? `${consumablesLowStockCount} consumable(s) at/below min (total qty shown)`
-                : 'Consumables at/below min qty'}
+              {consumablesStats === null
+                ? 'Loading…'
+                : consumablesLowStockCount > 0
+                  ? `${consumablesLowStockCount} consumable(s) at/below min (total qty shown)`
+                  : 'Consumables at/below min qty'}
             </p>
           </div>
         )}
         {showToolsStatusBanner && (
           <div className="rounded-xl border border-app-card bg-app-elevated px-4 py-3 shadow-sm">
             <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Tools status</p>
-            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">{toolsIssued + toolsMaintenance}</p>
-            <p className="text-[11px] text-app-muted mt-0.5">{toolsIssued} issued + {toolsMaintenance} maintenance</p>
+            <p className="text-xl font-bold text-app-main tabular-nums mt-0.5">
+              {toolsStats === null ? (
+                <span className="inline-block h-7 w-14 rounded-md bg-app-card animate-pulse" aria-hidden />
+              ) : (
+                toolsIssued + toolsMaintenance
+              )}
+            </p>
+            <p className="text-[11px] text-app-muted mt-0.5">
+              {toolsStats === null ? 'Loading…' : `${toolsIssued} issued + ${toolsMaintenance} maintenance`}
+            </p>
           </div>
         )}
       </div>
