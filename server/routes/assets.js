@@ -33,6 +33,25 @@ function capitalizeWords(s) {
   return String(s).toUpperCase();
 }
 
+/** Flat keys only; used on create/update so nested paths cannot be injected via customFields. */
+function sanitizeCustomFieldsPayload(input) {
+  const out = {};
+  Object.entries(input || {}).forEach(([rawKey, rawValue]) => {
+    const key = String(rawKey || '').trim();
+    if (!key || key.startsWith('$') || key.includes('.')) return;
+    if (rawValue === null || rawValue === undefined) {
+      out[key] = '';
+      return;
+    }
+    if (typeof rawValue === 'object') {
+      out[key] = JSON.stringify(rawValue);
+      return;
+    }
+    out[key] = String(rawValue);
+  });
+  return out;
+}
+
 /** Bulk import / export / template column order (keep in sync with client `BULK_ASSET_EXCEL_HEADERS`). */
 const BULK_ASSET_EXCEL_HEADERS = [
   'Category',
@@ -2081,7 +2100,7 @@ router.post('/', protect, restrictViewer, async (req, res) => {
     ticket_number, po_number, product_name, rfid, qr_code, quantity, vendor_name, price,
     device_group, inbound_from, outbound_to, expo_tag, abs_code, product_number,
     operating_system, specification, service_tag, assign_to_department,
-    ip_address, building, state_comments, remarks, comments
+    ip_address, building, state_comments, remarks, comments, customFields
   } = req.body;
   try {
     const normName = capitalizeWords(name);
@@ -2127,7 +2146,7 @@ router.post('/', protect, restrictViewer, async (req, res) => {
       }
     }
 
-    const asset = await Asset.create({
+    const createPayload = {
       name: normName,
       model_number,
       serial_number,
@@ -2170,7 +2189,15 @@ router.post('/', protect, restrictViewer, async (req, res) => {
           details: `Asset added by ${req.user?.name || 'Unknown User'}${req.user?.email ? ` (${req.user.email})` : ''}`
         }
       ]
-    });
+    };
+    if (customFields && typeof customFields === 'object' && !Array.isArray(customFields)) {
+      const sanitized = sanitizeCustomFieldsPayload(customFields);
+      if (Object.keys(sanitized).length > 0) {
+        createPayload.customFields = sanitized;
+      }
+    }
+
+    const asset = await Asset.create(createPayload);
 
     // Log Activity
     await ActivityLog.create({
@@ -5148,27 +5175,9 @@ router.put('/:id', protect, admin, async (req, res) => {
         }
       }
       if (customFields && typeof customFields === 'object' && !Array.isArray(customFields)) {
-        const sanitizeCustomFields = (input) => {
-          const out = {};
-          Object.entries(input || {}).forEach(([rawKey, rawValue]) => {
-            const key = String(rawKey || '').trim();
-            if (!key || key.startsWith('$') || key.includes('.')) return;
-            if (rawValue === null || rawValue === undefined) {
-              out[key] = '';
-              return;
-            }
-            if (typeof rawValue === 'object') {
-              out[key] = JSON.stringify(rawValue);
-              return;
-            }
-            out[key] = String(rawValue);
-          });
-          return out;
-        };
-
         asset.customFields = {
           ...(asset.customFields && typeof asset.customFields === 'object' ? asset.customFields : {}),
-          ...sanitizeCustomFields(customFields)
+          ...sanitizeCustomFieldsPayload(customFields)
         };
       }
 

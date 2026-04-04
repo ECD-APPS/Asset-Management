@@ -269,6 +269,34 @@ const NON_EDITABLE_CUSTOM_KEYS = new Set([
 ]);
 const MAINTENANCE_VENDOR_OPTIONS = ['Siemens', 'G42'];
 
+function buildCustomFieldsPayloadFromKeyedValues(keyedValues) {
+  const customFieldsPayload = {};
+  const setNested = (target, path, val) => {
+    const parts = String(path || '').split('.').filter(Boolean);
+    if (parts.length === 0) return;
+    let cursor = target;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const part = parts[i];
+      if (!cursor[part] || typeof cursor[part] !== 'object') cursor[part] = {};
+      cursor = cursor[part];
+    }
+    cursor[parts[parts.length - 1]] = val;
+  };
+
+  Object.entries(keyedValues || {}).forEach(([rawKey, rawValue]) => {
+    const key = String(rawKey || '').trim();
+    if (!key) return;
+    const value = rawValue == null ? '' : String(rawValue);
+    if (key.startsWith('customFields.')) {
+      setNested(customFieldsPayload, key.replace(/^customFields\./, ''), value);
+      return;
+    }
+    if (key.includes('.')) return;
+    customFieldsPayload[key] = value;
+  });
+  return customFieldsPayload;
+}
+
 const Assets = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -804,6 +832,7 @@ const Assets = () => {
     qr_code: ''
   });
   const [customEditValues, setCustomEditValues] = useState({});
+  const [addCustomFieldValues, setAddCustomFieldValues] = useState({});
   const [editAssignedToId, setEditAssignedToId] = useState('');
   const [editAssignQuantity, setEditAssignQuantity] = useState(1);
   const [editInstallationLocation, setEditInstallationLocation] = useState('');
@@ -839,6 +868,10 @@ const Assets = () => {
   const [limit, setLimit] = useState(25);
   const [total, setTotal] = useState(0);
   const [showAddModal, setShowAddModal] = useState(false);
+
+  useEffect(() => {
+    if (showAddModal) setAddCustomFieldValues({});
+  }, [showAddModal]);
   const [showImportModal, setShowImportModal] = useState(false);
   const [fullProducts, setFullProducts] = useState([]);
   const [manualLoading, setManualLoading] = useState(false);
@@ -1465,30 +1498,7 @@ const Assets = () => {
     if (!editingAsset || editSaving) return;
     try {
       setEditSaving(true);
-      const setNested = (target, path, val) => {
-        const parts = String(path || '').split('.').filter(Boolean);
-        if (parts.length === 0) return;
-        let cursor = target;
-        for (let i = 0; i < parts.length - 1; i += 1) {
-          const part = parts[i];
-          if (!cursor[part] || typeof cursor[part] !== 'object') cursor[part] = {};
-          cursor = cursor[part];
-        }
-        cursor[parts[parts.length - 1]] = val;
-      };
-
-      const customFieldsPayload = {};
-      Object.entries(customEditValues || {}).forEach(([rawKey, rawValue]) => {
-        const key = String(rawKey || '').trim();
-        if (!key) return;
-        const value = rawValue == null ? '' : String(rawValue);
-        if (key.startsWith('customFields.')) {
-          setNested(customFieldsPayload, key.replace(/^customFields\./, ''), value);
-          return;
-        }
-        if (key.includes('.')) return; // avoid mutating nested protected paths
-        customFieldsPayload[key] = value;
-      });
+      const customFieldsPayload = buildCustomFieldsPayloadFromKeyedValues(customEditValues);
 
       const updateData = { 
         ...formData,
@@ -1633,6 +1643,10 @@ const Assets = () => {
         ...addForm,
         product_name: selectedProduct
       };
+      const addCustomFields = buildCustomFieldsPayloadFromKeyedValues(addCustomFieldValues);
+      if (Object.keys(addCustomFields).length > 0) {
+        payload.customFields = addCustomFields;
+      }
       const selectedLocation = stores.find(
         (s) => String(s?.name || '').toLowerCase() === String(payload.location || '').toLowerCase()
       );
@@ -2644,7 +2658,11 @@ const Assets = () => {
         </div>
       )}
 
-      <div className="bg-white rounded-xl shadow border border-gray-100 p-4 mb-4">
+      <div
+        className={`bg-white rounded-xl shadow border border-gray-100 p-4 mb-4 ${
+          showColumnMenu ? 'relative z-50' : ''
+        }`}
+      >
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-center">
           <input
             type="text"
@@ -2728,8 +2746,9 @@ const Assets = () => {
               <Filter className="w-4 h-4" />
               {showAdvancedFilters ? 'Hide Filters' : 'Filters'}
             </button>
-            <div className="relative">
+            <div className="relative z-[60]">
               <button
+                type="button"
                 onClick={() => setShowColumnMenu(v => !v)}
                 className="inline-flex items-center gap-2 h-10 px-4 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-sm"
               >
@@ -2737,7 +2756,7 @@ const Assets = () => {
                 Columns
               </button>
               {showColumnMenu && (
-                <div className="absolute z-20 mt-2 right-0 bg-white border border-gray-200 shadow-xl rounded-lg p-3 w-64 max-h-72 overflow-auto">
+                <div className="absolute right-0 top-full z-[70] mt-2 w-64 max-h-[min(24rem,70vh)] overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-2xl">
                   <p className="text-[11px] text-slate-500 mb-2">Drag to reorder columns</p>
                   <button
                     type="button"
@@ -4220,6 +4239,41 @@ const Assets = () => {
                   <option value="Under Repair/Workshop">Under Repair/Workshop</option>
                 </select>
               </div>
+              {customEditableColumns.length > 0 && (
+                <div className="md:col-span-2 border-t border-gray-100 pt-3 mt-1">
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Custom Columns</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {customEditableColumns.map((column) => {
+                      const key = String(column?.key || '').trim();
+                      const useVendorSelect = isMaintenanceVendorColumn(column);
+                      return (
+                        <div key={column.id}>
+                          <label className="block text-sm font-medium text-gray-700">{column.label}</label>
+                          {useVendorSelect ? (
+                            <select
+                              value={addCustomFieldValues[key] || ''}
+                              onChange={(e) => setAddCustomFieldValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                            >
+                              <option value="">Select Maintenance Vendor</option>
+                              {MAINTENANCE_VENDOR_OPTIONS.map((option) => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={addCustomFieldValues[key] || ''}
+                              onChange={(e) => setAddCustomFieldValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="mt-6 flex justify-end space-x-3">
               <button

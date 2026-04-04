@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Truck, FileText, Box, CheckSquare, RefreshCw, Trash2, Database, AlertTriangle, Mail, Send, Palette, SlidersHorizontal, ArrowUp, ArrowDown, Plus } from 'lucide-react';
 import api from '../api/axios';
@@ -93,6 +93,9 @@ const Setup = () => {
   const [assetColumnsConfig, setAssetColumnsConfig] = useState(buildDefaultColumnsConfig);
   const [assetColumnsLoading, setAssetColumnsLoading] = useState(false);
   const [assetColumnsSaving, setAssetColumnsSaving] = useState(false);
+  const assetColumnsScrollRef = useRef(null);
+  const assetColumnsLoadEpochRef = useRef(0);
+  const assetColumnsUserMutatedDuringLoadRef = useRef(false);
 
   const resolveUserStoreId = () => {
     const raw = user?.assignedStore;
@@ -210,11 +213,15 @@ const Setup = () => {
     if (!canManageNotificationPreferences) return;
     if (!effectiveEmailStoreId) return;
     let cancelled = false;
+    const loadEpoch = ++assetColumnsLoadEpochRef.current;
+    assetColumnsUserMutatedDuringLoadRef.current = false;
     const loadAssetColumnsConfig = async () => {
       try {
         setAssetColumnsLoading(true);
         const res = await api.get('/system/assets-columns-config', { params: { storeId: effectiveEmailStoreId } });
         if (cancelled) return;
+        if (loadEpoch !== assetColumnsLoadEpochRef.current) return;
+        if (assetColumnsUserMutatedDuringLoadRef.current) return;
         const nextConfig = res.data?.config || buildDefaultColumnsConfig();
         const nextColumns = Array.isArray(nextConfig.columns) ? nextConfig.columns : buildDefaultColumnsConfig().columns;
         setAssetColumnsConfig({
@@ -238,7 +245,12 @@ const Setup = () => {
     return () => { cancelled = true; };
   }, [canManageNotificationPreferences, effectiveEmailStoreId]);
 
+  const markAssetColumnsUserMutation = () => {
+    assetColumnsUserMutatedDuringLoadRef.current = true;
+  };
+
   const moveAssetColumn = (index, direction) => {
+    markAssetColumnsUserMutation();
     setAssetColumnsConfig((prev) => {
       const nextColumns = [...prev.columns];
       const target = direction === 'up' ? index - 1 : index + 1;
@@ -251,6 +263,7 @@ const Setup = () => {
   };
 
   const updateAssetColumnField = (id, field, value) => {
+    markAssetColumnsUserMutation();
     setAssetColumnsConfig((prev) => ({
       ...prev,
       columns: (prev.columns || []).map((column) => (
@@ -264,17 +277,30 @@ const Setup = () => {
   };
 
   const addAssetColumn = () => {
-    const stamp = Date.now().toString(36);
+    markAssetColumnsUserMutation();
+    const stamp = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const fieldKey = `custom_${stamp}`;
     setAssetColumnsConfig((prev) => ({
       ...prev,
       columns: [
         ...(prev.columns || []),
-        { id: `custom_${stamp}`, label: 'New Column', key: 'name', visible: true, builtin: false }
+        {
+          id: `custom_${stamp}`,
+          label: 'New field',
+          key: `customFields.${fieldKey}`,
+          visible: true,
+          builtin: false
+        }
       ]
     }));
+    requestAnimationFrame(() => {
+      const el = assetColumnsScrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   };
 
   const deleteAssetColumn = (id) => {
+    markAssetColumnsUserMutation();
     setAssetColumnsConfig((prev) => ({
       ...prev,
       columns: (prev.columns || []).filter((column) => column.id !== id)
@@ -282,6 +308,7 @@ const Setup = () => {
   };
 
   const resetAssetColumnsConfig = () => {
+    markAssetColumnsUserMutation();
     setAssetColumnsConfig(buildDefaultColumnsConfig());
   };
 
@@ -851,7 +878,8 @@ const Setup = () => {
             <h2 className="text-xl font-bold text-gray-800">Assets Columns Customization</h2>
           </div>
           <p className="text-sm text-gray-500 mb-4">
-            Default column layout for the <strong>Assets</strong> page for this store. Users can still save a personal layout from Assets unless they clear it.
+            Default column layout for the <strong>Assets</strong> page for this store. Users can still save a personal layout from Assets unless they clear it. New columns use{' '}
+            <code className="text-xs bg-gray-100 px-1 rounded">customFields.&lt;id&gt;</code> so values appear in the table, Add Asset, and Edit Asset.
           </p>
           {user?.role === 'Super Admin' && (
             <div className="mb-4 rounded-lg border border-amber-100 bg-amber-50/80 px-4 py-3">
@@ -882,7 +910,7 @@ const Setup = () => {
             <p className="text-sm text-gray-500">Loading columns configuration...</p>
           ) : (
             <>
-              <div className="max-h-72 overflow-auto border border-gray-200 rounded-lg divide-y">
+              <div ref={assetColumnsScrollRef} className="max-h-72 overflow-auto border border-gray-200 rounded-lg divide-y">
                 {(assetColumnsConfig.columns || []).map((column, idx) => {
                   return (
                     <div key={column.id} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center px-3 py-2">
@@ -904,7 +932,7 @@ const Setup = () => {
                         value={column.key}
                         onChange={(e) => updateAssetColumnField(column.id, 'key', e.target.value)}
                         className="md:col-span-4 border border-gray-300 rounded px-2 py-1 text-sm font-mono"
-                        placeholder="asset key (e.g. model_number)"
+                        placeholder="e.g. model_number or customFields.my_field"
                       />
                       <div className="flex items-center gap-1 md:col-span-2 justify-end">
                         <button
