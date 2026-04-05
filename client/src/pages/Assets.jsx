@@ -196,6 +196,45 @@ const BULK_ASSET_TEMPLATE_SAMPLE_ROW = [
   'JOHN DOE',
   '2024-01-01 10:00'
 ];
+
+const BULK_IMPORT_UPDATE_FIELD_LABELS = {
+  name: 'Name',
+  model_number: 'Model number',
+  mac_address: 'MAC address',
+  manufacturer: 'Manufacturer',
+  ticket_number: 'Ticket number',
+  po_number: 'PO number',
+  rfid: 'RFID',
+  qr_code: 'QR code',
+  status: 'Status',
+  condition: 'Condition',
+  product_name: 'Product name',
+  source: 'Source',
+  location: 'Location',
+  vendor_name: 'Vendor name',
+  delivered_by_name: 'Delivered by',
+  device_group: 'Device group',
+  inbound_from: 'Inbound from',
+  outbound_to: 'Outbound to',
+  expo_tag: 'Expo tag',
+  abs_code: 'ABS code',
+  product_number: 'Product number',
+  operating_system: 'Operating system',
+  specification: 'Specification',
+  service_tag: 'Service tag',
+  assign_to_department: 'Assign to department',
+  ip_address: 'IP address',
+  building: 'Building',
+  state_comments: 'State comments',
+  remarks: 'Remarks',
+  comments: 'Comments',
+  quantity: 'Quantity',
+  price: 'Price',
+  delivered_at: 'Delivered at',
+  assigned_to: 'Assigned to',
+  maintenance_vendor: 'Maintenance vendor'
+};
+
 const ALLOWED_STATUS_FILTERS = new Set(['In Store', 'In Use', 'Missing', 'Reserved', 'Disposed', 'Under Repair/Workshop', 'Faulty', 'Repaired', 'Serviceable']);
 const DEFAULT_COLUMN_ORDER = DEFAULT_COLUMN_DEFS.map((column) => column.id);
 const DEFAULT_VISIBLE_COLUMNS = Object.fromEntries(DEFAULT_COLUMN_DEFS.map((column) => [column.id, column.visible !== false]));
@@ -424,6 +463,7 @@ const Assets = () => {
   const [importPreviewPage, setImportPreviewPage] = useState(1);
   const [importPreviewPageSize, setImportPreviewPageSize] = useState(50);
   const [importPreviewFilter, setImportPreviewFilter] = useState('all');
+  const [importUpdateAllowlist, setImportUpdateAllowlist] = useState({});
   const [forceLoading, setForceLoading] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
@@ -641,6 +681,12 @@ const Assets = () => {
         const loc = stores.find(s => s._id === bulkLocationId);
         if (loc) form.append('location', loc.name);
       }
+      const distinct = importPreviewSummary?.distinct_update_fields || [];
+      if (distinct.length > 0) {
+        form.append('selective_duplicate_updates', 'true');
+        const allowed = distinct.filter((f) => importUpdateAllowlist[f] !== false);
+        form.append('allowed_update_fields', JSON.stringify(allowed));
+      }
       const res = await api.post('/assets/import', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: IMPORT_UPLOAD_TIMEOUT_MS
@@ -665,6 +711,7 @@ const Assets = () => {
       setShowImportModal(false);
       setImportPreview(null);
       setImportPreviewSummary(null);
+      setImportUpdateAllowlist({});
       setImportStep('select');
       setFile(null);
       fetchAssets(undefined, { silent: true });
@@ -1460,13 +1507,19 @@ const Assets = () => {
       const res = await api.post('/assets/import/preview', formData, { timeout: IMPORT_UPLOAD_TIMEOUT_MS });
       const preview = res.data?.assets || [];
       setImportPreview(preview);
-      setImportPreviewSummary({
+      const summary = {
         ...(res.data?.summary || {}),
         invalid_rows: res.data?.invalid_rows || [],
         invalid_rows_total: res.data?.invalid_rows_total ?? (res.data?.invalid_rows?.length || 0),
         duplicate_rows: res.data?.duplicate_rows || [],
-        duplicate_rows_total: res.data?.duplicate_rows_total ?? (res.data?.duplicate_rows?.length || 0)
-      });
+        duplicate_rows_total: res.data?.duplicate_rows_total ?? (res.data?.duplicate_rows?.length || 0),
+        update_diff_samples: res.data?.summary?.update_diff_samples || []
+      };
+      setImportPreviewSummary(summary);
+      const distinct = summary.distinct_update_fields || [];
+      const initAllow = {};
+      distinct.forEach((k) => { initAllow[k] = true; });
+      setImportUpdateAllowlist(initAllow);
       setImportPreviewPage(1);
       setImportPreviewFilter('all');
       setImportStep('preview');
@@ -2741,6 +2794,7 @@ const Assets = () => {
                       setFile(null);
                       setImportPreview(null);
                       setImportPreviewSummary(null);
+                      setImportUpdateAllowlist({});
                       setImportStep('select');
                     }}
                     className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300"
@@ -2788,8 +2842,84 @@ const Assets = () => {
                   </div>
                 </div>
                 <div className="mb-3 text-xs text-gray-600 shrink-0">
-                  Duplicate serial rows are highlighted in yellow. They will be blocked unless an Admin enables &quot;Allow duplicates in same store&quot;.
+                  Yellow rows are duplicate serials (same serial twice in the file, or already in this store). Store duplicates are merged on import unless an Admin enables &quot;Allow duplicates in same store&quot; to force extra rows. When a row already exists, only the columns you allow in the panel below are updated.
                 </div>
+                {(importPreviewSummary?.distinct_update_fields?.length ?? 0) > 0 && (
+                  <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50/90 px-3 py-3 text-xs text-sky-950 shrink-0">
+                    <div className="font-semibold text-sm text-sky-950 mb-1">
+                      Existing serials: choose what may change
+                    </div>
+                    <p className="text-sky-900 mb-2">
+                      {(importPreviewSummary?.rows_with_incoming_field_changes ?? 0).toLocaleString()} row(s) in this file match assets already in the store and differ in at least one column.
+                      Tick the fields you want the import to overwrite. Unticked fields stay as they are in the database. New serials are still created normally.
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 mb-2">
+                      <button
+                        type="button"
+                        className="text-sky-800 underline text-[11px]"
+                        onClick={() => {
+                          const next = { ...importUpdateAllowlist };
+                          (importPreviewSummary.distinct_update_fields || []).forEach((k) => { next[k] = true; });
+                          setImportUpdateAllowlist(next);
+                        }}
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        className="text-sky-800 underline text-[11px]"
+                        onClick={() => {
+                          const next = { ...importUpdateAllowlist };
+                          (importPreviewSummary.distinct_update_fields || []).forEach((k) => { next[k] = false; });
+                          setImportUpdateAllowlist(next);
+                        }}
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 max-h-40 overflow-y-auto">
+                      {(importPreviewSummary.distinct_update_fields || []).map((field) => (
+                        <label key={field} className="inline-flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={importUpdateAllowlist[field] !== false}
+                            onChange={(e) => setImportUpdateAllowlist((prev) => ({
+                              ...prev,
+                              [field]: e.target.checked
+                            }))}
+                          />
+                          <span>{BULK_IMPORT_UPDATE_FIELD_LABELS[field] || field}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {(importPreviewSummary?.update_diff_samples?.length ?? 0) > 0 && (
+                      <details className="mt-2 text-sky-900">
+                        <summary className="cursor-pointer font-medium text-[11px]">Sample field changes (first rows)</summary>
+                        <ul className="mt-1 space-y-1 list-none pl-0">
+                          {(importPreviewSummary.update_diff_samples || []).slice(0, 8).map((row, i) => (
+                            <li key={i} className="border-t border-sky-200/60 pt-1">
+                              <span className="font-mono">{row.serial}</span>
+                              <ul className="list-disc list-inside ml-2 mt-0.5 space-y-0.5">
+                                {(row.changes || []).map((c, j) => (
+                                  <li key={j}>
+                                    <strong>{c.label}</strong>
+                                    :
+                                    {' '}
+                                    {c.from}
+                                    {' '}
+                                    →
+                                    {' '}
+                                    {c.to}
+                                  </li>
+                                ))}
+                              </ul>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                )}
                 {(importPreviewSummary?.invalid_rows?.length > 0 || (importPreviewSummary?.invalid_rows_total > 0)) && (
                   <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50/80 px-3 py-2 text-xs text-rose-900 shrink-0 max-h-28 overflow-y-auto">
                     <div className="font-semibold mb-1">Invalid rows (sample)</div>
@@ -2903,6 +3033,13 @@ const Assets = () => {
                             {a._duplicateSerial && a._duplicateReason && (
                               <div className="text-[10px] text-yellow-800 mt-0.5">{a._duplicateReason}</div>
                             )}
+                            {Array.isArray(a._fieldChanges) && a._fieldChanges.length > 0 && (
+                              <div className="text-[10px] text-sky-800 mt-0.5">
+                                {a._fieldChanges.length}
+                                {' '}
+                                column(s) differ from DB — updates follow your checkboxes above
+                              </div>
+                            )}
                           </td>
                           <td className="px-2 py-2 font-mono text-xs text-gray-600 max-w-[100px] truncate" title={a.uniqueId}>{a.uniqueId || '-'}</td>
                           <td className="px-2 py-2 whitespace-nowrap">{a.status || '-'}</td>
@@ -2927,6 +3064,7 @@ const Assets = () => {
                       setImportStep('select');
                       setImportPreview(null);
                       setImportPreviewSummary(null);
+                      setImportUpdateAllowlist({});
                     }}
                     className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300"
                   >

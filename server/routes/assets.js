@@ -700,9 +700,25 @@ const excelCellToPlain = (raw, defval = '') => {
   return defval;
 };
 
+/** ExcelJS columnCount often under-reports; scan cells so trailing columns (e.g. Model Number) are not dropped. */
+function detectWorksheetMaxColumn(worksheet) {
+  let maxCol = 0;
+  try {
+    worksheet.eachRow({ includeEmpty: true }, (row) => {
+      row.eachCell({ includeEmpty: true }, (_cell, colNumber) => {
+        const n = Number(colNumber);
+        if (Number.isFinite(n) && n > maxCol) maxCol = n;
+      });
+    });
+  } catch {
+    /* ignore */
+  }
+  return maxCol > 0 ? maxCol : Math.max(worksheet?.columnCount || 0, 1);
+}
+
 const worksheetToAoa = (worksheet, { defval = '', blankrows = false } = {}) => {
   const rows = [];
-  const maxCol = Math.max(worksheet?.columnCount || 0, 1);
+  const maxCol = detectWorksheetMaxColumn(worksheet);
   worksheet.eachRow({ includeEmpty: true }, (row) => {
     const out = [];
     let hasData = false;
@@ -716,8 +732,318 @@ const worksheetToAoa = (worksheet, { defval = '', blankrows = false } = {}) => {
   return rows;
 };
 
-const worksheetToJsonRows = (worksheet, { defval = '', blankrows = false } = {}) => {
-  const matrix = worksheetToAoa(worksheet, { defval, blankrows: true });
+/** Lowercase keys → list of acceptable header strings (longer synonyms first via sort in resolver). */
+const BULK_IMPORT_HEADER_SYNONYMS = {
+  category: ['category', 'asset category'],
+  'product type': ['product type', 'prod type', 'type'],
+  'product name': ['product name', 'product description', 'item name'],
+  'unique id': ['unique id', 'uniqueid', 'uid', 'asset id'],
+  'abs code': ['abs code', 'abscode', 'abs'],
+  'expo tag': ['expo tag', 'expotag', 'expo'],
+  'model number': [
+    'model number',
+    'model no',
+    'model no.',
+    'model #',
+    'model#',
+    'mod. no',
+    'mod no',
+    'mod no.',
+    'asset model',
+    'modle number',
+    'modal number',
+    'model'
+  ],
+  quantity: ['quantity', 'qty', 'qnty'],
+  'serial number': ['serial number', 'serial no', 'serial #', 'serial#', 's/n', 's.n', 'sr no', 'serail number', 'serial'],
+  'mac address': ['mac address', 'mac', 'mac addr', 'macaddress'],
+  'ip address': ['ip address', 'ip', 'ipaddr', 'ipv4'],
+  manufacturer: ['manufacturer', 'mfr', 'make', 'vendor mfr'],
+  'ticket number': ['ticket number', 'ticket', 'ticket #', 'ticket#', 'tkt'],
+  'assigned to': ['assigned to', 'assigned_to', 'assignee', 'technician', 'user'],
+  'inbound from': ['inbound from', 'inbound_from', 'inbound'],
+  'outbound to': ['outbound to', 'outbound_to', 'outbound'],
+  'po number': ['po number', 'po #', 'po#', 'purchase order', 'p.o.'],
+  'vendor name': ['vendor name', 'vendor', 'supplier'],
+  price: ['price', 'unit price', 'cost'],
+  rfid: ['rfid', 'rf id'],
+  'qr code': ['qr code', 'qr', 'qrcode'],
+  'store location': ['store location', 'store', 'store name', 'site'],
+  status: ['status', 'asset status'],
+  condition: ['condition', 'cond'],
+  'maintenance vendor': ['maintenance vendor', 'maintenance_vendor', 'maint vendor', 'maint. vendor', 'maintenance vandor'],
+  'device group': ['device group', 'device_group', 'devicegroup', 'group'],
+  location: ['location', 'physical location', 'room', 'area', 'bin'],
+  'product number': ['product number', 'product no', 'product #', 'part number', 'p/n', 'pn', 'productno'],
+  'operating system': ['operating system', 'os', 'o/s'],
+  specification: ['specification', 'spec', 'specs'],
+  'service tag': ['service tag', 'service_tag', 'svc tag', 'asset tag'],
+  'assign to department': [
+    'assign to department',
+    'assign_to_department',
+    'assign to depratment',
+    'assign_to_depratment',
+    'department'
+  ],
+  building: ['building', 'bldg'],
+  'state comments': ['state comments', 'state_comments', 'state'],
+  remarks: ['remarks', 'remark'],
+  comments: ['comments', 'comment', 'notes'],
+  'delivered by': ['delivered by', 'delivered_by', 'deliveredby'],
+  'delivered at': ['delivered at', 'delivered_at', 'delivery date', 'delivered']
+};
+
+function normalizeBulkImportHeaderLabel(s) {
+  return String(s ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/_/g, ' ');
+}
+
+function buildBulkImportColumnIndexMap(headerCells) {
+  const cells = headerCells.map((c, idx) => ({
+    idx,
+    norm: normalizeBulkImportHeaderLabel(c)
+  }));
+  const used = new Set();
+  const map = {};
+
+  for (const canonical of BULK_ASSET_EXCEL_HEADERS) {
+    const key = canonical.trim().toLowerCase();
+    const synonyms = BULK_IMPORT_HEADER_SYNONYMS[key] || [key];
+    const ordered = [...new Set([key, ...synonyms])].sort((a, b) => b.length - a.length);
+    let found = -1;
+    for (const syn of ordered) {
+      const sn = normalizeBulkImportHeaderLabel(syn);
+      if (!sn) continue;
+      const hit = cells.find((h) => !used.has(h.idx) && h.norm === sn);
+      if (hit) {
+        found = hit.idx;
+        break;
+      }
+    }
+    if (found < 0) {
+      for (const syn of ordered) {
+        const sn = normalizeBulkImportHeaderLabel(syn);
+        if (sn.length < 8) continue;
+        const hit = cells.find(
+          (h) => !used.has(h.idx) && (h.norm.startsWith(`${sn} `) || h.norm === sn || h.norm.startsWith(sn))
+        );
+        if (hit) {
+          found = hit.idx;
+          break;
+        }
+      }
+    }
+    if (found >= 0) {
+      used.add(found);
+      map[canonical] = found;
+    }
+  }
+  return map;
+}
+
+function matrixToTemplateKeyedBulkRows(matrix, { defval = '', blankrows = false, minMappedHeaders = 6 } = {}) {
+  if (!Array.isArray(matrix) || matrix.length < 2) return null;
+  const headerCells = matrix[0] || [];
+  const colMap = buildBulkImportColumnIndexMap(headerCells);
+  if (Object.keys(colMap).length < minMappedHeaders) return null;
+  if (colMap['Serial Number'] == null) return null;
+
+  const body = matrix.slice(1).map((dataRow) => {
+    const obj = {};
+    for (const canonical of BULK_ASSET_EXCEL_HEADERS) {
+      const idx = colMap[canonical];
+      let val = defval;
+      if (idx != null && idx >= 0 && dataRow[idx] !== undefined && dataRow[idx] !== null) {
+        val = dataRow[idx];
+      }
+      obj[canonical] = val;
+    }
+    return obj;
+  });
+  if (blankrows) return body;
+  return body.filter((record) =>
+    Object.values(record).some((value) => String(value == null ? '' : value).trim() !== '')
+  );
+}
+
+const BULK_IMPORT_UPDATE_COMPARE_KEYS = [
+  'name', 'model_number', 'mac_address', 'manufacturer', 'ticket_number', 'po_number', 'rfid', 'qr_code',
+  'status', 'condition', 'product_name', 'source', 'location', 'vendor_name', 'delivered_by_name',
+  'device_group', 'inbound_from', 'outbound_to', 'expo_tag', 'abs_code', 'product_number',
+  'operating_system', 'specification', 'service_tag', 'assign_to_department',
+  'ip_address', 'building', 'state_comments', 'remarks', 'comments',
+  'quantity', 'price'
+];
+
+const BULK_IMPORT_PRESERVE_IF_IMPORT_BLANK = new Set([
+  'model_number',
+  'product_number',
+  'mac_address',
+  'manufacturer',
+  'ticket_number',
+  'po_number',
+  'rfid',
+  'qr_code',
+  'expo_tag',
+  'abs_code',
+  'operating_system',
+  'specification',
+  'service_tag',
+  'device_group',
+  'inbound_from',
+  'outbound_to',
+  'building',
+  'state_comments',
+  'remarks',
+  'comments',
+  'ip_address',
+  'assign_to_department'
+]);
+
+const BULK_IMPORT_FIELD_LABELS = {
+  name: 'Name',
+  model_number: 'Model number',
+  mac_address: 'MAC address',
+  manufacturer: 'Manufacturer',
+  ticket_number: 'Ticket number',
+  po_number: 'PO number',
+  rfid: 'RFID',
+  qr_code: 'QR code',
+  status: 'Status',
+  condition: 'Condition',
+  product_name: 'Product name',
+  source: 'Source',
+  location: 'Location',
+  vendor_name: 'Vendor name',
+  delivered_by_name: 'Delivered by',
+  device_group: 'Device group',
+  inbound_from: 'Inbound from',
+  outbound_to: 'Outbound to',
+  expo_tag: 'Expo tag',
+  abs_code: 'ABS code',
+  product_number: 'Product number',
+  operating_system: 'Operating system',
+  specification: 'Specification',
+  service_tag: 'Service tag',
+  assign_to_department: 'Assign to department',
+  ip_address: 'IP address',
+  building: 'Building',
+  state_comments: 'State comments',
+  remarks: 'Remarks',
+  comments: 'Comments',
+  quantity: 'Quantity',
+  price: 'Price',
+  delivered_at: 'Delivered at',
+  assigned_to: 'Assigned to',
+  maintenance_vendor: 'Maintenance vendor'
+};
+
+function bulkImportCellIsEmpty(v) {
+  const s = String(v ?? '').trim();
+  return s === '' || s === '-' || /^N\/A$/i.test(s) || s === '—';
+}
+
+function buildPatchForBulkImportUpdate(existingDoc, rowAssetData) {
+  const patch = {};
+  const changedFields = [];
+  BULK_IMPORT_UPDATE_COMPARE_KEYS.forEach((key) => {
+    const nextValue = rowAssetData[key];
+    const prevValue = existingDoc[key];
+    if (key === 'delivered_at') return;
+    if (
+      BULK_IMPORT_PRESERVE_IF_IMPORT_BLANK.has(key)
+      && bulkImportCellIsEmpty(nextValue)
+      && !bulkImportCellIsEmpty(prevValue)
+    ) {
+      return;
+    }
+    if (String(prevValue ?? '') !== String(nextValue ?? '')) {
+      patch[key] = nextValue;
+      changedFields.push(key);
+    }
+  });
+
+  const incomingDeliveredAt = rowAssetData.delivered_at ? new Date(rowAssetData.delivered_at) : null;
+  const existingDeliveredAt = existingDoc.delivered_at ? new Date(existingDoc.delivered_at) : null;
+  if (
+    incomingDeliveredAt
+    && (!existingDeliveredAt || incomingDeliveredAt.getTime() !== existingDeliveredAt.getTime())
+  ) {
+    patch.delivered_at = incomingDeliveredAt;
+    changedFields.push('delivered_at');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(rowAssetData, 'assigned_to')) {
+    const nextA = rowAssetData.assigned_to ? String(rowAssetData.assigned_to) : '';
+    const prevA = existingDoc.assigned_to ? String(existingDoc.assigned_to) : '';
+    if (nextA !== prevA) {
+      patch.assigned_to = rowAssetData.assigned_to;
+      changedFields.push('assigned_to');
+    }
+  }
+
+  const incomingMaintenanceVendor = String(rowAssetData?.customFields?.maintenance_vendor || '').trim();
+  if (incomingMaintenanceVendor) {
+    const existingMaintenanceVendor = String(existingDoc?.customFields?.maintenance_vendor || '').trim();
+    if (incomingMaintenanceVendor !== existingMaintenanceVendor) {
+      patch.customFields = {
+        ...(existingDoc.customFields && typeof existingDoc.customFields === 'object' ? existingDoc.customFields : {}),
+        maintenance_vendor: incomingMaintenanceVendor
+      };
+      changedFields.push('maintenance_vendor');
+    }
+  }
+
+  return { patch, changedFields };
+}
+
+function filterBulkImportPatchByAllowlist(fullPatch, changedFields, allowedSet) {
+  if (!allowedSet) {
+    return { patch: fullPatch, changedFields };
+  }
+  if (allowedSet.size === 0) {
+    return { patch: {}, changedFields: [] };
+  }
+  const nextPatch = {};
+  const nextChanged = [];
+  for (const field of changedFields) {
+    if (!allowedSet.has(field)) continue;
+    if (field === 'maintenance_vendor') {
+      if (fullPatch.customFields != null) {
+        nextPatch.customFields = fullPatch.customFields;
+        nextChanged.push('maintenance_vendor');
+      }
+    } else if (fullPatch[field] !== undefined) {
+      nextPatch[field] = fullPatch[field];
+      nextChanged.push(field);
+    }
+  }
+  return { patch: nextPatch, changedFields: nextChanged };
+}
+
+function formatBulkImportDiffValue(field, value, assigneeById) {
+  if (value == null || value === '') return '(empty)';
+  if (field === 'assigned_to' && value && assigneeById) {
+    const u = assigneeById.get(String(value));
+    if (u) return u.name;
+  }
+  if (field === 'delivered_at' && value) {
+    const d = value instanceof Date ? value : new Date(value);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  if (field === 'maintenance_vendor') {
+    return String(value);
+  }
+  const s = String(value);
+  if (s.length > 120) return `${s.slice(0, 117)}…`;
+  return s;
+}
+
+function aoaToJsonRows(matrix, { defval = '', blankrows = false } = {}) {
   if (!Array.isArray(matrix) || matrix.length === 0) return [];
   const headers = (matrix[0] || []).map((header, idx) => {
     const normalized = String(header == null ? '' : header).trim();
@@ -736,7 +1062,26 @@ const worksheetToJsonRows = (worksheet, { defval = '', blankrows = false } = {})
       if (blankrows) return true;
       return Object.values(record).some((value) => String(value == null ? '' : value).trim() !== '');
     });
+}
+
+const worksheetToJsonRows = (worksheet, options = {}) => {
+  const matrix = worksheetToAoa(worksheet, { ...options, blankrows: true });
+  const viaTemplate = matrixToTemplateKeyedBulkRows(matrix, options);
+  if (Array.isArray(viaTemplate) && viaTemplate.length > 0) return viaTemplate;
+  return aoaToJsonRows(matrix, options);
 };
+
+/** First non-empty cell across normalized header aliases (skips -, N/A). */
+function readBulkTextFromNorm(norm, keys) {
+  for (const k of keys) {
+    const v = norm[k];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (!s || s === '-' || /^N\/A$/i.test(s) || s === '—') continue;
+    return s;
+  }
+  return '';
+}
 
 async function readUploadedWorkbook(file) {
   if (!file) {
@@ -2621,9 +2966,23 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         message: `Too many rows (${rows.length.toLocaleString()}). Maximum per file is ${MAX_BULK_IMPORT_ROWS.toLocaleString()}. Split the file or raise MAX_BULK_IMPORT_ROWS on the server.`
       });
     }
+    const {
+      product_name: reqProductName,
+      source: reqSource,
+      location: reqLocation,
+      delivered_by_name: reqDeliveredByName,
+      delivered_at: reqDeliveredAt,
+      vendor_name: reqVendorName
+    } = req.body || {};
     const stores = await Store.find().lean();
+    const storeMap = {};
     const storeMapLower = {};
-    stores.forEach(s => { if (s.name) storeMapLower[s.name.trim().toLowerCase()] = s._id; });
+    stores.forEach((s) => {
+      if (s.name) {
+        storeMap[s.name] = s._id;
+        storeMapLower[s.name.trim().toLowerCase()] = s._id;
+      }
+    });
     const allProducts = await Product.find().lean();
     const productLookup = {};
     const traverse = (list) => {
@@ -2654,16 +3013,35 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
     const allowDuplicates = String(req.body?.allowDuplicates || '').toLowerCase() === 'true';
     const isAdminUser = req.user?.role === 'Admin' || req.user?.role === 'Super Admin';
     const seenSerialByStore = new Set();
+    const previewIsNA = (val) => {
+      const s = String(val || '').trim();
+      return s === '' || s.toUpperCase() === 'N/A' || s === '-';
+    };
     for (const item of rows) {
       const norm = {};
       Object.keys(item).forEach(k => { norm[String(k).trim().toLowerCase()] = item[k]; });
-      let productName = norm['product name'] || norm['product'] || norm['product type'] || norm['category'] || norm['asset type'] || '';
+      let productName = reqProductName || norm['product name'] || norm['product'] || norm['product type'] || norm['category'] || '-';
+      if (!productName && (norm['asset type'] || norm['assettype'])) {
+        productName = norm['asset type'] || norm['assettype'];
+      }
       if (productName) {
         const found = productLookup[String(productName).trim().toLowerCase()];
         if (found) productName = found;
       }
       const name = productName || '-';
-      const model = norm['model number'] || norm['model'] || '-';
+      const model = readBulkTextFromNorm(norm, [
+        'model number',
+        'model no',
+        'model no.',
+        'model #',
+        'model#',
+        'mod. no',
+        'mod no',
+        'asset model',
+        'modle number',
+        'modal number',
+        'model'
+      ]);
       const qtyRaw = norm['quantity'] || norm['qty'] || '1';
       let quantity = parseInt(String(qtyRaw).trim(), 10);
       if (!Number.isFinite(quantity) || quantity <= 0) quantity = 1;
@@ -2678,7 +3056,7 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       const rfid = norm['rfid'] || '-';
       const qrCode = norm['qr code'] || norm['qr'] || '-';
       const storeName = normalizeText(norm['store location'] || norm['storename'] || norm['store'] || '');
-      const locationRawCombined = norm['location'] || norm['physical location'] || norm['room'] || norm['area'] || '';
+      const locationRawCombined = reqLocation || norm['location'] || norm['physical location'] || norm['room'] || norm['area'] || '';
       let location = normalizeText(locationRawCombined);
       if (!location && storeName) location = storeName;
       const statusRaw = norm['status'];
@@ -2705,14 +3083,13 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       let condition = 'New';
       if (conditionRaw) {
         const cNorm = String(conditionRaw).trim().toLowerCase();
-        if (cNorm.includes('new')) condition = 'New';
-        else if (cNorm.includes('used')) condition = 'Used';
-        else if (cNorm.includes('faulty')) condition = 'Faulty';
-        else if (cNorm.includes('repair')) condition = 'Repaired';
-        else if (cNorm.includes('disposed') || cNorm.includes('scrap')) condition = 'Faulty';
-        else if (cNorm.includes('repaired')) condition = 'Repaired';
+        if (cNorm === 'new' || cNorm.includes('new')) condition = 'New';
+        else if (cNorm === 'used' || cNorm.includes('used')) condition = 'Used';
+        else if (cNorm === 'faulty' || cNorm.includes('faulty')) condition = 'Faulty';
+        else if (cNorm === 'under repair' || cNorm.includes('repair')) condition = 'Repaired';
+        else if (cNorm === 'disposed' || cNorm.includes('disposed') || cNorm.includes('scrap')) condition = 'Faulty';
+        else if (cNorm === 'repaired' || cNorm.includes('repaired')) condition = 'Repaired';
       } else {
-        // If condition column is empty, infer sensible condition from status text
         if (statusNorm === 'used' || statusNorm === 'available/used' || statusNorm === 'spare (used)') {
           condition = 'Used';
         } else if (statusNorm === 'faulty' || statusNorm === 'available faulty') {
@@ -2725,7 +3102,7 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
           condition = 'Repaired';
         }
       }
-      let storeId = storeMapLower[String(storeName || '').toLowerCase()];
+      let storeId = storeMap[storeName] || storeMapLower[storeName.toLowerCase()];
       if (req.activeStore) {
         storeId = req.activeStore;
       }
@@ -2737,7 +3114,14 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       const outboundToRow = norm['outbound to'] || norm['outbound_to'] || '';
       const expoTagRow = norm['expo tag'] || norm['expo_tag'] || '';
       const absCodeRow = norm['abs code'] || norm['abs_code'] || '';
-      const productNumberRow = norm['product number'] || norm['product_number'] || '';
+      const productNumberRow = readBulkTextFromNorm(norm, [
+        'product number',
+        'product_number',
+        'product no',
+        'part number',
+        'pn',
+        'p/n'
+      ]);
       const operatingSystemRow = norm['operating system'] || norm['operating_system'] || '';
       const specificationRow = norm['specification'] || norm['spec'] || '';
       const serviceTagRow = norm['service tag'] || norm['service_tag'] || '';
@@ -2760,7 +3144,14 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         || norm['maintenance_vandor']
         || '';
       const deliveredAtRaw = norm['delivered at'] || norm['delivered_at'] || '';
-      const deliveredAtDate = deliveredAtRaw ? new Date(deliveredAtRaw) : new Date();
+      let deliveredAtDate;
+      if (deliveredAtRaw) {
+        deliveredAtDate = new Date(deliveredAtRaw);
+      } else if (reqDeliveredAt) {
+        deliveredAtDate = new Date(reqDeliveredAt);
+      } else {
+        deliveredAtDate = new Date();
+      }
       const assignedToRaw =
         norm['assigned to'] || norm['assigned_to'] || norm['assignee'] || '';
       const assignedToId = resolveAssigneeIdFromCell(assignedToRaw, assigneeLookup);
@@ -2771,13 +3162,15 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       } else if (String(assignedToRaw).trim()) {
         assignedToLabel = `${String(assignedToRaw).trim()} (unmatched)`;
       }
+      const serialStr = String(serial || '').trim();
       const assetData = {
-        name: capitalizeWords(name || ''),
+        importBatchId,
+        name: String(name || '').toUpperCase(),
         model_number: model,
-        serial_number: String(serial || '').trim(),
-        serial_last_4: String(serial || '').trim() ? String(serial).slice(-4) : '',
+        serial_number: serialStr,
+        serial_last_4: previewIsNA(serialStr) ? '-' : serialStr.slice(-4),
         mac_address: mac,
-        manufacturer: capitalizeWords(manufacturer || ''),
+        manufacturer: String(manufacturer || '').toUpperCase(),
         ticket_number: ticketNumber,
         po_number: poNumber || '',
         rfid,
@@ -2786,14 +3179,14 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         store: storeId,
         status,
         condition,
-        product_name: capitalizeWords(productName || ''),
-        source: '',
-        location: capitalizeWords(location || ''),
-        vendor_name: vendorNameFromRow || '',
-        delivered_by_name: deliveredByFromRow || '',
-        device_group: capitalizeWords(deviceGroupFromRow || ''),
-        inbound_from: capitalizeWords(inboundFromRow || ''),
-        outbound_to: capitalizeWords(outboundToRow || ''),
+        product_name: productName,
+        source: reqSource || '',
+        location: String(location || '').trim() ? String(location).toUpperCase() : (storeName ? storeName.toUpperCase() : 'UNKNOWN'),
+        vendor_name: vendorNameFromRow || reqVendorName || '',
+        delivered_by_name: deliveredByFromRow || reqDeliveredByName || '',
+        device_group: String(deviceGroupFromRow || '').toUpperCase(),
+        inbound_from: String(inboundFromRow || '').toUpperCase(),
+        outbound_to: String(outboundToRow || '').toUpperCase(),
         expo_tag: String(expoTagRow || '').trim(),
         abs_code: String(absCodeRow || '').trim(),
         product_number: String(productNumberRow || '').trim(),
@@ -2802,7 +3195,7 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         service_tag: String(serviceTagRow || '').trim(),
         assign_to_department: String(assignDeptRow || '').trim(),
         ip_address: String(ipAddressFromRow || '').trim(),
-        building: capitalizeWords(buildingFromRow || ''),
+        building: String(buildingFromRow || '').toUpperCase(),
         state_comments: String(stateCommentsFromRow || '').trim(),
         remarks: String(remarksFromRow || '').trim(),
         comments: String(commentsFromRow || '').trim(),
@@ -2825,7 +3218,7 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         continue;
       }
       const serialKey = String(assetData.serial_number || '').trim().toLowerCase();
-      const storeKey = String(storeId || '').trim().toLowerCase();
+      const storeKey = String(storeId || '').trim();
       const dedupeKey = `${storeKey}::${serialKey}`;
       let fileDuplicateReason = '';
       if (seenSerialByStore.has(dedupeKey)) {
@@ -2845,18 +3238,26 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       queryPairs.push({ store: row.storeId, serial_number: row.assetData.serial_number });
     }
     const existingPairSet = new Set();
+    const existingDocsByPair = new Map();
     const PREVIEW_CHUNK = 500;
+    const previewExistingSelect =
+      'store serial_number name model_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code status condition product_name source location vendor_name delivered_by_name device_group inbound_from outbound_to expo_tag abs_code product_number operating_system specification service_tag assign_to_department ip_address building state_comments remarks comments delivered_at quantity price customFields assigned_to';
     for (let i = 0; i < queryPairs.length; i += PREVIEW_CHUNK) {
       const chunk = queryPairs.slice(i, i + PREVIEW_CHUNK);
       // eslint-disable-next-line no-await-in-loop
-      const existing = await Asset.find({ $or: chunk }).select('store serial_number').lean();
+      const existing = await Asset.find({ $or: chunk }).select(previewExistingSelect).lean();
       existing.forEach((doc) => {
         const pk = `${String(doc.store)}::${String(doc.serial_number || '').trim().toLowerCase()}`;
         existingPairSet.add(pk);
+        existingDocsByPair.set(pk, doc);
       });
     }
 
     const preview = [];
+    const distinctUpdateFields = new Set();
+    const updateDiffSamples = [];
+    let existingDbMatchRows = 0;
+    let rowsWithIncomingChanges = 0;
     for (const row of staged) {
       const { assetData, serialKey, storeId, fileDuplicateReason } = row;
       let duplicateReason = fileDuplicateReason;
@@ -2873,6 +3274,44 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       assetData._duplicateSerial = Boolean(duplicateReason);
       assetData._duplicateReason = duplicateReason;
       assetData._duplicateAllowed = Boolean(duplicateReason && allowDuplicates && isAdminUser);
+      assetData._dbWouldUpdate = false;
+      assetData._fieldChanges = [];
+      if (!fileDuplicateReason && serialKey && storeId) {
+        const pk = `${String(storeId)}::${serialKey}`;
+        if (existingPairSet.has(pk)) {
+          existingDbMatchRows += 1;
+          const existingDoc = existingDocsByPair.get(pk);
+          if (existingDoc) {
+            const { patch, changedFields } = buildPatchForBulkImportUpdate(existingDoc, assetData);
+            if (changedFields.length > 0) {
+              rowsWithIncomingChanges += 1;
+              assetData._dbWouldUpdate = true;
+              const changes = changedFields.map((field) => {
+                const prevVal = field === 'maintenance_vendor'
+                  ? existingDoc?.customFields?.maintenance_vendor
+                  : existingDoc[field];
+                const nextVal = field === 'maintenance_vendor'
+                  ? patch?.customFields?.maintenance_vendor
+                  : patch[field];
+                const toDisplay = field === 'assigned_to' && assetData._assignedToLabel
+                  ? assetData._assignedToLabel
+                  : formatBulkImportDiffValue(field, nextVal, assigneeById);
+                return {
+                  field,
+                  label: BULK_IMPORT_FIELD_LABELS[field] || field,
+                  from: formatBulkImportDiffValue(field, prevVal, assigneeById),
+                  to: toDisplay
+                };
+              });
+              assetData._fieldChanges = changes;
+              changedFields.forEach((f) => distinctUpdateFields.add(f));
+              if (updateDiffSamples.length < 40) {
+                updateDiffSamples.push({ serial: assetData.serial_number, changes });
+              }
+            }
+          }
+        }
+      }
       preview.push(assetData);
     }
 
@@ -2895,7 +3334,11 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
         preview_rows_returned: assetsOut.length,
         preview_truncated: totalPreviewRows > IMPORT_PREVIEW_RESPONSE_CAP,
         invalid: invalid_rows.length,
-        duplicates_flagged: duplicate_rows_total
+        duplicates_flagged: duplicate_rows_total,
+        existing_db_match_rows: existingDbMatchRows,
+        rows_with_incoming_field_changes: rowsWithIncomingChanges,
+        distinct_update_fields: Array.from(distinctUpdateFields).sort(),
+        update_diff_samples: updateDiffSamples
       }
     });
   } catch (error) {
@@ -2946,6 +3389,13 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
             }
           }
           if (headerIdx >= 0 && raw.length > headerIdx + 1) {
+            const subMatrix = raw.slice(headerIdx);
+            const templated = matrixToTemplateKeyedBulkRows(subMatrix, { defval: '', blankrows: false });
+            if (Array.isArray(templated) && templated.length > 0) {
+              data = templated;
+              sheetName = ws.name;
+              break;
+            }
             const headers = (raw[headerIdx] || []).map(h => String(h || '').trim());
             const body = raw.slice(headerIdx + 1);
             const converted = body.map(row => {
@@ -2976,6 +3426,20 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     const updatedCount = { v: 0 };
     const allowDuplicates = String(req.body?.allowDuplicates || '').toLowerCase() === 'true';
     const isAdminUser = req.user?.role === 'Admin' || req.user?.role === 'Super Admin';
+    let selectiveDuplicateUpdates = false;
+    let allowedUpdateFieldsSet = null;
+    try {
+      if (String(req.body?.selective_duplicate_updates || '').toLowerCase() === 'true') {
+        const raw = req.body?.allowed_update_fields;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw || '[]') : raw;
+        if (Array.isArray(parsed)) {
+          selectiveDuplicateUpdates = true;
+          allowedUpdateFieldsSet = new Set(parsed.filter(Boolean));
+        }
+      }
+    } catch {
+      // ignore malformed allowed_update_fields JSON
+    }
     const {
       product_name: reqProductName,
       source: reqSource,
@@ -3055,8 +3519,20 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       
       // Name fallback strategy
       const name = productName || '-';
-      
-      const model = norm['model number'] || norm['model'] || '-';
+
+      const model = readBulkTextFromNorm(norm, [
+        'model number',
+        'model no',
+        'model no.',
+        'model #',
+        'model#',
+        'mod. no',
+        'mod no',
+        'asset model',
+        'modle number',
+        'modal number',
+        'model'
+      ]);
       const qtyRaw = norm['quantity'] || norm['qty'] || '1';
       let quantity = parseInt(String(qtyRaw).trim(), 10);
       if (!Number.isFinite(quantity) || quantity <= 0) quantity = 1;
@@ -3110,7 +3586,14 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       const outboundToRow = norm['outbound to'] || norm['outbound_to'] || '';
       const expoTagRow = norm['expo tag'] || norm['expo_tag'] || '';
       const absCodeRow = norm['abs code'] || norm['abs_code'] || '';
-      const productNumberRow = norm['product number'] || norm['product_number'] || '';
+      const productNumberRow = readBulkTextFromNorm(norm, [
+        'product number',
+        'product_number',
+        'product no',
+        'part number',
+        'pn',
+        'p/n'
+      ]);
       const operatingSystemRow = norm['operating system'] || norm['operating_system'] || '';
       const specificationRow = norm['specification'] || norm['spec'] || '';
       const serviceTagRow = norm['service tag'] || norm['service_tag'] || '';
@@ -3304,63 +3787,22 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
           continue;
         }
 
-        const compareKeys = [
-          'name', 'model_number', 'mac_address', 'manufacturer', 'ticket_number', 'po_number', 'rfid', 'qr_code',
-          'status', 'condition', 'product_name', 'source', 'location', 'vendor_name', 'delivered_by_name',
-          'device_group', 'inbound_from', 'outbound_to', 'expo_tag', 'abs_code', 'product_number',
-          'operating_system', 'specification', 'service_tag', 'assign_to_department',
-          'ip_address', 'building', 'state_comments', 'remarks', 'comments',
-          'quantity', 'price'
-        ];
-        const patch = {};
-        const changedFields = [];
-        compareKeys.forEach((key) => {
-          const nextValue = row.assetData[key];
-          const prevValue = existingDoc[key];
-          if (key === 'delivered_at') return;
-          if (String(prevValue ?? '') !== String(nextValue ?? '')) {
-            patch[key] = nextValue;
-            changedFields.push(key);
-          }
-        });
-
-        const incomingDeliveredAt = row.assetData.delivered_at ? new Date(row.assetData.delivered_at) : null;
-        const existingDeliveredAt = existingDoc.delivered_at ? new Date(existingDoc.delivered_at) : null;
-        if (
-          incomingDeliveredAt
-          && (!existingDeliveredAt || incomingDeliveredAt.getTime() !== existingDeliveredAt.getTime())
-        ) {
-          patch.delivered_at = incomingDeliveredAt;
-          changedFields.push('delivered_at');
-        }
-
-        if (Object.prototype.hasOwnProperty.call(row.assetData, 'assigned_to')) {
-          const nextA = row.assetData.assigned_to ? String(row.assetData.assigned_to) : '';
-          const prevA = existingDoc.assigned_to ? String(existingDoc.assigned_to) : '';
-          if (nextA !== prevA) {
-            patch.assigned_to = row.assetData.assigned_to;
-            changedFields.push('assigned_to');
-          }
-        }
-
-        const incomingMaintenanceVendor = String(row.assetData?.customFields?.maintenance_vendor || '').trim();
-        if (incomingMaintenanceVendor) {
-          const existingMaintenanceVendor = String(existingDoc?.customFields?.maintenance_vendor || '').trim();
-          if (incomingMaintenanceVendor !== existingMaintenanceVendor) {
-            patch.customFields = {
-              ...(existingDoc.customFields && typeof existingDoc.customFields === 'object' ? existingDoc.customFields : {}),
-              maintenance_vendor: incomingMaintenanceVendor
-            };
-            changedFields.push('maintenance_vendor');
-          }
+        let { patch, changedFields } = buildPatchForBulkImportUpdate(existingDoc, row.assetData);
+        if (selectiveDuplicateUpdates) {
+          ({ patch, changedFields } = filterBulkImportPatchByAllowlist(patch, changedFields, allowedUpdateFieldsSet));
         }
 
         if (changedFields.length > 0) {
           const previousValues = {};
           const nextValues = {};
           changedFields.forEach((field) => {
-            previousValues[field] = existingDoc[field];
-            nextValues[field] = patch[field];
+            if (field === 'maintenance_vendor') {
+              previousValues[field] = existingDoc?.customFields?.maintenance_vendor;
+              nextValues[field] = patch?.customFields?.maintenance_vendor;
+            } else {
+              previousValues[field] = existingDoc[field];
+              nextValues[field] = patch[field];
+            }
           });
           // eslint-disable-next-line no-await-in-loop
           await Asset.updateOne({ _id: existingDoc._id }, { $set: patch });
