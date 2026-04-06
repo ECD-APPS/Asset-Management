@@ -77,44 +77,39 @@ export const AuthProvider = ({ children }) => {
       } catch (error) {
         console.error('CSRF token fetch failed:', error);
       }
-      const storedUser = localStorage.getItem('user');
-      const storedActiveStore = localStorage.getItem('activeStore');
-      let hydratedUser = null;
 
-      if (storedUser) {
-        try {
-          // Hydrate from local storage first to survive browser refreshes
-          // when the session check is temporarily unavailable.
-          hydratedUser = JSON.parse(storedUser);
-          setUser(hydratedUser);
-
-          if (storedActiveStore) {
-            setActiveStore(normalizeStoreSelection(JSON.parse(storedActiveStore)));
-          }
-        } catch (error) {
-          console.error('Failed to hydrate auth from local storage:', error);
-          localStorage.removeItem('user');
-          localStorage.removeItem('activeStore');
-          setUser(null);
-          setActiveStore(null);
-        }
-      }
+      // Do not set `user` from localStorage before /auth/me. Stale JSON (previous account) combined
+      // with a still-valid old `sid` cookie used to show the wrong user after logout → login → refresh.
+      setUser(null);
+      setActiveStore(null);
 
       const maxAttempts = 3;
       let refreshedFromServer = false;
-      let unauthorizedCount = 0;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          // Verify cookie-backed server session (even if local cache is missing).
           const res = await api.get('/auth/me');
           setUser(res.data);
           localStorage.setItem('user', JSON.stringify(res.data));
 
-          // Keep active store pinned for non-super users.
           if (res.data?.role !== 'Super Admin' && res.data?.assignedStore) {
             const normalizedAssignedStore = normalizeStoreSelection(res.data.assignedStore);
             setActiveStore(normalizedAssignedStore);
             localStorage.setItem('activeStore', JSON.stringify(normalizedAssignedStore));
+          } else if (res.data?.role === 'Super Admin') {
+            const storedActiveStore = localStorage.getItem('activeStore');
+            if (storedActiveStore) {
+              try {
+                setActiveStore(normalizeStoreSelection(JSON.parse(storedActiveStore)));
+              } catch {
+                setActiveStore(null);
+                localStorage.removeItem('activeStore');
+              }
+            } else {
+              setActiveStore(null);
+            }
+          } else {
+            setActiveStore(null);
+            localStorage.removeItem('activeStore');
           }
           refreshedFromServer = true;
           break;
@@ -129,13 +124,6 @@ export const AuthProvider = ({ children }) => {
             error?.message === 'Network Error';
 
           if (unauthorized) {
-            unauthorizedCount += 1;
-            // On hard refresh, some environments may transiently return 401 during restart/cookie race.
-            // If we have a hydrated user, require two unauthorized checks before clearing local session.
-            if (hydratedUser && unauthorizedCount < 2 && attempt < maxAttempts) {
-              await sleep(250 * attempt);
-              continue;
-            }
             localStorage.removeItem('user');
             localStorage.removeItem('activeStore');
             setUser(null);
@@ -147,8 +135,7 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
-      if (!refreshedFromServer && !hydratedUser) {
-        // Could not prove a valid session and no safe cache exists.
+      if (!refreshedFromServer) {
         setUser(null);
         setActiveStore(null);
       }

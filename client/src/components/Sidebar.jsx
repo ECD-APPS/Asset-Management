@@ -12,7 +12,8 @@ import {
   Menu,
   Calendar,
   Lock,
-  Wrench
+  Wrench,
+  ClipboardCheck
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -200,6 +201,16 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
         { name: 'Consumables', path: '/consumables', uniqueKey: 'tools-consumables', roles: ['Admin', 'Viewer'] },
         { name: 'Technician Panel', path: '/tools/panel', uniqueKey: 'tools-panel', roles: ['Technician', 'Admin'] },
         { name: 'Request Tools', path: '/tech-request', uniqueKey: 'tools-request', roles: ['Technician'] }
+      ]
+    },
+    {
+      name: 'PPM Management',
+      icon: <ClipboardCheck size={18} strokeWidth={1.5} />,
+      roles: ['Admin', 'Viewer', 'Technician'],
+      subItems: [
+        { name: 'Schedule', path: '/ppm', uniqueKey: 'ppm-schedule', roles: ['Admin', 'Viewer', 'Technician'] },
+        { name: 'Work Orders', path: '/ppm/panel', uniqueKey: 'ppm-work-orders', roles: ['Technician', 'Admin'] },
+        { name: 'History', path: '/ppm/history', uniqueKey: 'ppm-history', roles: ['Admin', 'Viewer', 'Technician'] }
       ]
     },
     { name: 'Scanner', path: '/scanner', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Technician'] },

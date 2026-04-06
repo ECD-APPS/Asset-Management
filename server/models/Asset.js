@@ -270,6 +270,12 @@ const assetSchema = new mongoose.Schema({
   customFields: {
     type: mongoose.Schema.Types.Mixed,
     default: {}
+  },
+  /** When true, asset appears on technician PPM Work Orders and can open a PPM session. */
+  ppm_enabled: {
+    type: Boolean,
+    default: false,
+    index: true
   }
 }, { timestamps: true });
 

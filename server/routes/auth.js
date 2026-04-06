@@ -9,20 +9,8 @@ const { body, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 
 const Session = require('../models/Session');
-const cookieSecureMode = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
+const { sidSetOptions, sidClearOptions } = require('../utils/sessionCookie');
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const shouldUseSecureCookie = (req) => {
-  if (cookieSecureMode === 'true' || cookieSecureMode === '1') return true;
-  if (cookieSecureMode === 'false' || cookieSecureMode === '0') return false;
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
-  return Boolean(req.secure || forwardedProto === 'https');
-};
-const resolveSameSite = () => {
-  const raw = String(process.env.COOKIE_SAMESITE || 'lax').trim().toLowerCase();
-  if (raw === 'none') return 'none';
-  if (raw === 'strict') return 'strict';
-  return 'lax';
-};
 
 // Login rate limiter (relaxed for internal use)
 const loginLimiter = rateLimit({
@@ -67,19 +55,16 @@ router.post('/login',
     }).populate('assignedStore');
 
     if (user && (await bcrypt.compare(password, user.password))) {
+      const prevSid = req.cookies?.sid;
+      if (prevSid) {
+        await Session.deleteOne({ sid: prevSid }).catch(() => {});
+        res.clearCookie('sid', sidClearOptions(req));
+      }
       const sid = crypto.randomBytes(32).toString('hex');
       const maxAgeMs = parseInt(process.env.SESSION_MAX_AGE_MS || `${30 * 24 * 60 * 60 * 1000}`, 10);
       const expires = new Date(Date.now() + maxAgeMs);
       await Session.create({ sid, user: user._id, expiresAt: expires });
-      const cookieSecure = shouldUseSecureCookie(req);
-      const sameSite = resolveSameSite();
-      res.cookie('sid', sid, {
-        httpOnly: true,
-        secure: cookieSecure,
-        sameSite,
-        path: '/',
-        maxAge: maxAgeMs
-      });
+      res.cookie('sid', sid, sidSetOptions(req, maxAgeMs));
       res.json({
         _id: user.id,
         name: user.name,
@@ -103,9 +88,7 @@ router.post('/logout', (req, res) => {
   if (sid) {
     Session.deleteOne({ sid }).catch(() => {});
   }
-  const cookieSecure = shouldUseSecureCookie(req);
-  const sameSite = resolveSameSite();
-  res.clearCookie('sid', { path: '/', secure: cookieSecure, sameSite });
+  res.clearCookie('sid', sidClearOptions(req));
   res.status(200).json({ message: 'Logged out' });
 });
 

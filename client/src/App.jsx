@@ -6,6 +6,7 @@ import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import LoadingLogo from './components/LoadingLogo';
 import ApiLoadingOverlay from './components/ApiLoadingOverlay';
+import PwaInstallPrompt from './components/PwaInstallPrompt';
 import PropTypes from 'prop-types';
 // Eager-load home route: repeated refresh can abort lazy chunk fetches (Vite dynamic import errors).
 import Dashboard from './pages/Dashboard';
@@ -37,6 +38,10 @@ const SystemLogs = lazy(() => import('./pages/SystemLogs'));
 const Tools = lazy(() => import('./pages/Tools'));
 const TechTools = lazy(() => import('./pages/TechTools'));
 const Consumables = lazy(() => import('./pages/Consumables'));
+// Eager-load PPM routes: soft refresh can abort lazy chunk loads and leave the page stuck on “Loading…”.
+import PpmManagement from './pages/PpmManagement';
+import TechPpmPanel from './pages/TechPpmPanel';
+import PpmHistory from './pages/PpmHistory';
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const { user, loading, activeStore, globalLoading } = useAuth();
@@ -99,6 +104,7 @@ function App() {
       <ThemeProvider>
         <ErrorBoundary>
           <ApiLoadingOverlay />
+          <PwaInstallPrompt />
           <Suspense fallback={
             <div className="flex min-h-screen items-center justify-center bg-app-page px-4 text-app-main">
               <LoadingLogo
@@ -193,6 +199,24 @@ function App() {
           <Route path="/consumables" element={
             <ProtectedRoute allowedRoles={['Admin', 'Viewer']}>
               <Consumables />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/ppm" element={
+            <ProtectedRoute allowedRoles={['Admin', 'Viewer', 'Technician']}>
+              <PpmManagement />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/ppm/panel" element={
+            <ProtectedRoute allowedRoles={['Technician', 'Admin']}>
+              <TechPpmPanel />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/ppm/history" element={
+            <ProtectedRoute allowedRoles={['Admin', 'Viewer', 'Technician']}>
+              <PpmHistory />
             </ProtectedRoute>
           } />
 

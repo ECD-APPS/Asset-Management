@@ -1,0 +1,768 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import api from '../api/axios';
+import { useAuth } from '../context/AuthContext';
+
+const EQUIPMENT_OPTIONS = ['Ladder', 'Scaffold', 'Manlift', 'Rope', 'Safety Harness'];
+
+/** Must match server `VMS_CHECKLIST_KEY` */
+const VMS_CHECKLIST_KEY = 'vms_online';
+
+/** Align with server PPM asset search: partial UID / ABS / IP and model fields. */
+const assetMatchesPpmSearch = (a, rawKeyword) => {
+  const query = String(rawKeyword || '').trim().toLowerCase();
+  if (!query) return true;
+  const compact = query.replace(/\s+/g, '');
+  const uid = String(a?.uniqueId || '').trim().toLowerCase();
+  const abs = String(a?.abs_code || '').trim().toLowerCase();
+  const ip = String(a?.ip_address || '').trim().toLowerCase().replace(/\s/g, '');
+  const serial = String(a?.serial_number || '').trim().toLowerCase();
+  const mac = String(a?.mac_address || '').trim().toLowerCase().replace(/\s/g, '');
+  const expo = String(a?.expo_tag || a?.expoTag || '').trim().toLowerCase();
+  if (uid && (uid.includes(query) || uid.includes(compact))) return true;
+  if (abs && (abs.includes(query) || abs.includes(compact))) return true;
+  if (ip && (ip.includes(query) || ip.includes(compact))) return true;
+  if (serial && (serial.includes(query) || serial.includes(compact))) return true;
+  if (mac && (mac.includes(query) || mac.includes(compact))) return true;
+  if (expo && (expo.includes(query) || expo.includes(compact))) return true;
+  return [a?.name, a?.model_number, a?.product_name, a?.ticket_number]
+    .some((v) => String(v || '').toLowerCase().includes(query));
+};
+
+const statusTone = (status) => {
+  if (status === 'Completed') return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+  if (status === 'Overdue') return 'bg-rose-100 text-rose-800 border-rose-200';
+  if (status === 'In Progress') return 'bg-amber-100 text-amber-800 border-amber-200';
+  if (status === 'Cancelled') return 'bg-slate-100 text-slate-700 border-slate-200';
+  if (status === 'Not Completed') return 'bg-orange-100 text-orange-900 border-orange-200';
+  if (status === 'No PPM task') return 'bg-slate-100 text-slate-600 border-slate-200';
+  return 'bg-blue-100 text-blue-800 border-blue-200';
+};
+
+const fmtDate = (value) => {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleDateString();
+};
+
+/** GET /api/assets returns `{ items, total, page, pages }` (not `assets`). */
+const assetListFromResponse = (data) => {
+  if (!data) return [];
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.assets)) return data.assets;
+  if (Array.isArray(data)) return data;
+  return [];
+};
+
+const formatCreateAssetLabel = (a) => {
+  if (!a) return '';
+  const title = a.product_name || a.name || a.model_number || 'Asset';
+  return `${title} | UID:${a.uniqueId || '—'} | ABS:${a.abs_code || '—'} | SN:${a.serial_number || '—'} | IP:${a.ip_address || '—'} | MAC:${a.mac_address || '—'}`;
+};
+
+const PpmManagement = () => {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const isAdminUi = user?.role === 'Admin' || user?.role === 'Super Admin';
+  const canReopenClosedPpm =
+    user?.role === 'Technician' || user?.role === 'Admin' || user?.role === 'Super Admin';
+
+  const [overview, setOverview] = useState({ total: 0, overdue: 0, completed: 0, notCompleted: 0, health: 100 });
+  const [rows, setRows] = useState([]);
+  const [techs, setTechs] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [searchAssets, setSearchAssets] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [ppmPickHint, setPpmPickHint] = useState(null);
+  const [createAssetSearch, setCreateAssetSearch] = useState('');
+  const [createAssetResults, setCreateAssetResults] = useState([]);
+  const [createAssetPickLoading, setCreateAssetPickLoading] = useState(false);
+  const [createAssetMenuOpen, setCreateAssetMenuOpen] = useState(false);
+  const createPickerRef = useRef(null);
+  const [form, setForm] = useState({
+    asset_id: '',
+    assigned_to: '',
+    scheduled_for: '',
+    due_at: '',
+    manager_notes: ''
+  });
+  const [exportBusy, setExportBusy] = useState(false);
+  const loadGenRef = useRef(0);
+
+  const showReopenChecklistButton =
+    Boolean(selected) &&
+    canReopenClosedPpm &&
+    (['Completed', 'Not Completed'].includes(selected.status) ||
+      (isAdminUi && selected.status === 'Cancelled'));
+  const checklistFieldsLocked =
+    Boolean(selected) && ['Completed', 'Cancelled', 'Not Completed'].includes(selected.status);
+
+  const load = async () => {
+    const gen = ++loadGenRef.current;
+    try {
+      setLoading(true);
+      const [o, list] = await Promise.all([
+        api.get('/ppm/overview'),
+        api.get('/ppm', { params: { limit: 1000 } })
+      ]);
+      if (gen !== loadGenRef.current) return;
+      setOverview(o.data || { total: 0, overdue: 0, completed: 0, notCompleted: 0, health: 100 });
+      setRows(Array.isArray(list.data) ? list.data : []);
+      if (isAdminUi) {
+        try {
+          const u = await api.get('/users');
+          const techRows = (Array.isArray(u.data) ? u.data : []).filter((x) => x.role === 'Technician');
+          if (gen !== loadGenRef.current) return;
+          setTechs(techRows);
+        } catch {
+          if (gen !== loadGenRef.current) return;
+          setTechs([]);
+        }
+      } else {
+        setTechs([]);
+      }
+      if (gen === loadGenRef.current) {
+        setSelected((prev) => {
+          if (!prev) return null;
+          return (Array.isArray(list.data) ? list.data : []).find((r) => r._id === prev._id) || null;
+        });
+      }
+    } catch (error) {
+      if (gen !== loadGenRef.current) return;
+      alert(error.response?.data?.message || 'Failed to load PPM Management data');
+    } finally {
+      if (gen === loadGenRef.current) setLoading(false);
+    }
+  };
+
+  const downloadPpmExcel = async () => {
+    try {
+      setExportBusy(true);
+      const res = await api.get('/ppm/export', { responseType: 'blob' });
+      const blob = res.data;
+      if (blob?.type?.includes('application/json')) {
+        const text = await blob.text();
+        const j = JSON.parse(text);
+        alert(j.message || 'Export failed');
+        return;
+      }
+      const dispo = res.headers['content-disposition'];
+      const match = dispo && /filename="?([^";]+)"?/i.exec(dispo);
+      const name = match ? match[1].trim() : `PPM_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const url = window.URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', name);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not download PPM report');
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [isAdminUi]);
+
+  useEffect(() => {
+    if (!q.trim()) setPpmPickHint(null);
+  }, [q]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const qt = q.trim();
+    if (!qt) {
+      setSearchAssets([]);
+      setSearchLoading(false);
+      return undefined;
+    }
+    setSearchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/assets', { params: { q: qt, limit: 500, page: 1 } });
+        if (cancelled) return;
+        setSearchAssets(assetListFromResponse(res.data));
+      } catch {
+        if (!cancelled) setSearchAssets([]);
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [q]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const qt = createAssetSearch.trim();
+    if (!qt) {
+      setCreateAssetResults([]);
+      setCreateAssetPickLoading(false);
+      return undefined;
+    }
+    setCreateAssetPickLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/assets', { params: { q: qt, limit: 75, page: 1 } });
+        if (cancelled) return;
+        setCreateAssetResults(assetListFromResponse(res.data));
+      } catch {
+        if (!cancelled) setCreateAssetResults([]);
+      } finally {
+        if (!cancelled) setCreateAssetPickLoading(false);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [createAssetSearch]);
+
+  useEffect(() => {
+    const onDown = (e) => {
+      if (!createPickerRef.current?.contains(e.target)) setCreateAssetMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+
+  const filteredTasks = useMemo(() => {
+    const qt = q.trim();
+    return rows.filter((row) => {
+      if (qt) {
+        return assetMatchesPpmSearch(row.asset || {}, q);
+      }
+      if (statusFilter && row.status !== statusFilter) return false;
+      return true;
+    });
+  }, [rows, q, statusFilter]);
+
+  const displayRows = useMemo(() => {
+    const qt = q.trim();
+    const taskPart = filteredTasks.map((task) => ({ kind: 'task', task }));
+    if (!qt) return taskPart;
+
+    const seenAsset = new Set(
+      filteredTasks.map((r) => (r.asset?._id ? String(r.asset._id) : '')).filter(Boolean)
+    );
+    const extras = [];
+    for (const a of searchAssets) {
+      const id = a?._id ? String(a._id) : '';
+      if (!id || seenAsset.has(id)) continue;
+      if (assetMatchesPpmSearch(a, qt)) {
+        extras.push({ kind: 'asset', asset: a });
+        seenAsset.add(id);
+      }
+    }
+    return [...taskPart, ...extras];
+  }, [filteredTasks, searchAssets, q]);
+
+  const createTask = async () => {
+    if (!form.asset_id) {
+      alert('Please select an asset.');
+      return;
+    }
+    try {
+      setCreating(true);
+      await api.post('/ppm', {
+        ...form,
+        scheduled_for: form.scheduled_for || new Date().toISOString()
+      });
+      setForm({ asset_id: '', assigned_to: '', scheduled_for: '', due_at: '', manager_notes: '' });
+      setCreateAssetSearch('');
+      setCreateAssetResults([]);
+      setCreateAssetMenuOpen(false);
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to create PPM task');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const updateChecklistValue = (idx, value) => {
+    if (!selected) return;
+    const checklist = Array.isArray(selected.checklist) ? [...selected.checklist] : [];
+    checklist[idx] = { ...checklist[idx], value };
+    setSelected({ ...selected, checklist });
+  };
+
+  const updateChecklistNote = (idx, notes) => {
+    if (!selected) return;
+    const checklist = Array.isArray(selected.checklist) ? [...selected.checklist] : [];
+    checklist[idx] = { ...checklist[idx], notes };
+    setSelected({ ...selected, checklist });
+  };
+
+  const submitChecklist = async () => {
+    if (!selected?._id) return;
+    try {
+      setBusy(true);
+      await api.patch(`/ppm/${selected._id}/submit`, {
+        checklist: selected.checklist || [],
+        equipment_used: selected.equipment_used || [],
+        technician_notes: selected.technician_notes || ''
+      });
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to submit checklist');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const completeTask = async () => {
+    if (!selected?._id) return;
+    try {
+      setBusy(true);
+      await api.patch(`/ppm/${selected._id}/complete`, {
+        checklist: selected.checklist || [],
+        equipment_used: selected.equipment_used || [],
+        technician_notes: selected.technician_notes || ''
+      });
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to complete task');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reopenForEdit = async () => {
+    if (!selected?._id) return;
+    if (
+      !window.confirm(
+        'Reopen this PPM for editing? It will return to In Progress so you can update the checklist and save or mark complete again.'
+      )
+    ) {
+      return;
+    }
+    try {
+      setBusy(true);
+      await api.patch(`/ppm/${selected._id}/reopen-for-edit`);
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not reopen PPM for editing');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelTask = async () => {
+    if (!selected?._id) return;
+    try {
+      setBusy(true);
+      await api.patch(`/ppm/${selected._id}/cancel`, { reason: 'Cancelled from PPM management' });
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to cancel task');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <h1 className="text-2xl font-bold">PPM Management — 180-day overview</h1>
+
+      {user?.role === 'Technician' && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          Run maintenance on any in-store asset without waiting for assignment — open{' '}
+          <Link className="font-semibold underline" to="/ppm/panel">Work Orders</Link>
+          {' '}and use the wrench on a row.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <div className="text-xs uppercase text-slate-500">PPM Coverage</div>
+          <div className="text-3xl font-bold text-emerald-700 mt-2">{overview.health}%</div>
+          <div className="text-xs text-slate-600 mt-1">Completed ÷ all tasks</div>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <div className="text-xs uppercase text-slate-500">Overdue PPMs</div>
+          <div className="text-3xl font-bold text-rose-700 mt-2">{overview.overdue}</div>
+          <div className="text-xs text-slate-600 mt-1">Need immediate action</div>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <div className="text-xs uppercase text-slate-500">Completed PPMs</div>
+          <div className="text-3xl font-bold text-emerald-700 mt-2">{overview.completed}</div>
+          <div className="text-xs text-slate-600 mt-1">Verified maintenance</div>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <div className="text-xs uppercase text-slate-500">Not completed</div>
+          <div className="text-3xl font-bold text-orange-700 mt-2">{overview.notCompleted ?? 0}</div>
+          <div className="text-xs text-slate-600 mt-1">Technician left a reason</div>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm sm:col-span-2 lg:col-span-1">
+          <div className="text-xs uppercase text-slate-500">Total Tasks</div>
+          <div className="text-3xl font-bold text-slate-900 mt-2">{overview.total}</div>
+          <div className="text-xs text-slate-600 mt-1">Scheduled and historical</div>
+        </div>
+      </div>
+
+      {isAdminUi && (
+        <div className="bg-white border rounded-xl p-4 shadow-sm grid grid-cols-1 lg:grid-cols-6 gap-3">
+          <div className="lg:col-span-2 min-w-0 relative" ref={createPickerRef}>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Asset for new PPM task</label>
+            <div className="flex gap-1">
+              <input
+                value={createAssetSearch}
+                onChange={(e) => {
+                  setCreateAssetSearch(e.target.value);
+                  setForm((f) => ({ ...f, asset_id: '' }));
+                  setCreateAssetMenuOpen(true);
+                }}
+                onFocus={() => setCreateAssetMenuOpen(true)}
+                className="border rounded-lg px-3 py-2 text-sm w-full min-w-0"
+                placeholder="Type UID, ABS, serial, IP, MAC, model…"
+                autoComplete="off"
+                title="Searches the same way as Assets — pick a row to assign this PPM."
+              />
+              {form.asset_id ? (
+                <button
+                  type="button"
+                  className="shrink-0 px-2 py-2 text-sm rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+                  title="Clear selection"
+                  onClick={() => {
+                    setForm((f) => ({ ...f, asset_id: '' }));
+                    setCreateAssetSearch('');
+                    setCreateAssetResults([]);
+                    setCreateAssetMenuOpen(false);
+                  }}
+                >
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            {form.asset_id ? (
+              <p className="text-[11px] text-emerald-800 mt-1 font-medium">Selected for create — choose dates and click Create PPM Task.</p>
+            ) : (
+              <p className="text-[11px] text-slate-500 mt-1">
+                Results match your active store. You can also click a row in the table below to pre-fill this field.
+              </p>
+            )}
+            {createAssetMenuOpen && createAssetSearch.trim() ? (
+              <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-lg border border-slate-200 bg-white shadow-lg max-h-64 overflow-y-auto">
+                {createAssetPickLoading ? (
+                  <div className="px-3 py-3 text-sm text-slate-500">Searching assets…</div>
+                ) : createAssetResults.length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-slate-500">No assets match. Try another UID, ABS, serial, IP, or MAC.</div>
+                ) : (
+                  createAssetResults.map((a) => (
+                    <button
+                      key={a._id}
+                      type="button"
+                      className="w-full text-left px-3 py-2 text-xs border-b border-slate-100 last:border-0 hover:bg-indigo-50"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setForm((f) => ({ ...f, asset_id: String(a._id) }));
+                        setCreateAssetSearch(formatCreateAssetLabel(a));
+                        setCreateAssetMenuOpen(false);
+                      }}
+                    >
+                      <div className="font-medium text-slate-800 truncate">{formatCreateAssetLabel(a)}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+          <select value={form.assigned_to} onChange={(e) => setForm({ ...form, assigned_to: e.target.value })} className="border rounded-lg px-3 py-2 text-sm">
+            <option value="">Assign Technician (optional)</option>
+            {techs.map((t) => <option key={t._id} value={t._id}>{t.name}</option>)}
+          </select>
+          <input type="date" value={form.scheduled_for} onChange={(e) => setForm({ ...form, scheduled_for: e.target.value })} className="border rounded-lg px-3 py-2 text-sm" title="Scheduled for (optional)" />
+          <input type="date" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} className="border rounded-lg px-3 py-2 text-sm" title="Due date (optional — defaults to ~180 days)" />
+          <button disabled={creating} onClick={createTask} className="rounded-lg bg-indigo-600 text-white px-3 py-2 text-sm hover:bg-indigo-700 disabled:opacity-50">
+            {creating ? 'Creating...' : 'Create PPM Task'}
+          </button>
+          <input
+            value={form.manager_notes}
+            onChange={(e) => setForm({ ...form, manager_notes: e.target.value })}
+            className="lg:col-span-6 border rounded-lg px-3 py-2 text-sm"
+            placeholder="Manager notes (optional)"
+          />
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="xl:col-span-2 bg-white border rounded-xl shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b flex flex-wrap gap-2 items-center">
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by Unique ID, ABS code, IP, serial, model…" className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[220px]" />
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border rounded-lg px-3 py-2 text-sm">
+              <option value="">All status</option>
+              <option value="Scheduled">Scheduled</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Overdue">Overdue</option>
+              <option value="Completed">Completed</option>
+              <option value="Not Completed">Not completed</option>
+              <option value="Cancelled">Cancelled</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => load()}
+              className="text-sm px-3 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 shrink-0"
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              disabled={exportBusy}
+              onClick={downloadPpmExcel}
+              className="text-sm px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 shrink-0"
+            >
+              {exportBusy ? 'Preparing…' : 'Download Excel'}
+            </button>
+            {q.trim() ? (
+              <span className="text-xs text-slate-500 w-full sm:w-auto">While searching, all task statuses are shown; clear the box to use the status filter.</span>
+            ) : null}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 border-b">
+                <tr>
+                  <th className="px-3 py-2 text-left">Unique ID</th>
+                  <th className="px-3 py-2 text-left">ABS Code</th>
+                  <th className="px-3 py-2 text-left">IP Address</th>
+                  <th className="px-3 py-2 text-left">Asset / model</th>
+                  <th className="px-3 py-2 text-left">Status</th>
+                  <th className="px-3 py-2 text-left">Next Service</th>
+                  <th className="px-3 py-2 text-left">Assigned To</th>
+                  <th className="px-3 py-2 text-left max-w-[200px]">Technician comment</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={8} className="px-3 py-4 text-slate-500">Loading...</td></tr>
+                ) : displayRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-3 py-4 text-slate-500">
+                      {q.trim()
+                        ? searchLoading
+                          ? 'Searching assets…'
+                          : 'No PPM tasks or assets match your search.'
+                        : 'No PPM tasks yet. Search by Unique ID, ABS, or IP to find an asset, or create a task above.'}
+                    </td>
+                  </tr>
+                ) : (
+                  displayRows.map((row) => {
+                    if (row.kind === 'task') {
+                      const r = row.task;
+                      return (
+                        <tr
+                          key={r._id}
+                          className={`border-t cursor-pointer hover:bg-slate-50 ${selected?._id === r._id ? 'bg-indigo-50' : ''}`}
+                          onClick={() => {
+                            setPpmPickHint(null);
+                            setSelected(r);
+                          }}
+                        >
+                          <td className="px-3 py-2 font-mono text-xs">{r.asset?.uniqueId || '-'}</td>
+                          <td className="px-3 py-2 font-mono text-xs">{r.asset?.abs_code || '-'}</td>
+                          <td className="px-3 py-2 font-mono text-xs">{r.asset?.ip_address || '-'}</td>
+                          <td className="px-3 py-2">{r.asset?.model_number || r.asset?.name || '-'}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex border rounded-full px-2 py-0.5 text-xs ${statusTone(r.status)}`}>{r.status}</span>
+                          </td>
+                          <td className="px-3 py-2">{fmtDate(r.due_at)}</td>
+                          <td className="px-3 py-2">{r.assigned_to?.name || '-'}</td>
+                          <td className="px-3 py-2 text-xs text-slate-600 max-w-[220px] align-top whitespace-pre-wrap break-words">
+                            {r.status === 'Not Completed' && r.technician_notes
+                              ? r.technician_notes
+                              : r.technician_notes
+                                ? String(r.technician_notes).slice(0, 120) + (String(r.technician_notes).length > 120 ? '…' : '')
+                                : '—'}
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const a = row.asset;
+                    const pick = () => {
+                      setSelected(null);
+                      if (isAdminUi) {
+                        setPpmPickHint(a);
+                        setForm((f) => ({ ...f, asset_id: String(a._id) }));
+                        setCreateAssetSearch(formatCreateAssetLabel(a));
+                        setCreateAssetMenuOpen(false);
+                      } else {
+                        const needle = String(a.uniqueId || a.abs_code || a.ip_address || q.trim() || '').trim();
+                        navigate({ pathname: '/ppm/panel', search: needle ? `?q=${encodeURIComponent(needle)}` : '' });
+                      }
+                    };
+                    return (
+                      <tr
+                        key={`asset-${a._id}`}
+                        className="border-t cursor-pointer hover:bg-slate-50 bg-slate-50/40"
+                        onClick={pick}
+                        title={isAdminUi ? 'No PPM task yet — click to pre-select for Create PPM Task' : 'Open Work Orders with this asset in search'}
+                      >
+                        <td className="px-3 py-2 font-mono text-xs">{a.uniqueId || '-'}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{a.abs_code || '-'}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{a.ip_address || '-'}</td>
+                        <td className="px-3 py-2">{a.model_number || a.name || a.product_name || '-'}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex border rounded-full px-2 py-0.5 text-xs ${statusTone('No PPM task')}`}>No PPM task</span>
+                        </td>
+                        <td className="px-3 py-2">—</td>
+                        <td className="px-3 py-2">—</td>
+                        <td className="px-3 py-2">—</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="bg-white border rounded-xl shadow-sm p-4">
+          {!selected && ppmPickHint && isAdminUi ? (
+            <div className="space-y-2 text-sm">
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-950">
+                <div className="font-semibold">Asset matched (no PPM task yet)</div>
+                <div className="text-xs mt-1 font-mono">
+                  UID {ppmPickHint.uniqueId || '—'} · ABS {ppmPickHint.abs_code || '—'} · IP {ppmPickHint.ip_address || '—'}
+                </div>
+                <div className="text-xs mt-1">
+                  This asset is pre-selected in <span className="font-medium">Create PPM Task</span>. Set dates and click Create, or pick another row.
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {!selected && (!ppmPickHint || !isAdminUi) ? (
+            <div className="text-sm text-slate-500">
+              Select a task to open the maintenance checklist. Type Unique ID, ABS, or IP in the search box to list matching assets (including those without a task yet).
+            </div>
+          ) : null}
+          {selected ? (
+            <div className="space-y-3">
+              <h3 className="text-lg font-semibold">PPM maintenance checklist</h3>
+              <div className="text-xs text-slate-600">
+                [{selected.asset?.abs_code || '-'}] · {selected.asset?.name || selected.asset?.model_number || 'Asset'}
+              </div>
+              {selected.status === 'Not Completed' ? (
+                <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-950">
+                  <div className="font-semibold">Technician: PPM not completed</div>
+                  <p className="mt-1 whitespace-pre-wrap text-orange-900">{selected.technician_notes || '—'}</p>
+                  {selected.incomplete_by?.name ? (
+                    <p className="text-xs text-orange-800 mt-1">Recorded by {selected.incomplete_by.name}</p>
+                  ) : null}
+                </div>
+              ) : null}
+              {(selected.checklist || []).map((item, idx) => {
+                const isVms = item.key === VMS_CHECKLIST_KEY;
+                const choices = isVms ? ['Online', 'Offline'] : ['Good', 'Needs Replace', 'No'];
+                return (
+                  <div key={item.key || idx} className="border rounded-lg p-2">
+                    <div className="text-sm font-medium mb-1">{item.label}</div>
+                    <div className="flex gap-2 flex-wrap">
+                      {choices.map((choice) => (
+                        <button
+                          key={choice}
+                          type="button"
+                        disabled={busy || checklistFieldsLocked}
+                        onClick={() => updateChecklistValue(idx, choice)}
+                          className={`px-2 py-1 text-xs border rounded ${item.value === choice ? 'bg-amber-300 border-amber-400' : 'bg-white border-slate-300'} disabled:opacity-50`}
+                        >
+                          {choice}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      value={item.notes || ''}
+                      disabled={busy || checklistFieldsLocked}
+                      onChange={(e) => updateChecklistNote(idx, e.target.value)}
+                      className="mt-2 w-full border rounded px-2 py-1 text-xs"
+                      placeholder="Optional notes"
+                    />
+                  </div>
+                );
+              })}
+              <div>
+                <div className="text-sm font-medium mb-1">Equipment Used</div>
+                <div className="flex flex-wrap gap-2">
+                  {EQUIPMENT_OPTIONS.map((eq) => {
+                    const active = (selected.equipment_used || []).includes(eq);
+                    return (
+                      <button
+                        key={eq}
+                        type="button"
+                        disabled={busy || checklistFieldsLocked}
+                        onClick={() => {
+                          const current = new Set(selected.equipment_used || []);
+                          if (current.has(eq)) current.delete(eq); else current.add(eq);
+                          setSelected({ ...selected, equipment_used: Array.from(current) });
+                        }}
+                        className={`px-2 py-1 text-xs border rounded ${active ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'bg-white border-slate-300'} disabled:opacity-50`}
+                      >
+                        {eq}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <textarea
+                value={selected.technician_notes || ''}
+                disabled={busy || checklistFieldsLocked}
+                onChange={(e) => setSelected({ ...selected, technician_notes: e.target.value })}
+                className="w-full border rounded px-2 py-2 text-sm"
+                placeholder="Technician notes"
+                rows={3}
+              />
+              <div className="flex flex-wrap gap-2">
+                {showReopenChecklistButton ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={reopenForEdit}
+                    className="px-3 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-50"
+                  >
+                    Edit checklist
+                  </button>
+                ) : null}
+                <button disabled={busy || checklistFieldsLocked} onClick={submitChecklist} className="px-3 py-2 rounded bg-indigo-600 text-white text-sm hover:bg-indigo-700 disabled:opacity-50">
+                  Save Checklist
+                </button>
+                <button disabled={busy || checklistFieldsLocked} onClick={completeTask} className="px-3 py-2 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50">
+                  Mark Complete
+                </button>
+                {isAdminUi ? (
+                  <button disabled={busy || checklistFieldsLocked} onClick={cancelTask} className="px-3 py-2 rounded bg-rose-600 text-white text-sm hover:bg-rose-700 disabled:opacity-50">
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+              <div className="pt-2 border-t">
+                <div className="text-sm font-semibold mb-1">History</div>
+                <div className="max-h-48 overflow-auto space-y-1 text-xs">
+                  {(selected.history || []).length === 0 ? (
+                    <div className="text-slate-500">No history yet.</div>
+                  ) : (selected.history || []).slice().reverse().map((h, i) => (
+                    <div key={`${h.at || h.date || ''}-${i}`} className="border rounded px-2 py-1">
+                      <div className="font-medium">{h.action}</div>
+                      <div className="text-slate-600">{h.user || '-'} · {fmtDate(h.at || h.date)}</div>
+                      {h.details ? <div className="text-slate-700 mt-0.5">{h.details}</div> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default PpmManagement;
