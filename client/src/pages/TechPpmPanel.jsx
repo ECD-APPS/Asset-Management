@@ -10,6 +10,12 @@ const EQUIPMENT_OPTIONS = ['Ladder', 'Scaffold', 'Manlift', 'Rope'];
 /** Must match server `PPM_CYCLE_MS` (180-day PPM cycle). */
 const PPM_CYCLE_MS = 180 * 24 * 60 * 60 * 1000;
 
+const ppmDownloadFallbackFilename = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `PPM_Report_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.xlsx`;
+};
+
 const nextServiceMeta = (openTask, lastCompletedAt) => {
   if (openTask?.due_at) {
     const d = new Date(openTask.due_at);
@@ -56,11 +62,17 @@ const TechPpmPanel = () => {
   const canManagePpmInclusion = user?.role === 'Admin' || user?.role === 'Super Admin';
 
   const [rows, setRows] = useState([]);
-  const [overview, setOverview] = useState({ total: 0, overdue: 0, completed: 0, notCompleted: 0, health: 100 });
+  const [overview, setOverview] = useState({
+    total: 0,
+    overdue: 0,
+    completed: 0,
+    notCompleted: 0,
+    open: 0,
+    health: 100
+  });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [task, setTask] = useState(null);
   const [showIncompleteList, setShowIncompleteList] = useState(false);
@@ -68,30 +80,39 @@ const TechPpmPanel = () => {
   const [incompleteLoading, setIncompleteLoading] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [ppmSavingId, setPpmSavingId] = useState(null);
+  const [bulkPpmBusy, setBulkPpmBusy] = useState(false);
   const assetsLoadGen = useRef(0);
   const incompleteLoadGen = useRef(0);
-  const workOrderColSpan = canManagePpmInclusion ? 10 : 9;
+  const ppmSelectAllRef = useRef(null);
+  const workOrderColSpan = canManagePpmInclusion ? 9 : 8;
 
   const load = useCallback(async () => {
     const gen = ++assetsLoadGen.current;
     try {
       setLoading(true);
+      const q = query.trim();
+      const params = {};
+      if (q) {
+        params.q = q;
+      } else if (canManagePpmInclusion) {
+        params.program_only = true;
+      }
       const [assetsRes, ovRes] = await Promise.all([
-        api.get('/ppm/self-service-assets', {
-          params: { q: query.trim() || undefined }
-        }),
+        api.get('/ppm/self-service-assets', { params }),
         api.get('/ppm/overview')
       ]);
       if (gen !== assetsLoadGen.current) return;
       setRows(Array.isArray(assetsRes.data) ? assetsRes.data : []);
-      setOverview(ovRes.data || { total: 0, overdue: 0, completed: 0, notCompleted: 0, health: 100 });
+      setOverview(
+        ovRes.data || { total: 0, overdue: 0, completed: 0, notCompleted: 0, open: 0, health: 100 }
+      );
     } catch (error) {
       if (gen !== assetsLoadGen.current) return;
       alert(error.response?.data?.message || 'Failed to load PPM data');
     } finally {
       if (gen === assetsLoadGen.current) setLoading(false);
     }
-  }, [query]);
+  }, [query, canManagePpmInclusion]);
 
   useEffect(() => {
     const t = setTimeout(() => { load(); }, 300);
@@ -125,8 +146,8 @@ const TechPpmPanel = () => {
         return;
       }
       const dispo = res.headers['content-disposition'];
-      const match = dispo && /filename="?([^";]+)"?/i.exec(dispo);
-      const name = match ? match[1].trim() : `PPM_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const match = dispo && /filename="([^"]+)"|filename=([^;\s]+)/i.exec(dispo);
+      const name = (match && (match[1] || match[2])?.trim()) || ppmDownloadFallbackFilename();
       const url = window.URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob]));
       const link = document.createElement('a');
       link.href = url;
@@ -147,9 +168,16 @@ const TechPpmPanel = () => {
   }, [showIncompleteList, loadIncomplete]);
 
   const pieData = useMemo(() => {
+    const programTotal = overview.total || 0;
+    if (programTotal === 0) {
+      return [{ name: 'No data', value: 1, empty: true }];
+    }
     const completed = overview.completed || 0;
     const notCompleted = overview.notCompleted || 0;
-    const open = Math.max(0, (overview.total || 0) - completed - notCompleted);
+    const open =
+      overview.open != null
+        ? overview.open
+        : Math.max(0, programTotal - completed - notCompleted);
     if (completed === 0 && notCompleted === 0 && open === 0) {
       return [{ name: 'No data', value: 1, empty: true }];
     }
@@ -163,6 +191,10 @@ const TechPpmPanel = () => {
   const taskTotal = overview.total || 0;
   const completedCount = overview.completed || 0;
   const notCompletedCount = overview.notCompleted || 0;
+  const openCount =
+    overview.open != null
+      ? overview.open
+      : Math.max(0, taskTotal - completedCount - notCompletedCount);
   const completedPct = taskTotal > 0 ? Math.round((completedCount / taskTotal) * 100) : 0;
 
   const systemHealthPct = useMemo(() => {
@@ -171,25 +203,27 @@ const TechPpmPanel = () => {
     return Math.round(((rows.length - unhealthy) / rows.length) * 100);
   }, [rows, overview.health]);
 
-  const allRowIds = useMemo(() => rows.map((r) => String(r.asset?._id)).filter(Boolean), [rows]);
-  const allSelected = allRowIds.length > 0 && allRowIds.every((id) => selectedIds.has(id));
+  const allVisiblePpmOn = rows.length > 0 && rows.every((r) => Boolean(r.asset?.ppm_enabled));
+  const someVisiblePpmOn = rows.some((r) => Boolean(r.asset?.ppm_enabled));
 
-  const toggleSelectAll = () => {
-    if (allSelected) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(allRowIds));
+  useEffect(() => {
+    const el = ppmSelectAllRef.current;
+    if (el) el.indeterminate = someVisiblePpmOn && !allVisiblePpmOn;
+  }, [someVisiblePpmOn, allVisiblePpmOn]);
+
+  const toggleAllPpmInVisibleList = async () => {
+    const ids = rows.map((r) => r.asset?._id).filter(Boolean);
+    if (!ids.length) return;
+    const nextEnabled = !allVisiblePpmOn;
+    try {
+      setBulkPpmBusy(true);
+      await api.patch('/ppm/assets/bulk-ppm-enabled', { asset_ids: ids, enabled: nextEnabled });
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not update PPM flags for the list');
+    } finally {
+      setBulkPpmBusy(false);
     }
-  };
-
-  const toggleSelectRow = (id) => {
-    const sid = String(id);
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(sid)) next.delete(sid);
-      else next.add(sid);
-      return next;
-    });
   };
 
   const openChecklist = async (assetId) => {
@@ -338,11 +372,13 @@ const TechPpmPanel = () => {
         <p className="text-sm text-slate-600 mt-1">
           {canManagePpmInclusion ? (
             <>
-              Tick <span className="font-semibold">PPM</span> for each asset that should appear on technician Work Orders (unchecked assets stay admin-only here, unless a PPM is assigned to that technician).
-              {' '}
+              <span className="font-semibold">Type in the search box</span> to find assets in the store; matching rows appear so you can tick{' '}
+              <span className="font-semibold">PPM</span> to add them to the program. With an empty search, this table shows{' '}
+              <span className="font-semibold">only assets already in the PPM program</span> (technicians see the same set). Open the wrench to run the checklist.
             </>
-          ) : null}
-          Search by Unique ID, ABS code, or IP. Open the wrench on a listed asset to run the checklist.
+          ) : (
+            <>Search by Unique ID, ABS code, or IP. Open the wrench on a listed asset to run the checklist.</>
+          )}
         </p>
       </div>
 
@@ -381,7 +417,7 @@ const TechPpmPanel = () => {
                   <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500 mt-1">Completed</div>
                 </>
               ) : (
-                <div className="text-sm text-slate-400">No tasks</div>
+                <div className="text-sm text-slate-400">No assets in PPM</div>
               )}
             </div>
           </div>
@@ -390,7 +426,7 @@ const TechPpmPanel = () => {
               <span>
                 <span className="font-semibold text-orange-700">{notCompletedCount}</span> not completed
                 <span className="mx-2 text-slate-300">·</span>
-                <span className="font-semibold text-amber-600">{Math.max(0, taskTotal - completedCount - notCompletedCount)}</span> open
+                <span className="font-semibold text-amber-600">{openCount}</span> open
               </span>
             ) : null}
           </div>
@@ -417,7 +453,11 @@ const TechPpmPanel = () => {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search Unique ID, ABS code, IP, or model…"
+              placeholder={
+                canManagePpmInclusion
+                  ? 'Type to search UID, ABS, IP, or model — then tick PPM on rows to add to the program…'
+                  : 'Search Unique ID, ABS code, IP, or model…'
+              }
               className="border border-slate-300 rounded-lg px-3 py-2 text-sm flex-1 min-w-[200px]"
             />
           ) : (
@@ -444,6 +484,7 @@ const TechPpmPanel = () => {
             disabled={exportBusy}
             onClick={downloadPpmExcel}
             className="text-sm px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+            title="Each export uses a new file name (date and time) so downloads are not overwritten."
           >
             {exportBusy ? 'Preparing…' : 'Download Excel'}
           </button>
@@ -453,18 +494,20 @@ const TechPpmPanel = () => {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 border-b">
                 <tr>
-                  <th className="px-2 py-2 w-10">
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      onChange={toggleSelectAll}
-                      className="rounded border-slate-300"
-                      title="Select all on page"
-                    />
-                  </th>
                   {canManagePpmInclusion ? (
-                    <th className="px-2 py-2 text-left text-xs font-semibold uppercase text-slate-500 w-14" title="Include in technician PPM list">
-                      PPM
+                    <th className="px-2 py-2 text-center text-xs font-semibold uppercase text-slate-500 w-14">
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span title="Include in technician PPM list">PPM</span>
+                        <input
+                          ref={ppmSelectAllRef}
+                          type="checkbox"
+                          checked={allVisiblePpmOn}
+                          disabled={bulkPpmBusy || rows.length === 0}
+                          onChange={toggleAllPpmInVisibleList}
+                          className="rounded border-slate-300"
+                          title="Select all PPM checkboxes in the list below (current search results)"
+                        />
+                      </div>
                     </th>
                   ) : null}
                   <th className="px-3 py-2 text-left">Unique ID</th>
@@ -481,27 +524,25 @@ const TechPpmPanel = () => {
                 {loading ? (
                   <tr><td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">Loading assets…</td></tr>
                 ) : rows.length === 0 ? (
-                  <tr><td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">No assets match your search (or this store has no assets yet).</td></tr>
+                  <tr>
+                    <td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">
+                      {canManagePpmInclusion && !query.trim()
+                        ? 'No assets in the PPM program yet. Use the search box to find assets, then tick PPM on each row you want to include.'
+                        : 'No assets match your search (or this store has no assets yet).'}
+                    </td>
+                  </tr>
                 ) : rows.map((row) => {
                   const a = row.asset || {};
                   const ns = nextServiceMeta(row.open_task, row.last_completed_at);
                   const rid = String(a._id || '');
                   return (
                     <tr key={a._id} className="border-t hover:bg-slate-50/80">
-                      <td className="px-2 py-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(rid)}
-                          onChange={() => toggleSelectRow(rid)}
-                          className="rounded border-slate-300"
-                        />
-                      </td>
                       {canManagePpmInclusion ? (
                         <td className="px-2 py-2 text-center">
                           <input
                             type="checkbox"
                             checked={Boolean(a.ppm_enabled)}
-                            disabled={ppmSavingId === rid}
+                            disabled={bulkPpmBusy || ppmSavingId === rid}
                             onChange={(e) => {
                               e.stopPropagation();
                               togglePpmEnabled(a._id, e.target.checked);

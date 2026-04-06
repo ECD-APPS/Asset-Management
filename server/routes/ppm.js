@@ -1,15 +1,32 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const ExcelJS = require('exceljs');
 const PpmTask = require('../models/PpmTask');
 const Asset = require('../models/Asset');
 const ActivityLog = require('../models/ActivityLog');
+const User = require('../models/User');
 const { protect, restrictViewer } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
 /** PPM cycle length (default due / next-service horizon) — 180 days */
 const PPM_CYCLE_MS = 180 * 24 * 60 * 60 * 1000;
+
+/** Unique .xlsx filename per download (avoids overwriting the same file in Downloads). */
+const ppmExportFilename = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `PPM_Report_${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}_${p(d.getUTCHours())}-${p(d.getUTCMinutes())}-${p(d.getUTCSeconds())}.xlsx`;
+};
+
+/** Latest completion is outside current 180-day window → due for a new cycle. */
+const completionOutsideCurrentCycle = (completedAt, nowMs = Date.now()) => {
+  if (!completedAt) return true;
+  const t = new Date(completedAt).getTime();
+  if (!Number.isFinite(t)) return true;
+  return nowMs - t >= PPM_CYCLE_MS;
+};
 
 const VMS_CHECKLIST_KEY = 'vms_online';
 
@@ -153,15 +170,80 @@ const ensureTaskAccess = (task, req) => {
 router.get('/overview', protect, allowPpmRead, async (req, res) => {
   try {
     const now = new Date();
-    const filter = applyStoreScope(req, { status: { $ne: 'Cancelled' } });
-    const [total, overdue, completed, notCompleted] = await Promise.all([
-      PpmTask.countDocuments(filter),
-      PpmTask.countDocuments({ ...filter, status: { $in: ['Scheduled', 'In Progress', 'Overdue'] }, due_at: { $lt: now } }),
-      PpmTask.countDocuments({ ...filter, status: 'Completed' }),
-      PpmTask.countDocuments({ ...filter, status: 'Not Completed' })
+    if (!req.activeStore || !mongoose.Types.ObjectId.isValid(req.activeStore)) {
+      return res.json({ total: 0, overdue: 0, completed: 0, notCompleted: 0, open: 0, health: 100 });
+    }
+    const storeOid = new mongoose.Types.ObjectId(req.activeStore);
+
+    /** Total PPM scope = assets marked for PPM (new checkboxes add to this count immediately). */
+    const programAssetIds = await Asset.find({
+      store: storeOid,
+      disposed: { $ne: true },
+      ppm_enabled: true
+    })
+      .distinct('_id');
+
+    const total = programAssetIds.length;
+
+    if (total === 0) {
+      return res.json({ total: 0, overdue: 0, completed: 0, notCompleted: 0, open: 0, health: 100 });
+    }
+
+    const [latestTasks, taskOverdueCount] = await Promise.all([
+      PpmTask.aggregate([
+        {
+          $match: {
+            store: storeOid,
+            asset: { $in: programAssetIds },
+            status: { $ne: 'Cancelled' }
+          }
+        },
+        { $sort: { updatedAt: -1 } },
+        {
+          $group: {
+            _id: '$asset',
+            status: { $first: '$status' },
+            completed_at: { $first: '$completed_at' }
+          }
+        }
+      ]),
+      PpmTask.countDocuments({
+        store: storeOid,
+        asset: { $in: programAssetIds },
+        status: { $in: ['Scheduled', 'In Progress', 'Overdue'] },
+        due_at: { $lt: now }
+      })
     ]);
+
+    const byAsset = new Map(latestTasks.map((x) => [String(x._id), x]));
+
+    const nowMs = now.getTime();
+    let completed = 0;
+    let notCompleted = 0;
+    let open = 0;
+    let cycleDue = 0;
+    for (const aid of programAssetIds) {
+      const row = byAsset.get(String(aid));
+      if (!row) {
+        open += 1;
+        continue;
+      }
+      const st = row.status;
+      if (st === 'Completed') {
+        if (completionOutsideCurrentCycle(row.completed_at, nowMs)) {
+          open += 1;
+          cycleDue += 1;
+        } else {
+          completed += 1;
+        }
+      } else if (st === 'Not Completed') notCompleted += 1;
+      else open += 1;
+    }
+
+    const overdue = taskOverdueCount + cycleDue;
+
     const health = total > 0 ? Math.round((completed / total) * 100) : 100;
-    res.json({ total, overdue, completed, notCompleted, health });
+    res.json({ total, overdue, completed, notCompleted, open, health });
   } catch (error) {
     res.status(500).json({ message: 'Failed to load PPM overview', error: error.message });
   }
@@ -213,7 +295,7 @@ router.get('/export', protect, allowPpmRead, async (req, res) => {
     });
 
     const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('PPM Report');
+    const ws = wb.addWorksheet('PPM tasks');
     ws.addRows([header, ...body]);
     ws.columns = [
       { width: 16 },
@@ -231,9 +313,21 @@ router.get('/export', protect, allowPpmRead, async (req, res) => {
     ];
     ws.autoFilter = `A1:${String.fromCharCode(64 + header.length)}1`;
 
+    const generatedAt = new Date().toISOString();
+    const info = wb.addWorksheet('Export info');
+    info.addRows([
+      ['PPM Excel export'],
+      ['Generated (UTC)', generatedAt],
+      ['PPM cycle', '180 days — after this from last completion, dashboards treat the asset as due for the next cycle.'],
+      ['Filename', 'Each download uses a new date+time in the name so files are not overwritten in your Downloads folder.'],
+      ['Tasks sheet', 'All PPM task rows in your active store scope (up to 8000, newest first).']
+    ]);
+    info.getColumn(1).width = 22;
+    info.getColumn(2).width = 72;
+
     const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-    const stamp = new Date().toISOString().slice(0, 10);
-    res.setHeader('Content-Disposition', `attachment; filename=PPM_Report_${stamp}.xlsx`);
+    const fname = ppmExportFilename();
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     return res.send(buffer);
   } catch (error) {
@@ -273,6 +367,8 @@ router.get('/self-service-assets', protect, restrictViewer, async (req, res) => 
     const keyword = String(req.query.q || '').trim();
     const keywordLower = keyword.toLowerCase();
     const cameraOnly = String(req.query.camera_only || 'false').toLowerCase() === 'true';
+    const programOnly =
+      String(req.query.program_only || '').toLowerCase() === 'true';
 
     const limit = keywordLower ? 2500 : 1200;
     let assets = await Asset.find({ store: storeOid, disposed: { $ne: true } })
@@ -305,6 +401,9 @@ router.get('/self-service-assets', protect, restrictViewer, async (req, res) => 
       assets = assets.filter(
         (a) => Boolean(a.ppm_enabled) || assignedOpenAssetIds.has(String(a._id))
       );
+    } else if (isAdminRole(req.user?.role) && !keywordLower && programOnly) {
+      /** Admin work orders: empty search = only assets already in the PPM program. */
+      assets = assets.filter((a) => Boolean(a.ppm_enabled));
     }
 
     const assetIds = assets.map((a) => a._id);
@@ -487,6 +586,88 @@ router.post('/', protect, restrictViewer, async (req, res) => {
     return res.status(201).json(out);
   } catch (error) {
     return res.status(500).json({ message: 'Failed to create PPM task', error: error.message });
+  }
+});
+
+// @route   POST /api/ppm/reset-program
+// @desc    Remove all PPM tasks for the active store and clear ppm_enabled on assets (admin password required)
+router.post('/reset-program', protect, restrictViewer, async (req, res) => {
+  try {
+    if (!isAdminRole(req.user?.role)) {
+      return res.status(403).json({ message: 'Only Admin can reset the PPM program' });
+    }
+    if (!req.activeStore || !mongoose.Types.ObjectId.isValid(req.activeStore)) {
+      return res.status(400).json({ message: 'Active store is required' });
+    }
+    const password = String(req.body?.password || '');
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required' });
+    }
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid password' });
+    }
+
+    const storeOid = new mongoose.Types.ObjectId(req.activeStore);
+    const del = await PpmTask.deleteMany({ store: storeOid });
+    const assetUpd = await Asset.updateMany(
+      { store: storeOid, disposed: { $ne: true } },
+      { $set: { ppm_enabled: false } }
+    );
+
+    await ActivityLog.create({
+      user: req.user?.name || 'Unknown',
+      email: req.user?.email || '',
+      role: req.user?.role || '',
+      action: 'PPM Program Reset',
+      details: `Removed ${del.deletedCount} PPM task(s); cleared PPM inclusion on ${assetUpd.modifiedCount} asset(s) in active store`,
+      store: req.activeStore
+    });
+
+    return res.json({
+      deletedTasks: del.deletedCount,
+      assetsPpmCleared: assetUpd.modifiedCount
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to reset PPM program', error: error.message });
+  }
+});
+
+// @route   PATCH /api/ppm/assets/bulk-ppm-enabled (must be before /assets/:assetId/...)
+router.patch('/assets/bulk-ppm-enabled', protect, restrictViewer, async (req, res) => {
+  try {
+    if (!isAdminRole(req.user?.role)) {
+      return res.status(403).json({ message: 'Only Admin can mark assets for PPM' });
+    }
+    if (!req.activeStore || !mongoose.Types.ObjectId.isValid(req.activeStore)) {
+      return res.status(400).json({ message: 'Active store is required' });
+    }
+    const storeOid = new mongoose.Types.ObjectId(req.activeStore);
+    const raw = req.body?.asset_ids;
+    const enabled = Boolean(req.body?.enabled);
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return res.status(400).json({ message: 'asset_ids array is required' });
+    }
+    const ids = raw
+      .map((id) => (mongoose.Types.ObjectId.isValid(String(id)) ? new mongoose.Types.ObjectId(id) : null))
+      .filter(Boolean);
+    if (ids.length === 0) {
+      return res.status(400).json({ message: 'No valid asset ids' });
+    }
+    if (ids.length > 2000) {
+      return res.status(400).json({ message: 'Too many assets in one request (max 2000)' });
+    }
+    const result = await Asset.updateMany(
+      { _id: { $in: ids }, store: storeOid, disposed: { $ne: true } },
+      { $set: { ppm_enabled: enabled } }
+    );
+    return res.json({ matched: result.matchedCount, modified: result.modifiedCount });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to bulk-update PPM inclusion', error: error.message });
   }
 });
 

@@ -8,6 +8,12 @@ const EQUIPMENT_OPTIONS = ['Ladder', 'Scaffold', 'Manlift', 'Rope', 'Safety Harn
 /** Must match server `VMS_CHECKLIST_KEY` */
 const VMS_CHECKLIST_KEY = 'vms_online';
 
+const ppmDownloadFallbackFilename = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `PPM_Report_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.xlsx`;
+};
+
 /** Align with server PPM asset search: partial UID / ABS / IP and model fields. */
 const assetMatchesPpmSearch = (a, rawKeyword) => {
   const query = String(rawKeyword || '').trim().toLowerCase();
@@ -61,6 +67,13 @@ const formatCreateAssetLabel = (a) => {
   return `${title} | UID:${a.uniqueId || '—'} | ABS:${a.abs_code || '—'} | SN:${a.serial_number || '—'} | IP:${a.ip_address || '—'} | MAC:${a.mac_address || '—'}`;
 };
 
+const formatCreateAssetShortLabel = (a) => {
+  if (!a) return '';
+  const title = a.product_name || a.name || a.model_number || 'Asset';
+  const uid = a.uniqueId || '—';
+  return `${title} · ${uid}`;
+};
+
 const PpmManagement = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -68,7 +81,14 @@ const PpmManagement = () => {
   const canReopenClosedPpm =
     user?.role === 'Technician' || user?.role === 'Admin' || user?.role === 'Super Admin';
 
-  const [overview, setOverview] = useState({ total: 0, overdue: 0, completed: 0, notCompleted: 0, health: 100 });
+  const [overview, setOverview] = useState({
+    total: 0,
+    overdue: 0,
+    completed: 0,
+    notCompleted: 0,
+    open: 0,
+    health: 100
+  });
   const [rows, setRows] = useState([]);
   const [techs, setTechs] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -93,7 +113,22 @@ const PpmManagement = () => {
     manager_notes: ''
   });
   const [exportBusy, setExportBusy] = useState(false);
+  const [resetProgramOpen, setResetProgramOpen] = useState(false);
+  const [resetProgramPassword, setResetProgramPassword] = useState('');
+  const [resetProgramBusy, setResetProgramBusy] = useState(false);
   const loadGenRef = useRef(0);
+
+  const resetCreateAssetPickerUi = () => {
+    setCreateAssetSearch('');
+    setCreateAssetResults([]);
+    setCreateAssetMenuOpen(false);
+    setPpmPickHint(null);
+  };
+
+  const clearCreateAssetSelection = () => {
+    setForm((f) => ({ ...f, asset_id: '' }));
+    resetCreateAssetPickerUi();
+  };
 
   const showReopenChecklistButton =
     Boolean(selected) &&
@@ -112,7 +147,7 @@ const PpmManagement = () => {
         api.get('/ppm', { params: { limit: 1000 } })
       ]);
       if (gen !== loadGenRef.current) return;
-      setOverview(o.data || { total: 0, overdue: 0, completed: 0, notCompleted: 0, health: 100 });
+      setOverview(o.data || { total: 0, overdue: 0, completed: 0, notCompleted: 0, open: 0, health: 100 });
       setRows(Array.isArray(list.data) ? list.data : []);
       if (isAdminUi) {
         try {
@@ -141,6 +176,30 @@ const PpmManagement = () => {
     }
   };
 
+  const confirmResetPpmProgram = async () => {
+    const password = resetProgramPassword.trim();
+    if (!password) {
+      alert('Enter your account password to confirm.');
+      return;
+    }
+    try {
+      setResetProgramBusy(true);
+      const { data } = await api.post('/ppm/reset-program', { password });
+      setResetProgramOpen(false);
+      setResetProgramPassword('');
+      setSelected(null);
+      clearCreateAssetSelection();
+      await load();
+      const n = data?.deletedTasks ?? 0;
+      const a = data?.assetsPpmCleared ?? 0;
+      alert(`PPM program reset for this store. Removed ${n} task(s) and cleared PPM flags on ${a} asset(s).`);
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not reset PPM program');
+    } finally {
+      setResetProgramBusy(false);
+    }
+  };
+
   const downloadPpmExcel = async () => {
     try {
       setExportBusy(true);
@@ -153,8 +212,8 @@ const PpmManagement = () => {
         return;
       }
       const dispo = res.headers['content-disposition'];
-      const match = dispo && /filename="?([^";]+)"?/i.exec(dispo);
-      const name = match ? match[1].trim() : `PPM_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const match = dispo && /filename="([^"]+)"|filename=([^;\s]+)/i.exec(dispo);
+      const name = (match && (match[1] || match[2])?.trim()) || ppmDownloadFallbackFilename();
       const url = window.URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob]));
       const link = document.createElement('a');
       link.href = url;
@@ -267,6 +326,13 @@ const PpmManagement = () => {
     return [...taskPart, ...extras];
   }, [filteredTasks, searchAssets, q]);
 
+  const createSelectedPreview = useMemo(() => {
+    if (!form.asset_id) return null;
+    const id = String(form.asset_id);
+    if (ppmPickHint && String(ppmPickHint._id) === id) return ppmPickHint;
+    return createAssetResults.find((a) => String(a._id) === id) || null;
+  }, [form.asset_id, ppmPickHint, createAssetResults]);
+
   const createTask = async () => {
     if (!form.asset_id) {
       alert('Please select an asset.');
@@ -279,9 +345,7 @@ const PpmManagement = () => {
         scheduled_for: form.scheduled_for || new Date().toISOString()
       });
       setForm({ asset_id: '', assigned_to: '', scheduled_for: '', due_at: '', manager_notes: '' });
-      setCreateAssetSearch('');
-      setCreateAssetResults([]);
-      setCreateAssetMenuOpen(false);
+      resetCreateAssetPickerUi();
       await load();
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to create PPM task');
@@ -387,7 +451,7 @@ const PpmManagement = () => {
         <div className="bg-white border rounded-xl p-4 shadow-sm">
           <div className="text-xs uppercase text-slate-500">PPM Coverage</div>
           <div className="text-3xl font-bold text-emerald-700 mt-2">{overview.health}%</div>
-          <div className="text-xs text-slate-600 mt-1">Completed ÷ all tasks</div>
+          <div className="text-xs text-slate-600 mt-1">Completed ÷ assets in PPM program</div>
         </div>
         <div className="bg-white border rounded-xl p-4 shadow-sm">
           <div className="text-xs uppercase text-slate-500">Overdue PPMs</div>
@@ -405,9 +469,9 @@ const PpmManagement = () => {
           <div className="text-xs text-slate-600 mt-1">Technician left a reason</div>
         </div>
         <div className="bg-white border rounded-xl p-4 shadow-sm sm:col-span-2 lg:col-span-1">
-          <div className="text-xs uppercase text-slate-500">Total Tasks</div>
+          <div className="text-xs uppercase text-slate-500">In PPM program</div>
           <div className="text-3xl font-bold text-slate-900 mt-2">{overview.total}</div>
-          <div className="text-xs text-slate-600 mt-1">Scheduled and historical</div>
+          <div className="text-xs text-slate-600 mt-1">Assets marked with PPM (new checkboxes add here immediately)</div>
         </div>
       </div>
 
@@ -433,20 +497,33 @@ const PpmManagement = () => {
                 <button
                   type="button"
                   className="shrink-0 px-2 py-2 text-sm rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
-                  title="Clear selection"
-                  onClick={() => {
-                    setForm((f) => ({ ...f, asset_id: '' }));
-                    setCreateAssetSearch('');
-                    setCreateAssetResults([]);
-                    setCreateAssetMenuOpen(false);
-                  }}
+                  title="Remove selected asset"
+                  onClick={clearCreateAssetSelection}
                 >
-                  Clear
+                  Remove
                 </button>
               ) : null}
             </div>
             {form.asset_id ? (
-              <p className="text-[11px] text-emerald-800 mt-1 font-medium">Selected for create — choose dates and click Create PPM Task.</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <p className="text-[11px] text-emerald-800 font-medium">
+                  Selected for create — choose dates and click Create PPM Task.
+                </p>
+                <span className="inline-flex items-center gap-1 max-w-full rounded-md border border-emerald-200 bg-emerald-50/80 px-2 py-0.5 text-[11px] text-emerald-900">
+                  <span className="truncate min-w-0">
+                    {createSelectedPreview ? formatCreateAssetShortLabel(createSelectedPreview) : 'Asset selected'}
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded px-1 leading-none text-emerald-800 hover:bg-emerald-100"
+                    title="Remove this asset"
+                    aria-label="Remove selected asset"
+                    onClick={clearCreateAssetSelection}
+                  >
+                    ×
+                  </button>
+                </span>
+              </div>
             ) : (
               <p className="text-[11px] text-slate-500 mt-1">
                 Results match your active store. You can also click a row in the table below to pre-fill this field.
@@ -521,9 +598,23 @@ const PpmManagement = () => {
               disabled={exportBusy}
               onClick={downloadPpmExcel}
               className="text-sm px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 shrink-0"
+              title="Each export uses a new file name (date and time) so downloads are not overwritten."
             >
               {exportBusy ? 'Preparing…' : 'Download Excel'}
             </button>
+            {isAdminUi ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setResetProgramPassword('');
+                  setResetProgramOpen(true);
+                }}
+                className="text-sm px-3 py-2 rounded-lg border border-rose-300 bg-rose-50 text-rose-900 hover:bg-rose-100 shrink-0"
+                title="Deletes all PPM tasks for this store and removes all assets from the PPM program. Requires your password."
+              >
+                Reset PPM program
+              </button>
+            ) : null}
             {q.trim() ? (
               <span className="text-xs text-slate-500 w-full sm:w-auto">While searching, all task statuses are shown; clear the box to use the status filter.</span>
             ) : null}
@@ -630,7 +721,17 @@ const PpmManagement = () => {
           {!selected && ppmPickHint && isAdminUi ? (
             <div className="space-y-2 text-sm">
               <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-950">
-                <div className="font-semibold">Asset matched (no PPM task yet)</div>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-semibold">Asset matched (no PPM task yet)</div>
+                  <button
+                    type="button"
+                    className="shrink-0 text-xs rounded-md border border-indigo-300 px-2 py-0.5 text-indigo-900 hover:bg-indigo-100"
+                    title="Remove this asset from the create form"
+                    onClick={clearCreateAssetSelection}
+                  >
+                    Remove
+                  </button>
+                </div>
                 <div className="text-xs mt-1 font-mono">
                   UID {ppmPickHint.uniqueId || '—'} · ABS {ppmPickHint.abs_code || '—'} · IP {ppmPickHint.ip_address || '—'}
                 </div>
@@ -761,6 +862,73 @@ const PpmManagement = () => {
           ) : null}
         </div>
       </div>
+
+      {resetProgramOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ppm-reset-title"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setResetProgramOpen(false);
+              setResetProgramPassword('');
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl p-5 space-y-4"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2 id="ppm-reset-title" className="text-lg font-semibold text-slate-900">
+              Reset PPM program?
+            </h2>
+            <p className="text-sm text-slate-600">
+              This applies only to your <strong>active store</strong>. All PPM tasks for this store will be permanently
+              deleted, and every in-store asset will be removed from the PPM program (you can turn PPM back on per asset
+              later). Enter your <strong>account password</strong> to confirm.
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1" htmlFor="ppm-reset-password">
+                Your password
+              </label>
+              <input
+                id="ppm-reset-password"
+                type="password"
+                autoComplete="current-password"
+                value={resetProgramPassword}
+                onChange={(e) => setResetProgramPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !resetProgramBusy) confirmResetPpmProgram();
+                }}
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+                placeholder="Password"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2 justify-end pt-2">
+              <button
+                type="button"
+                disabled={resetProgramBusy}
+                onClick={() => {
+                  setResetProgramOpen(false);
+                  setResetProgramPassword('');
+                }}
+                className="px-3 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={resetProgramBusy}
+                onClick={confirmResetPpmProgram}
+                className="px-3 py-2 text-sm rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+              >
+                {resetProgramBusy ? 'Resetting…' : 'Reset program'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
