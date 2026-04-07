@@ -12,6 +12,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const cookieParser = require('cookie-parser');
+const { shouldUseSecureCookie, resolveSameSite } = require('./utils/sessionCookie');
 const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
 const { createBackupArtifact } = require('./utils/backupRecovery');
@@ -101,19 +102,6 @@ if (isProd) {
 app.use(mongoSanitize());
 
 // Cookies and CSRF
-const cookieSecureMode = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
-const shouldUseSecureCookie = (req) => {
-  if (cookieSecureMode === 'true' || cookieSecureMode === '1') return true;
-  if (cookieSecureMode === 'false' || cookieSecureMode === '0') return false;
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
-  return Boolean(req.secure || forwardedProto === 'https');
-};
-const resolveSameSite = () => {
-  const raw = String(process.env.COOKIE_SAMESITE || 'lax').trim().toLowerCase();
-  if (raw === 'none') return 'none';
-  if (raw === 'strict') return 'strict';
-  return 'lax';
-};
 const cookieSecret = String(process.env.COOKIE_SECRET || '');
 if (isProd && !cookieSecret) {
   throw new Error('COOKIE_SECRET is required in production.');

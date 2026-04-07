@@ -46,6 +46,23 @@ const getStoreNotificationRecipients = async (storeId) => {
     .filter(Boolean)));
 };
 
+const getStoreNotificationSubjects = async (storeId) => {
+  const id = resolveStoreId(storeId);
+  if (!id) {
+    return {
+      ppm: 'Expo City Dubai PPM Notification',
+      asset: 'Expo City Dubai Asset Notification'
+    };
+  }
+  const store = await Store.findById(id)
+    .select('emailConfig.ppmNotificationSubject emailConfig.assetNotificationSubject')
+    .lean();
+  return {
+    ppm: String(store?.emailConfig?.ppmNotificationSubject || 'Expo City Dubai PPM Notification').trim() || 'Expo City Dubai PPM Notification',
+    asset: String(store?.emailConfig?.assetNotificationSubject || 'Expo City Dubai Asset Notification').trim() || 'Expo City Dubai Asset Notification'
+  };
+};
+
 const getFallbackConfig = () => {
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
@@ -172,6 +189,7 @@ const sendStoreEmail = async ({
 module.exports = {
   getStoreEmailConfig,
   getStoreNotificationRecipients,
+  getStoreNotificationSubjects,
   sendStoreEmail,
   buildTransport
 };

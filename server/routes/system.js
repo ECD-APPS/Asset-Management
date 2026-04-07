@@ -1449,6 +1449,8 @@ router.get('/email-config', protect, admin, async (req, res) => {
         encryption: cfg.encryption || 'TLS',
         fromEmail: cfg.fromEmail || '',
         fromName: cfg.fromName || '',
+        ppmNotificationSubject: cfg.ppmNotificationSubject || 'Expo City Dubai PPM Notification',
+        assetNotificationSubject: cfg.assetNotificationSubject || 'Expo City Dubai Asset Notification',
         notificationRecipients: Array.isArray(cfg.notificationRecipients) ? cfg.notificationRecipients : [],
         lineManagerRecipients: Array.isArray(cfg.lineManagerRecipients) ? cfg.lineManagerRecipients : [],
         requireLineManagerApprovalForCollection: Boolean(cfg.requireLineManagerApprovalForCollection),
@@ -1478,6 +1480,8 @@ router.put('/email-config', protect, admin, async (req, res) => {
       encryption = 'TLS',
       fromEmail,
       fromName,
+      ppmNotificationSubject,
+      assetNotificationSubject,
       notificationRecipients,
       lineManagerRecipients,
       requireLineManagerApprovalForCollection,
@@ -1521,6 +1525,16 @@ router.put('/email-config', protect, admin, async (req, res) => {
         encryption: String(encryption).toUpperCase(),
         fromEmail: String(fromEmail || username).trim(),
         fromName: String(fromName || '').trim(),
+        ppmNotificationSubject: String(
+          ppmNotificationSubject === undefined
+            ? (existingStore?.emailConfig?.ppmNotificationSubject || 'Expo City Dubai PPM Notification')
+            : ppmNotificationSubject
+        ).trim() || 'Expo City Dubai PPM Notification',
+        assetNotificationSubject: String(
+          assetNotificationSubject === undefined
+            ? (existingStore?.emailConfig?.assetNotificationSubject || 'Expo City Dubai Asset Notification')
+            : assetNotificationSubject
+        ).trim() || 'Expo City Dubai Asset Notification',
         notificationRecipients: mergedRecipients,
         lineManagerRecipients: mergedLineManagerRecipients,
         requireLineManagerApprovalForCollection: requireLineManagerApprovalForCollection === undefined

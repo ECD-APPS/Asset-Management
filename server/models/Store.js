@@ -41,6 +41,8 @@ const storeSchema = new mongoose.Schema({
     encryption: { type: String, enum: ['TLS', 'SSL'], default: 'TLS' },
     fromEmail: { type: String, default: '' },
     fromName: { type: String, default: '' },
+    ppmNotificationSubject: { type: String, default: 'Expo City Dubai PPM Notification' },
+    assetNotificationSubject: { type: String, default: 'Expo City Dubai Asset Notification' },
     notificationRecipients: [{ type: String, trim: true, lowercase: true }],
     lineManagerRecipients: [{ type: String, trim: true, lowercase: true }],
     requireLineManagerApprovalForCollection: { type: Boolean, default: false },

@@ -16,7 +16,11 @@ const ExcelJS = require('exceljs');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { sendStoreEmail, getStoreNotificationRecipients } = require('../utils/storeEmail');
+const {
+  sendStoreEmail,
+  getStoreNotificationRecipients,
+  getStoreNotificationSubjects
+} = require('../utils/storeEmail');
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -493,18 +497,35 @@ function createFastUniqueIdGenerator() {
 
 async function notifyAssetEvent({ asset, recipientEmail, subject, lines = [] }) {
   const configuredRecipients = await getStoreNotificationRecipients(asset?.store || null);
+  const storeId = asset?.store || null;
+  const subjects = await getStoreNotificationSubjects(storeId);
+  const assetPrefix = subjects.asset || 'Expo City Dubai Asset Notification';
+  const adminUsers = await User.find({
+    role: { $in: ['Admin', 'Super Admin'] },
+    $or: [
+      { role: 'Super Admin' },
+      { assignedStore: storeId }
+    ]
+  })
+    .select('email')
+    .lean();
+  const adminRecipients = adminUsers.map((u) => String(u.email || '').trim().toLowerCase()).filter(Boolean);
   const recipients = Array.from(
-    new Set([recipientEmail, ...configuredRecipients].map((v) => String(v || '').trim().toLowerCase()).filter(Boolean))
+    new Set([recipientEmail, ...configuredRecipients, ...adminRecipients]
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean))
   );
   if (recipients.length === 0) return;
   try {
     const safeLines = lines.filter(Boolean).map((line) => String(line));
+    const scopedSubject = `${assetPrefix}: ${String(subject || 'Asset Update')}`;
     await sendStoreEmail({
       storeId: asset?.store || null,
       to: recipients.join(','),
-      subject,
+      subject: scopedSubject,
       text: safeLines.join('\n'),
-      html: `<div>${safeLines.map((line) => `<p>${line}</p>`).join('')}</div>`
+      html: `<div><p><strong>${assetPrefix}</strong></p>${safeLines.map((line) => `<p>${line}</p>`).join('')}</div>`,
+      context: 'expo-city-dubai-asset-notification'
     });
   } catch (error) {
     console.error('Asset notification email error:', error.message);

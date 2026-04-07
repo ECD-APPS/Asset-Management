@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import DashboardCharts from '../components/DashboardCharts';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
-import { useTheme } from '../context/ThemeContext';
 
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -128,7 +127,6 @@ const normalizeStats = (raw) => {
 
 const Dashboard = () => {
   const { user, activeStore } = useAuth();
-  const { theme } = useTheme();
   const [searchParams] = useSearchParams();
   const [stats, setStats] = useState(null);
   const [consumablesStats, setConsumablesStats] = useState(null);
@@ -138,7 +136,6 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
-  const [systemOk, setSystemOk] = useState(true);
   const [_HEALTH, setHealth] = useState({ backend: false, db: false });
   const [recentAssets, setRecentAssets] = useState([]);
   const [recentLoading, setRecentLoading] = useState(false);
@@ -228,7 +225,6 @@ const Dashboard = () => {
         cleanedOrder.length > 0 ? cleanedOrder : DEFAULT_DASHBOARD_LAYOUT.analyticsOrder;
 
       const bannerCardsFromParsed = (() => {
-        const defaultCards = DEFAULT_DASHBOARD_LAYOUT.bannerCards;
         if (parsed.bannerCards && typeof parsed.bannerCards === 'object') {
           return {
             consumables: parsed.bannerCards.consumables !== false,
@@ -448,12 +444,10 @@ const Dashboard = () => {
         const db = !!data.db_connected;
         consecutiveHealthFailures = 0;
         setHealth({ backend, db });
-        setSystemOk(backend && db);
       } catch {
         consecutiveHealthFailures += 1;
         if (consecutiveHealthFailures >= 2) {
           setHealth({ backend: false, db: false });
-          setSystemOk(false);
         }
       }
     };

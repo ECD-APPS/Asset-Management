@@ -220,6 +220,8 @@
   body {
     color: rgb(var(--text-main));
     background-color: rgb(var(--bg-primary));
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   ::selection {

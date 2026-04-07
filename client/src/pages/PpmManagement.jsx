@@ -259,7 +259,7 @@ const PpmManagement = () => {
       load();
     }, q.trim() ? 320 : 0);
     return () => clearTimeout(t);
-  }, [load]);
+  }, [load, q]);
 
   useEffect(() => {
     if (!q.trim()) setPpmPickHint(null);

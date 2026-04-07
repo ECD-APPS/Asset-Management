@@ -6,6 +6,11 @@ const PpmTask = require('../models/PpmTask');
 const Asset = require('../models/Asset');
 const ActivityLog = require('../models/ActivityLog');
 const User = require('../models/User');
+const {
+  sendStoreEmail,
+  getStoreNotificationRecipients,
+  getStoreNotificationSubjects
+} = require('../utils/storeEmail');
 const { protect, restrictViewer } = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -131,6 +136,95 @@ const addTaskHistory = (task, req, action, details = '') => {
     details: String(details || '')
   });
 };
+
+const escapeHtml = (s) => String(s || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildPpmStatusEmailRecipients = async ({ storeId, actorEmail }) => {
+  const configuredRecipients = await getStoreNotificationRecipients(storeId || null);
+  const admins = await User.find({
+    role: { $in: ['Admin', 'Super Admin'] },
+    $or: [
+      { role: 'Super Admin' },
+      { assignedStore: storeId || null }
+    ]
+  })
+    .select('email')
+    .lean();
+  const adminEmails = admins.map((u) => String(u.email || '').trim().toLowerCase()).filter(Boolean);
+  return Array.from(new Set([
+    ...configuredRecipients,
+    ...adminEmails,
+    String(actorEmail || '').trim().toLowerCase()
+  ].filter(Boolean)));
+};
+
+const notifyPpmStatusChange = async ({
+  task,
+  req,
+  status,
+  actionLabel,
+  details = ''
+}) => {
+  try {
+    const recipients = await buildPpmStatusEmailRecipients({
+      storeId: task?.store || req.activeStore || req.user?.assignedStore || null,
+      actorEmail: req.user?.email || ''
+    });
+    if (recipients.length === 0) return;
+    const assetName = String(
+      task?.asset?.model_number ||
+      task?.asset?.name ||
+      task?.asset?.product_name ||
+      'Asset'
+    );
+    const uid = String(task?.asset?.uniqueId || '—');
+    const abs = String(task?.asset?.abs_code || '—');
+    const ip = String(task?.asset?.ip_address || '—');
+    const assignedTo = String(task?.assigned_to?.name || 'Unassigned');
+    const by = `${String(req.user?.name || 'Unknown')} (${String(req.user?.role || '-')})`;
+    const taskId = String(task?._id || '');
+    const safeDetails = String(details || '').trim();
+    const subjects = await getStoreNotificationSubjects(task?.store || req.activeStore || null);
+    const ppmPrefix = subjects.ppm || 'Expo City Dubai PPM Notification';
+
+    const subject = `${ppmPrefix}: ${status} - ${uid} (${assetName})`;
+    const lines = [
+      `PPM status updated: ${status}`,
+      `Action: ${actionLabel}`,
+      `Asset: ${assetName}`,
+      `Unique ID: ${uid}`,
+      `ABS Code: ${abs}`,
+      `IP Address: ${ip}`,
+      `Assigned To: ${assignedTo}`,
+      `Task ID: ${taskId}`,
+      `Updated By: ${by}`
+    ];
+    if (safeDetails) lines.push(`Details: ${safeDetails}`);
+    const text = lines.join('\n');
+    const html = `<div>${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join('')}</div>`;
+
+    await sendStoreEmail({
+      storeId: task?.store || req.activeStore || null,
+      to: recipients.join(','),
+      subject,
+      text,
+      html,
+      context: 'expo-city-dubai-ppm-notification'
+    });
+  } catch (error) {
+    console.error('PPM status notification email error:', error.message);
+  }
+};
+
+const loadTaskForStatusNotification = async (taskId) => PpmTask.findById(taskId)
+  .populate('asset', 'name model_number product_name uniqueId abs_code ip_address')
+  .populate('assigned_to', 'name email role')
+  .lean();
 
 const isAdminRole = (role) => role === 'Admin' || role === 'Super Admin';
 
@@ -898,6 +992,17 @@ router.patch('/:id/start', protect, restrictViewer, async (req, res) => {
       store: req.activeStore || task.store || null
     });
 
+    const notifyTask = await loadTaskForStatusNotification(task._id);
+    if (notifyTask) {
+      await notifyPpmStatusChange({
+        task: notifyTask,
+        req,
+        status: 'In Progress',
+        actionLabel: 'PPM Started',
+        details: 'Technician started PPM checklist'
+      });
+    }
+
     return res.json(task);
   } catch (error) {
     return res.status(500).json({ message: 'Failed to start PPM task', error: error.message });
@@ -912,6 +1017,7 @@ router.patch('/:id/submit', protect, restrictViewer, async (req, res) => {
     if (task.status === 'Cancelled' || task.status === 'Completed' || task.status === 'Not Completed') {
       return res.status(400).json({ message: 'Task is closed' });
     }
+    const prevStatus = task.status;
     const { checklist, equipment_used, technician_notes } = req.body || {};
     if (Array.isArray(checklist)) {
       task.checklist = normalizeChecklist(checklist.length ? checklist : task.checklist);
@@ -936,6 +1042,19 @@ router.patch('/:id/submit', protect, restrictViewer, async (req, res) => {
       details: `PPM checklist updated for task ${task._id}`,
       store: req.activeStore || task.store || null
     });
+
+    if (prevStatus === 'Scheduled' && task.status === 'In Progress') {
+      const notifyTask = await loadTaskForStatusNotification(task._id);
+      if (notifyTask) {
+        await notifyPpmStatusChange({
+          task: notifyTask,
+          req,
+          status: 'In Progress',
+          actionLabel: 'PPM Checklist Submitted',
+          details: 'Checklist responses updated'
+        });
+      }
+    }
 
     return res.json(task);
   } catch (error) {
@@ -997,6 +1116,17 @@ router.patch('/:id/complete', protect, restrictViewer, async (req, res) => {
       store: req.activeStore || task.store || null
     });
 
+    const notifyTask = await loadTaskForStatusNotification(task._id);
+    if (notifyTask) {
+      await notifyPpmStatusChange({
+        task: notifyTask,
+        req,
+        status: 'Completed',
+        actionLabel: 'PPM Completed',
+        details: task.technician_notes || ''
+      });
+    }
+
     return res.json(task);
   } catch (error) {
     return res.status(500).json({ message: 'Failed to complete task', error: error.message });
@@ -1046,6 +1176,15 @@ router.patch('/:id/mark-not-completed', protect, restrictViewer, async (req, res
       .populate('incomplete_by', 'name email')
       .populate('asset', 'name model_number uniqueId abs_code ip_address status store product_name customFields')
       .lean();
+    if (out) {
+      await notifyPpmStatusChange({
+        task: out,
+        req,
+        status: 'Not Completed',
+        actionLabel: 'PPM Not Completed',
+        details: reason
+      });
+    }
     return res.json(out);
   } catch (error) {
     return res.status(500).json({ message: 'Failed to mark PPM as not completed', error: error.message });
@@ -1108,6 +1247,15 @@ router.patch('/:id/reopen-for-edit', protect, restrictViewer, async (req, res) =
       .populate('asset', 'name model_number uniqueId abs_code ip_address status store product_name customFields')
       .lean();
     if (out) out.checklist = mergePpmChecklistShape(out.checklist || []);
+    if (out) {
+      await notifyPpmStatusChange({
+        task: out,
+        req,
+        status: 'In Progress',
+        actionLabel: 'PPM Reopened for Edit',
+        details: 'Closed checklist reopened for correction'
+      });
+    }
     return res.json(out);
   } catch (error) {
     return res.status(500).json({ message: 'Failed to reopen PPM for editing', error: error.message });
@@ -1136,6 +1284,17 @@ router.patch('/:id/cancel', protect, restrictViewer, async (req, res) => {
       details: `PPM task ${task._id} cancelled`,
       store: req.activeStore || task.store || null
     });
+
+    const notifyTask = await loadTaskForStatusNotification(task._id);
+    if (notifyTask) {
+      await notifyPpmStatusChange({
+        task: notifyTask,
+        req,
+        status: 'Cancelled',
+        actionLabel: 'PPM Cancelled',
+        details: String(req.body?.reason || 'Cancelled by admin')
+      });
+    }
 
     return res.json(task);
   } catch (error) {

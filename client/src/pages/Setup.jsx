@@ -70,6 +70,8 @@ const Setup = () => {
     encryption: 'TLS',
     fromEmail: '',
     fromName: '',
+    ppmNotificationSubject: 'Expo City Dubai PPM Notification',
+    assetNotificationSubject: 'Expo City Dubai Asset Notification',
     enabled: true
   });
   const [emailLoading, setEmailLoading] = useState(false);
@@ -150,6 +152,8 @@ const Setup = () => {
             encryption: res.data.emailConfig.encryption || 'TLS',
             fromEmail: res.data.emailConfig.fromEmail || '',
             fromName: res.data.emailConfig.fromName || '',
+            ppmNotificationSubject: res.data.emailConfig.ppmNotificationSubject || 'Expo City Dubai PPM Notification',
+            assetNotificationSubject: res.data.emailConfig.assetNotificationSubject || 'Expo City Dubai Asset Notification',
             enabled: Boolean(res.data.emailConfig.enabled)
           });
           setTestEmail(user?.email || '');
@@ -1176,6 +1180,14 @@ const Setup = () => {
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-1">From Name</label>
                   <input className="w-full border border-gray-300 rounded-lg px-3 py-2" value={emailConfig.fromName} onChange={(e) => handleEmailField('fromName', e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">PPM Notification Subject Prefix</label>
+                  <input className="w-full border border-gray-300 rounded-lg px-3 py-2" value={emailConfig.ppmNotificationSubject} onChange={(e) => handleEmailField('ppmNotificationSubject', e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Asset Notification Subject Prefix</label>
+                  <input className="w-full border border-gray-300 rounded-lg px-3 py-2" value={emailConfig.assetNotificationSubject} onChange={(e) => handleEmailField('assetNotificationSubject', e.target.value)} />
                 </div>
                 <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
                   <input type="checkbox" checked={emailConfig.enabled} onChange={(e) => handleEmailField('enabled', e.target.checked)} />

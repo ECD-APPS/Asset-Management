@@ -211,7 +211,7 @@ export const AuthProvider = ({ children }) => {
     globalLoading,
     branding,
     refreshBranding
-  }), [user, activeStore, login, logout, loading, globalLoading, branding, refreshBranding]);
+  }), [user, activeStore, login, logout, selectStore, loading, globalLoading, branding, refreshBranding]);
   
   return (
     <AuthContext.Provider value={value}>

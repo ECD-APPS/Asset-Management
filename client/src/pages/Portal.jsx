@@ -27,20 +27,20 @@ const Portal = () => {
   const [lastRestoreReport, setLastRestoreReport] = useState(null);
   const [validatingBackup, setValidatingBackup] = useState(false);
   const [bulkFiles, setBulkFiles] = useState([]);
-  const [uploadProgress, setUploadProgress] = useState({});
-  const [bulkConflicts, setBulkConflicts] = useState([]);
+  const [_uploadProgress, _setUploadProgress] = useState({});
+  const [_bulkConflicts, _setBulkConflicts] = useState([]);
   const [bulkScanIds, setBulkScanIds] = useState([]);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkApplying, setBulkApplying] = useState(false);
-  const [defaultConflictAction, setDefaultConflictAction] = useState('skip');
-  const [conflictActions, setConflictActions] = useState({});
-  const [bulkSummary, setBulkSummary] = useState(null);
+  const [_defaultConflictAction, _setDefaultConflictAction] = useState('skip');
+  const [_conflictActions, _setConflictActions] = useState({});
+  const [_bulkSummary, _setBulkSummary] = useState(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [lastBackupTime, setLastBackupTime] = useState(null);
   const [backupArtifacts, setBackupArtifacts] = useState([]);
   const [backupsLoading, setBackupsLoading] = useState(false);
   const [creatingFullBackup, setCreatingFullBackup] = useState(false);
-  const [emergencyRestoreLoading, setEmergencyRestoreLoading] = useState(false);
+  const [_emergencyRestoreLoading, _setEmergencyRestoreLoading] = useState(false);
   const [restoringBackupId, setRestoringBackupId] = useState('');
   const [cloudConfig, setCloudConfig] = useState({
     enabled: false,
@@ -54,8 +54,8 @@ const Portal = () => {
     url: '',
     serviceRoleKey: ''
   });
-  const [cloudLoading, setCloudLoading] = useState(false);
-  const [cloudSaving, setCloudSaving] = useState(false);
+  const [_cloudLoading, _setCloudLoading] = useState(false);
+  const [_cloudSaving, _setCloudSaving] = useState(false);
   const [emailStoreId, setEmailStoreId] = useState('');
   const [emailConfig, setEmailConfig] = useState({
     smtpHost: '',
@@ -65,6 +65,8 @@ const Portal = () => {
     encryption: 'TLS',
     fromEmail: '',
     fromName: '',
+    ppmNotificationSubject: 'Expo City Dubai PPM Notification',
+    assetNotificationSubject: 'Expo City Dubai Asset Notification',
     notificationRecipients: '',
     lineManagerRecipients: '',
     requireLineManagerApprovalForCollection: false,
@@ -159,6 +161,8 @@ const Portal = () => {
           encryption: cfg.encryption || 'TLS',
           fromEmail: cfg.fromEmail || '',
           fromName: cfg.fromName || '',
+          ppmNotificationSubject: cfg.ppmNotificationSubject || 'Expo City Dubai PPM Notification',
+          assetNotificationSubject: cfg.assetNotificationSubject || 'Expo City Dubai Asset Notification',
           notificationRecipients: Array.isArray(cfg.notificationRecipients) ? cfg.notificationRecipients.join(', ') : '',
           lineManagerRecipients: Array.isArray(cfg.lineManagerRecipients) ? cfg.lineManagerRecipients.join(', ') : '',
           requireLineManagerApprovalForCollection: Boolean(cfg.requireLineManagerApprovalForCollection),
@@ -197,13 +201,13 @@ const Portal = () => {
   const fetchCloudBackupConfig = async () => {
     if (user?.role !== 'Super Admin') return;
     try {
-      setCloudLoading(true);
+      _setCloudLoading(true);
       const res = await api.get('/system/backup-cloud-config');
       setCloudConfig((prev) => ({ ...prev, ...(res.data || {}) }));
     } catch (error) {
       console.error('Failed to load cloud backup config:', error);
     } finally {
-      setCloudLoading(false);
+      _setCloudLoading(false);
     }
   };
 
@@ -213,16 +217,16 @@ const Portal = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
 
-  const saveCloudBackupConfig = async () => {
+  const _saveCloudBackupConfig = async () => {
     try {
-      setCloudSaving(true);
+      _setCloudSaving(true);
       await api.put('/system/backup-cloud-config', cloudConfig);
       alert('Cloud backup configuration saved.');
       await fetchCloudBackupConfig();
     } catch (error) {
       alert('Save failed: ' + (error.response?.data?.message || error.message));
     } finally {
-      setCloudSaving(false);
+      _setCloudSaving(false);
     }
   };
 
@@ -477,23 +481,23 @@ const Portal = () => {
     return { valid, errors };
   };
 
-  const handleBulkFilePick = (files) => {
+  const _handleBulkFilePick = (files) => {
     const fileList = Array.from(files || []);
     const { valid, errors } = validateBackupFiles(fileList);
     if (errors.length > 0) {
       alert(`Some files were rejected:\n${errors.join('\n')}`);
     }
     setBulkFiles(valid);
-    setBulkConflicts([]);
-    setConflictActions({});
+    _setBulkConflicts([]);
+    _setConflictActions({});
     setBulkScanIds([]);
-    setBulkSummary(null);
+    _setBulkSummary(null);
     const initialProgress = {};
     valid.forEach((f) => { initialProgress[f.name] = 0; });
-    setUploadProgress(initialProgress);
+    _setUploadProgress(initialProgress);
   };
 
-  const handleBulkScanUpload = async () => {
+  const _handleBulkScanUpload = async () => {
     if (bulkUploading || bulkFiles.length === 0) return;
     if (!window.confirm('Scan selected backup files for duplicates?')) return;
 
@@ -508,7 +512,7 @@ const Portal = () => {
           headers: { 'Content-Type': 'multipart/form-data' },
           onUploadProgress: (event) => {
             const percent = event.total ? Math.round((event.loaded * 100) / event.total) : 0;
-            setUploadProgress((prev) => ({ ...prev, [file.name]: percent }));
+            _setUploadProgress((prev) => ({ ...prev, [file.name]: percent }));
           }
         });
         if (res.data?.scanId) scanIds.push(res.data.scanId);
@@ -517,7 +521,7 @@ const Portal = () => {
         }
       }
       setBulkScanIds(scanIds);
-      setBulkConflicts(allConflicts);
+      _setBulkConflicts(allConflicts);
       if (allConflicts.length === 0) {
         alert('No conflicts detected. You can now apply restore directly.');
       }
@@ -528,11 +532,11 @@ const Portal = () => {
     }
   };
 
-  const setConflictAction = (rowId, action) => {
-    setConflictActions((prev) => ({ ...prev, [rowId]: { ...(prev[rowId] || {}), action } }));
+  const _setConflictAction = (rowId, action) => {
+    _setConflictActions((prev) => ({ ...prev, [rowId]: { ...(prev[rowId] || {}), action } }));
   };
 
-  const handleApplyBulkRestore = async () => {
+  const _handleApplyBulkRestore = async () => {
     if (bulkApplying || bulkScanIds.length === 0) return;
     if (!window.confirm('Apply backup restore with selected conflict actions?')) return;
 
@@ -540,11 +544,11 @@ const Portal = () => {
       setBulkApplying(true);
       const res = await api.post('/system/backup-upload/apply', {
         scanIds: bulkScanIds,
-        actions: conflictActions,
-        defaultAction: defaultConflictAction,
+        actions: _conflictActions,
+        defaultAction: _defaultConflictAction,
         applyActionToAll: false
       });
-      setBulkSummary(res.data?.summary || null);
+      _setBulkSummary(res.data?.summary || null);
       alert('Bulk restore completed successfully.');
     } catch (error) {
       alert('Bulk restore failed: ' + (error.response?.data?.message || error.message));
@@ -1012,6 +1016,20 @@ const Portal = () => {
                       onChange={(e) => handleEmailField('fromName', e.target.value)}
                       className="border border-slate-300 rounded-lg p-2.5 text-sm md:col-span-2"
                       placeholder="From Name"
+                    />
+                    <input
+                      type="text"
+                      value={emailConfig.ppmNotificationSubject}
+                      onChange={(e) => handleEmailField('ppmNotificationSubject', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm md:col-span-2"
+                      placeholder="PPM Notification Subject Prefix"
+                    />
+                    <input
+                      type="text"
+                      value={emailConfig.assetNotificationSubject}
+                      onChange={(e) => handleEmailField('assetNotificationSubject', e.target.value)}
+                      className="border border-slate-300 rounded-lg p-2.5 text-sm md:col-span-2"
+                      placeholder="Asset Notification Subject Prefix"
                     />
                     <input
                       type="text"

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -13,7 +13,7 @@ const Login = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const fromPath = location.state?.from?.pathname;
-  const redirectAfterLogin = (loggedUser) => {
+  const redirectAfterLogin = useCallback((loggedUser) => {
     if (fromPath && fromPath !== '/login') {
       navigate(fromPath, { replace: true });
       return;
@@ -25,13 +25,13 @@ const Login = () => {
     } else {
       navigate('/', { replace: true });
     }
-  };
+  }, [fromPath, navigate]);
 
   useEffect(() => {
     if (!authLoading && user) {
       redirectAfterLogin(user);
     }
-  }, [user, authLoading, navigate, fromPath]);
+  }, [user, authLoading, redirectAfterLogin]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

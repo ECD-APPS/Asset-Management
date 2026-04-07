@@ -1,10 +1,12 @@
 {
-  "name": "Expo Stores",
-  "short_name": "Expo",
-  "description": "Asset, PPM, and technician operations platform",
+  "name": "Expo City Dubai Asset Management",
+  "short_name": "Expo City",
+  "description": "Expo City Dubai asset, PPM, and technician operations",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
   "background_color": "#0f172a",
   "theme_color": "#f59e0b",
   "icons": [
