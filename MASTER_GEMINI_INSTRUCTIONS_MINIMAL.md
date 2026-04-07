@@ -75,12 +75,24 @@ cp .env.example .env
 ```
 
 ```env
-MONGO_URI=mongodb://127.0.0.1:27017/expo-stores
+MONGO_URI=mongodb://127.0.0.1:27017/expo
+LOCAL_FALLBACK_MONGO_URI=mongodb://127.0.0.1:27017/expo
+ALLOW_INMEMORY_FALLBACK=false
+SHADOW_DB_NAME=expo_shadow
+ENABLE_BACKUP_SCHEDULER=true
 PORT=5000
+NODE_ENV=development
+PUBLIC_BASE_URL=http://localhost:3000
+CORS_ORIGIN=http://localhost:3000
 COOKIE_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
-COOKIE_SECURE=false
+COOKIE_SECURE=auto
+COOKIE_SAMESITE=lax
+EMAIL_CONFIG_ENCRYPTION_KEY=replace_with_64_hex_chars_or_base64_32_bytes
+EMERGENCY_RESET_SECRET=replace_with_secure_random_value
 ENABLE_CSRF=true
-SEED_DEFAULTS=true
+TRUST_PROXY_HOPS=1
+MAX_BACKUP_UPLOAD_MB=1024
+SEED_DEFAULTS=false
 ```
 
 ```bash

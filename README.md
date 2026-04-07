@@ -100,11 +100,25 @@ Required values:
 
 ```env
 MONGO_URI=mongodb://user:pass@10.96.133.213:27017/expo-stores
+LOCAL_FALLBACK_MONGO_URI=mongodb://user:pass@10.96.133.213:27017/expo-stores
+ALLOW_INMEMORY_FALLBACK=false
+SHADOW_DB_NAME=expo_shadow
+ENABLE_BACKUP_SCHEDULER=true
 PORT=5000
+NODE_ENV=production
 COOKIE_SECRET=replace_with_secure_random_value
 COOKIE_SECURE=auto
+COOKIE_SAMESITE=lax
+EMAIL_CONFIG_ENCRYPTION_KEY=replace_with_64_hex_chars_or_base64_32_bytes
+EMERGENCY_RESET_SECRET=replace_with_secure_random_value
 ENABLE_CSRF=true
+TRUST_PROXY_HOPS=1
+MAX_BACKUP_UPLOAD_MB=1024
 CORS_ORIGIN=http://10.96.133.181
+PUBLIC_BASE_URL=http://10.96.133.197:5000
+# Optional deep-link URL used in email templates:
+# PUBLIC_APP_URL=http://10.96.133.181
+# CLIENT_URL=http://10.96.133.181
 SEED_DEFAULTS=false
 ```
 
