@@ -273,6 +273,22 @@ const handleUpload = (uploader) => (req, res, next) => {
 const isBackupV3Enabled = () => String(process.env.BACKUP_V3_ENABLED || 'true').toLowerCase() === 'true';
 const isPitrEnabled = () => String(process.env.PITR_ENABLED || 'true').toLowerCase() === 'true';
 
+const normalizePublicAssetUrl = (value, fallback) => {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  if (raw.startsWith('/')) return raw;
+  try {
+    const parsed = new URL(raw);
+    const host = String(parsed.hostname || '').toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+      return parsed.pathname || fallback;
+    }
+    return parsed.toString();
+  } catch {
+    return fallback;
+  }
+};
+
 const parseUploadedBackupPayload = async (file) => {
   if (!file?.path) throw new Error('Uploaded backup file path is missing');
   const content = await fs.promises.readFile(file.path, 'utf8');
@@ -695,8 +711,8 @@ router.get('/public-config', async (req, res) => {
       Setting.findOne({ key: 'theme' }).lean(),
       requestedStoreId ? Store.findById(requestedStoreId).select('appTheme').lean() : Promise.resolve(null)
     ]);
-    const logoUrl = logoSetting?.value || '/logo.svg';
-    const gatePassLogoUrl = gatePassLogoSetting?.value || logoUrl;
+    const logoUrl = normalizePublicAssetUrl(logoSetting?.value, '/logo.svg');
+    const gatePassLogoUrl = normalizePublicAssetUrl(gatePassLogoSetting?.value, logoUrl);
     const fallbackTheme = typeof themeSetting?.value === 'string' ? themeSetting.value : 'default';
     const theme = storeThemeDoc?.appTheme || fallbackTheme;
     res.json({ logoUrl, gatePassLogoUrl, theme });

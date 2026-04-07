@@ -490,11 +490,16 @@ router.get('/self-service-assets', protect, restrictViewer, async (req, res) => 
     const cameraOnly = String(req.query.camera_only || 'false').toLowerCase() === 'true';
     const programOnly =
       String(req.query.program_only || '').toLowerCase() === 'true';
+    const hasPage =
+      req.query.page !== undefined && req.query.page !== null && String(req.query.page).trim() !== '';
+    const pageNum = hasPage ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1;
+    const pageSize = hasPage ? Math.min(200, Math.max(1, parseInt(String(req.query.limit), 10) || 50)) : null;
 
     const assetSelect =
       'name model_number uniqueId abs_code ip_address serial_number mac_address expo_tag ticket_number status condition product_name customFields store assigned_to ppm_enabled';
 
     let assets;
+    let pageMeta = null;
     if (keywordLower) {
       assets = await Asset.find({ store: storeOid, disposed: { $ne: true } })
         .select(assetSelect)
@@ -526,22 +531,43 @@ router.get('/self-service-assets', protect, restrictViewer, async (req, res) => 
       }
       const programIds = await loadProgramScopedAssetObjectIds(storeOid);
       if (programIds.length === 0) {
+        if (hasPage) {
+          return res.json({ items: [], total: 0, page: 1, pages: 1, limit: pageSize || 50 });
+        }
         return res.json([]);
       }
-      assets = await Asset.find({
+      const baseFilter = {
         store: storeOid,
         disposed: { $ne: true },
         _id: { $in: programIds }
-      })
-        .select(assetSelect)
-        .populate('assigned_to', 'name email')
-        .sort({ uniqueId: 1, name: 1 })
-        .limit(8000)
-        .lean();
+      };
+      if (hasPage) {
+        const total = await Asset.countDocuments(baseFilter);
+        const pages = Math.max(1, Math.ceil(total / pageSize));
+        const safePage = Math.min(pageNum, pages);
+        assets = await Asset.find(baseFilter)
+          .select(assetSelect)
+          .populate('assigned_to', 'name email')
+          .sort({ uniqueId: 1, name: 1 })
+          .skip((safePage - 1) * pageSize)
+          .limit(pageSize)
+          .lean();
+        pageMeta = { total, page: safePage, pages, limit: pageSize };
+      } else {
+        assets = await Asset.find(baseFilter)
+          .select(assetSelect)
+          .populate('assigned_to', 'name email')
+          .sort({ uniqueId: 1, name: 1 })
+          .limit(8000)
+          .lean();
+      }
     }
 
     const assetIds = assets.map((a) => a._id);
     if (assetIds.length === 0) {
+      if (pageMeta) {
+        return res.json({ items: [], total: pageMeta.total, page: pageMeta.page, pages: pageMeta.pages, limit: pageMeta.limit });
+      }
       return res.json([]);
     }
 
@@ -591,6 +617,15 @@ router.get('/self-service-assets', protect, restrictViewer, async (req, res) => 
       };
     });
 
+    if (pageMeta) {
+      return res.json({
+        items: rows,
+        total: pageMeta.total,
+        page: pageMeta.page,
+        pages: pageMeta.pages,
+        limit: pageMeta.limit
+      });
+    }
     res.json(rows);
   } catch (error) {
     res.status(500).json({ message: 'Failed to load PPM asset list', error: error.message });
@@ -994,12 +1029,14 @@ router.patch('/:id/start', protect, restrictViewer, async (req, res) => {
 
     const notifyTask = await loadTaskForStatusNotification(task._id);
     if (notifyTask) {
-      await notifyPpmStatusChange({
+      void notifyPpmStatusChange({
         task: notifyTask,
         req,
         status: 'In Progress',
         actionLabel: 'PPM Started',
         details: 'Technician started PPM checklist'
+      }).catch((err) => {
+        console.error('PPM status notification failed:', err?.message || err);
       });
     }
 
@@ -1046,12 +1083,14 @@ router.patch('/:id/submit', protect, restrictViewer, async (req, res) => {
     if (prevStatus === 'Scheduled' && task.status === 'In Progress') {
       const notifyTask = await loadTaskForStatusNotification(task._id);
       if (notifyTask) {
-        await notifyPpmStatusChange({
+        void notifyPpmStatusChange({
           task: notifyTask,
           req,
           status: 'In Progress',
           actionLabel: 'PPM Checklist Submitted',
           details: 'Checklist responses updated'
+        }).catch((err) => {
+          console.error('PPM status notification failed:', err?.message || err);
         });
       }
     }
@@ -1118,12 +1157,14 @@ router.patch('/:id/complete', protect, restrictViewer, async (req, res) => {
 
     const notifyTask = await loadTaskForStatusNotification(task._id);
     if (notifyTask) {
-      await notifyPpmStatusChange({
+      void notifyPpmStatusChange({
         task: notifyTask,
         req,
         status: 'Completed',
         actionLabel: 'PPM Completed',
         details: task.technician_notes || ''
+      }).catch((err) => {
+        console.error('PPM status notification failed:', err?.message || err);
       });
     }
 
@@ -1177,12 +1218,14 @@ router.patch('/:id/mark-not-completed', protect, restrictViewer, async (req, res
       .populate('asset', 'name model_number uniqueId abs_code ip_address status store product_name customFields')
       .lean();
     if (out) {
-      await notifyPpmStatusChange({
+      void notifyPpmStatusChange({
         task: out,
         req,
         status: 'Not Completed',
         actionLabel: 'PPM Not Completed',
         details: reason
+      }).catch((err) => {
+        console.error('PPM status notification failed:', err?.message || err);
       });
     }
     return res.json(out);
@@ -1248,12 +1291,14 @@ router.patch('/:id/reopen-for-edit', protect, restrictViewer, async (req, res) =
       .lean();
     if (out) out.checklist = mergePpmChecklistShape(out.checklist || []);
     if (out) {
-      await notifyPpmStatusChange({
+      void notifyPpmStatusChange({
         task: out,
         req,
         status: 'In Progress',
         actionLabel: 'PPM Reopened for Edit',
         details: 'Closed checklist reopened for correction'
+      }).catch((err) => {
+        console.error('PPM status notification failed:', err?.message || err);
       });
     }
     return res.json(out);
@@ -1287,12 +1332,14 @@ router.patch('/:id/cancel', protect, restrictViewer, async (req, res) => {
 
     const notifyTask = await loadTaskForStatusNotification(task._id);
     if (notifyTask) {
-      await notifyPpmStatusChange({
+      void notifyPpmStatusChange({
         task: notifyTask,
         req,
         status: 'Cancelled',
         actionLabel: 'PPM Cancelled',
         details: String(req.body?.reason || 'Cancelled by admin')
+      }).catch((err) => {
+        console.error('PPM status notification failed:', err?.message || err);
       });
     }
 

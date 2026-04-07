@@ -5125,7 +5125,7 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
       store: asset.store
     });
 
-    await notifyAssetEvent({
+    void notifyAssetEvent({
       asset,
       recipientEmail: req.user.email,
       subject: 'Asset Collected Successfully',
@@ -5137,6 +5137,8 @@ router.post('/collect', protect, restrictViewer, async (req, res) => {
         `Location: ${finalInstallationLocation || 'N/A'}`,
         `Date: ${new Date().toLocaleString()}`
       ]
+    }).catch((err) => {
+      console.error('Asset notification failed:', err?.message || err);
     });
 
     res.json(asset);

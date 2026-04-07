@@ -59,6 +59,7 @@ const isRowUnhealthyForSystemHealth = (r) => {
 
 /** Must match server `VMS_CHECKLIST_KEY` */
 const VMS_CHECKLIST_KEY = 'vms_online';
+const WORKORDER_PAGE_SIZE = 50;
 
 const TechPpmPanel = () => {
   const { user } = useAuth();
@@ -78,6 +79,8 @@ const TechPpmPanel = () => {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
+  const [assetPage, setAssetPage] = useState(1);
+  const [assetMeta, setAssetMeta] = useState({ total: 0, pages: 1, limit: WORKORDER_PAGE_SIZE });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [task, setTask] = useState(null);
   const [showIncompleteList, setShowIncompleteList] = useState(false);
@@ -96,7 +99,7 @@ const TechPpmPanel = () => {
     try {
       setLoading(true);
       const q = query.trim();
-      const params = {};
+      const params = { page: assetPage, limit: WORKORDER_PAGE_SIZE };
       if (q) {
         params.q = q;
       } else if (canManagePpmInclusion) {
@@ -107,7 +110,17 @@ const TechPpmPanel = () => {
         api.get('/ppm/overview')
       ]);
       if (gen !== assetsLoadGen.current) return;
-      setRows(Array.isArray(assetsRes.data) ? assetsRes.data : []);
+      const payload = assetsRes?.data;
+      const items = Array.isArray(payload?.items) ? payload.items : (Array.isArray(payload) ? payload : []);
+      setRows(items);
+      setAssetMeta({
+        total: Number(payload?.total ?? items.length),
+        pages: Math.max(1, Number(payload?.pages ?? 1)),
+        limit: Number(payload?.limit ?? WORKORDER_PAGE_SIZE)
+      });
+      if (payload?.page != null) {
+        setAssetPage(Math.max(1, Number(payload.page) || 1));
+      }
       setOverview(
         ovRes.data || { total: 0, overdue: 0, completed: 0, notCompleted: 0, open: 0, health: 100 }
       );
@@ -117,12 +130,16 @@ const TechPpmPanel = () => {
     } finally {
       if (gen === assetsLoadGen.current) setLoading(false);
     }
-  }, [query, canManagePpmInclusion]);
+  }, [query, canManagePpmInclusion, assetPage]);
 
   useEffect(() => {
     const t = setTimeout(() => { load(); }, 300);
     return () => clearTimeout(t);
   }, [load]);
+
+  useEffect(() => {
+    setAssetPage(1);
+  }, [query, canManagePpmInclusion]);
 
   const loadIncomplete = useCallback(async () => {
     const gen = ++incompleteLoadGen.current;
@@ -291,18 +308,14 @@ const TechPpmPanel = () => {
       if (task.status === 'Scheduled') {
         await api.patch(`/ppm/${task._id}/start`);
       }
-      await api.patch(`/ppm/${task._id}/submit`, {
+      const res = await api.patch(`/ppm/${task._id}/submit`, {
         checklist: task.checklist || [],
         technician_notes: task.technician_notes || '',
         equipment_used: task.equipment_used || []
       });
-      const refreshed = await api.get(`/ppm`).then((r) => {
-        const list = Array.isArray(r.data) ? r.data : [];
-        return list.find((x) => x._id === task._id);
-      });
-      if (refreshed) setTask(refreshed);
-      await load();
-      if (showIncompleteList) await loadIncomplete();
+      if (res?.data) setTask(res.data);
+      void load();
+      if (showIncompleteList) void loadIncomplete();
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to save checklist');
     } finally {
@@ -320,8 +333,8 @@ const TechPpmPanel = () => {
         technician_notes: task.technician_notes || ''
       });
       closeDrawer();
-      await load();
-      if (showIncompleteList) await loadIncomplete();
+      void load();
+      if (showIncompleteList) void loadIncomplete();
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to complete PPM');
     } finally {
@@ -342,8 +355,8 @@ const TechPpmPanel = () => {
       setBusy(true);
       const res = await api.patch(`/ppm/${task._id}/reopen-for-edit`);
       setTask(res.data);
-      await load();
-      if (showIncompleteList) await loadIncomplete();
+      void load();
+      if (showIncompleteList) void loadIncomplete();
     } catch (error) {
       alert(error.response?.data?.message || 'Could not reopen PPM for editing');
     } finally {
@@ -366,8 +379,8 @@ const TechPpmPanel = () => {
         equipment_used: task.equipment_used || []
       });
       closeDrawer();
-      await load();
-      if (showIncompleteList) await loadIncomplete();
+      void load();
+      if (showIncompleteList) void loadIncomplete();
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to mark PPM as not completed');
     } finally {
@@ -511,9 +524,10 @@ const TechPpmPanel = () => {
         </div>
         <div className="overflow-x-auto">
           {!showIncompleteList ? (
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 border-b">
-                <tr>
+            <>
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 border-b">
+                  <tr>
                   {canManagePpmInclusion ? (
                     <th className="px-2 py-2 text-center text-xs font-semibold uppercase text-slate-500 w-14">
                       <div className="flex flex-col items-center gap-0.5">
@@ -538,25 +552,25 @@ const TechPpmPanel = () => {
                   <th className="px-3 py-2 text-left">Assigned To</th>
                   <th className="px-3 py-2 text-left">Next service</th>
                   <th className="px-3 py-2 text-left">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">Loading assets…</td></tr>
-                ) : displayRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">
-                      {canManagePpmInclusion && !query.trim()
-                        ? 'No assets in the PPM program yet. Use the search box to find assets, then tick PPM on each row you want to include.'
-                        : 'No assets match your search (or this store has no assets yet).'}
-                    </td>
                   </tr>
-                ) : displayRows.map((row) => {
-                  const a = row.asset || {};
-                  const ns = nextServiceMeta(row.open_task, row.last_completed_at);
-                  const rid = String(a._id || '');
-                  return (
-                    <tr key={a._id} className="border-t hover:bg-slate-50/80">
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">Loading assets…</td></tr>
+                  ) : displayRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={workOrderColSpan} className="px-3 py-6 text-slate-500">
+                        {canManagePpmInclusion && !query.trim()
+                          ? 'No assets in the PPM program yet. Use the search box to find assets, then tick PPM on each row you want to include.'
+                          : 'No assets match your search (or this store has no assets yet).'}
+                      </td>
+                    </tr>
+                  ) : displayRows.map((row) => {
+                    const a = row.asset || {};
+                    const ns = nextServiceMeta(row.open_task, row.last_completed_at);
+                    const rid = String(a._id || '');
+                    return (
+                      <tr key={a._id} className="border-t hover:bg-slate-50/80">
                       {canManagePpmInclusion ? (
                         <td className="px-2 py-2 text-center">
                           <input
@@ -618,11 +632,36 @@ const TechPpmPanel = () => {
                           </button>
                         </div>
                       </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="mt-3 flex items-center justify-between gap-3 text-xs text-slate-600">
+                <span>{(assetMeta.total || displayRows.length).toLocaleString()} total assets</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="px-2 py-1 rounded border border-slate-300 disabled:opacity-50"
+                    disabled={loading || assetPage <= 1}
+                    onClick={() => setAssetPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    Page {assetPage} of {Math.max(1, assetMeta.pages || 1)}
+                  </span>
+                  <button
+                    type="button"
+                    className="px-2 py-1 rounded border border-slate-300 disabled:opacity-50"
+                    disabled={loading || assetPage >= Math.max(1, assetMeta.pages || 1)}
+                    onClick={() => setAssetPage((p) => Math.min(Math.max(1, assetMeta.pages || 1), p + 1))}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 border-b">
