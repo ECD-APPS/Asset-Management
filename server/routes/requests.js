@@ -56,7 +56,7 @@ async function applyViewerStoreFilter(req, filter) {
 
 router.post('/', protect, restrictViewer, async (req, res) => {
   try {
-    const { item_name, quantity, description, store } = req.body;
+    const { item_name, quantity, description, store, request_type, ppm_task, asset } = req.body;
     const safeItemName = String(item_name || '').trim();
     const safeDescription = String(description || '').trim();
     const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
@@ -78,6 +78,9 @@ router.post('/', protect, restrictViewer, async (req, res) => {
       item_name: safeItemName,
       quantity: safeQuantity,
       description: safeDescription,
+      request_type: String(request_type || 'General').trim() || 'General',
+      ppm_task: ppm_task || null,
+      asset: asset || null,
       requester: req.user._id,
       store: targetStoreId
     });
@@ -120,6 +123,8 @@ router.get('/', protect, adminOrViewer, async (req, res) => {
     let requests = await Request.find(filter)
       .populate('requester', 'name email phone username')
       .populate('store', 'name')
+      .populate('asset', 'name model_number uniqueId abs_code')
+      .populate('ppm_task', 'status due_at')
       .sort({ createdAt: -1 })
       .lean();
     if (q) {
@@ -153,7 +158,15 @@ router.put('/:id', protect, admin, async (req, res) => {
     if (!allowedStatuses.has(nextStatus)) {
       return res.status(400).json({ message: 'Invalid request status' });
     }
+    const nextItemName = String(req.body?.item_name || request.item_name).trim();
+    const nextQty = Math.max(1, parseInt(req.body?.quantity, 10) || request.quantity || 1);
+    const nextDescription = String(req.body?.description ?? request.description ?? '').trim();
+    const nextAdminNote = String(req.body?.admin_note ?? request.admin_note ?? '').trim();
     request.status = nextStatus;
+    request.item_name = nextItemName || request.item_name;
+    request.quantity = nextQty;
+    request.description = nextDescription;
+    request.admin_note = nextAdminNote;
     await request.save();
 
     // Notify technician on status change
@@ -168,6 +181,7 @@ router.put('/:id', protect, admin, async (req, res) => {
               <p><strong>Item:</strong> ${request.item_name}</p>
               <p><strong>Quantity:</strong> ${request.quantity}</p>
               <p><strong>New Status:</strong> ${request.status}</p>
+              <p><strong>Admin Note:</strong> ${request.admin_note || '-'}</p>
               <p style="color: #6b7280; font-size: 12px">Expo Stores</p>
             </div>
           `
@@ -196,6 +210,8 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
     let requests = await Request.find(filter)
       .populate('requester', 'name email phone username')
       .populate('store', 'name')
+      .populate('asset', 'name model_number uniqueId abs_code')
+      .populate('ppm_task', 'status due_at')
       .sort({ updatedAt: -1 })
       .lean();
     if (q) {
@@ -208,13 +224,17 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
         rx.test(r.requester?.username || '')
       );
     }
-    const header = ['ITEM','QUANTITY','DESCRIPTION','STATUS','STORE','TECHNICIAN NAME','TECHNICIAN EMAIL','TECHNICIAN PHONE','TECHNICIAN USERNAME','CREATED AT','UPDATED AT'];
+    const header = ['TYPE','ITEM','QUANTITY','DESCRIPTION','STATUS','ADMIN NOTE','STORE','ASSET UID','ASSET ABS','TECHNICIAN NAME','TECHNICIAN EMAIL','TECHNICIAN PHONE','TECHNICIAN USERNAME','CREATED AT','UPDATED AT'];
     const rows = requests.map(r => ([
+      r.request_type || 'General',
       r.item_name,
       r.quantity,
       r.description || '',
       r.status,
+      r.admin_note || '',
       r.store ? r.store.name : '',
+      r.asset?.uniqueId || '',
+      r.asset?.abs_code || '',
       r.requester ? r.requester.name : '',
       r.requester ? r.requester.email : '',
       r.requester ? (r.requester.phone || '') : '',
@@ -225,8 +245,8 @@ router.get('/export', protect, adminOrViewer, async (req, res) => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('REQUESTS');
     ws.addRows([header, ...rows]);
-    ws.columns = [{ width: 24 },{ width: 10 },{ width: 32 },{ width: 12 },{ width: 16 },{ width: 22 },{ width: 26 },{ width: 18 },{ width: 18 },{ width: 22 },{ width: 22 }];
-    ws.autoFilter = 'A1:K1';
+    ws.columns = [{ width: 16 },{ width: 24 },{ width: 10 },{ width: 32 },{ width: 12 },{ width: 24 },{ width: 16 },{ width: 14 },{ width: 14 },{ width: 22 },{ width: 26 },{ width: 18 },{ width: 18 },{ width: 22 },{ width: 22 }];
+    ws.autoFilter = 'A1:O1';
     const buffer = Buffer.from(await wb.xlsx.writeBuffer());
     res.setHeader('Content-Disposition', 'attachment; filename=REQUESTS_EXPORT.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

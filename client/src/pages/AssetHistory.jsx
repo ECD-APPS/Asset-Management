@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '../api/axios';
+import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Activity, User, AlertCircle } from 'lucide-react';
 
 const AssetHistory = () => {
+  const { user } = useAuth();
   const { id } = useParams();
   const [asset, setAsset] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -29,12 +31,15 @@ const AssetHistory = () => {
     ? [...asset.history].sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt))
     : [];
 
+  const backHref = user?.role === 'Technician' ? '/ppm' : '/assets';
+  const backLabel = user?.role === 'Technician' ? 'Back to PPM' : 'Back to Assets';
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <Link to="/assets" className="inline-flex items-center text-gray-500 hover:text-blue-600 transition-colors gap-2">
+        <Link to={backHref} className="inline-flex items-center text-gray-500 hover:text-blue-600 transition-colors gap-2">
           <ArrowLeft size={18} />
-          Back to Assets
+          {backLabel}
         </Link>
         <div className="text-sm text-gray-500">
           {asset ? `Last updated: ${asset.updatedAt ? new Date(asset.updatedAt).toLocaleString() : '-'}` : ''}

@@ -45,6 +45,9 @@ backups/
 # Generated backup artifacts
 server/storage/immutable-backups/
 
+# Embedded/local MongoDB data directory (if present)
+server/.mongodb/
+
 # Local runtime state (do not commit)
 server/storage/runtime/
 server/storage/oplog-archive/

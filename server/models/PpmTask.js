@@ -61,6 +61,7 @@ const ppmTaskSchema = new mongoose.Schema(
     },
     technician_notes: { type: String, default: '' },
     manager_notes: { type: String, default: '' },
+    work_order_ticket: { type: String, default: '' },
     assigned_to: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

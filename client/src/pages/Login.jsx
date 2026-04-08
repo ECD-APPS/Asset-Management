@@ -3,12 +3,15 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
+const FALLBACK_LOGO = '/logo.svg';
+
 const Login = () => {
   const [identifier, setIdentifier] = useState(''); // Email or Username
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [logoSrc, setLogoSrc] = useState(FALLBACK_LOGO);
   const { login, user, loading: authLoading, branding } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -32,6 +35,10 @@ const Login = () => {
       redirectAfterLogin(user);
     }
   }, [user, authLoading, redirectAfterLogin]);
+
+  useEffect(() => {
+    setLogoSrc(branding?.logoUrl || FALLBACK_LOGO);
+  }, [branding?.logoUrl]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -61,7 +68,12 @@ const Login = () => {
       <div className="w-full max-w-md px-6 relative z-10">
         {/* Logo Section */}
         <div className="flex flex-col items-center mb-8">
-           <img src={branding?.logoUrl || '/logo.svg'} alt="Expo City Dubai" className="h-24 w-auto mb-4 drop-shadow-sm" />
+           <img
+             src={logoSrc}
+             alt="Expo City Dubai"
+             className="h-24 w-auto mb-4 drop-shadow-sm"
+             onError={() => setLogoSrc((prev) => (prev === FALLBACK_LOGO ? prev : FALLBACK_LOGO))}
+           />
            <div className="text-center">
              <h1 className="text-2xl font-bold tracking-tight text-app-main uppercase">Expo City Dubai</h1>
              <div className="flex items-center justify-center gap-2 mt-2">

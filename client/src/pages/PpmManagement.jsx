@@ -95,6 +95,9 @@ const PpmManagement = () => {
   const [rows, setRows] = useState([]);
   const [taskPage, setTaskPage] = useState(1);
   const [taskListMeta, setTaskListMeta] = useState({ total: 0, pages: 1 });
+  const [bulkTicket, setBulkTicket] = useState('');
+  const [bulkTicketBusy, setBulkTicketBusy] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
   const [techs, setTechs] = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -115,13 +118,19 @@ const PpmManagement = () => {
     assigned_to: '',
     scheduled_for: '',
     due_at: '',
-    manager_notes: ''
+    manager_notes: '',
+    work_order_ticket: ''
   });
   const [exportBusy, setExportBusy] = useState(false);
   const [resetProgramOpen, setResetProgramOpen] = useState(false);
   const [resetProgramPassword, setResetProgramPassword] = useState('');
   const [resetProgramBusy, setResetProgramBusy] = useState(false);
   const loadGenRef = useRef(0);
+  const spareReqInit = { item_name: '', quantity: 1, description: '' };
+  const [spareReq, setSpareReq] = useState(spareReqInit);
+  const [spareReqBusy, setSpareReqBusy] = useState(false);
+  const [density, setDensity] = useState('comfortable');
+  const [columnPreset, setColumnPreset] = useState('full');
 
   const resetCreateAssetPickerUi = () => {
     setCreateAssetSearch('');
@@ -361,19 +370,73 @@ const PpmManagement = () => {
       alert('Please select an asset.');
       return;
     }
+    if (!String(form.work_order_ticket || '').trim()) {
+      alert('Work order ticket number is required.');
+      return;
+    }
     try {
       setCreating(true);
       await api.post('/ppm', {
         ...form,
         scheduled_for: form.scheduled_for || new Date().toISOString()
       });
-      setForm({ asset_id: '', assigned_to: '', scheduled_for: '', due_at: '', manager_notes: '' });
+      setForm({ asset_id: '', assigned_to: '', scheduled_for: '', due_at: '', manager_notes: '', work_order_ticket: '' });
       resetCreateAssetPickerUi();
       await load();
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to create PPM task');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const visibleTaskIds = useMemo(
+    () => displayRows.filter((r) => r.kind === 'task').map((r) => String(r.task?._id || '')).filter(Boolean),
+    [displayRows]
+  );
+  const allVisibleTasksSelected = visibleTaskIds.length > 0 && visibleTaskIds.every((id) => selectedTaskIds.includes(id));
+
+  const applyBulkWorkOrderTicket = async () => {
+    const ticket = String(bulkTicket || '').trim();
+    if (!ticket) return alert('Enter work order ticket number first.');
+    if (selectedTaskIds.length === 0) return alert('Select at least one task row.');
+    try {
+      setBulkTicketBusy(true);
+      const res = await api.patch('/ppm/bulk-work-order-ticket', {
+        task_ids: selectedTaskIds,
+        work_order_ticket: ticket
+      });
+      await load();
+      alert(`Updated ${res?.data?.modified || 0} task(s) with ticket "${ticket}".`);
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to apply bulk ticket');
+    } finally {
+      setBulkTicketBusy(false);
+    }
+  };
+
+  const submitSpareRequest = async () => {
+    if (!selected?._id || !selected?.asset?._id) return;
+    const itemName = String(spareReq.item_name || '').trim();
+    const qty = Math.max(1, Number(spareReq.quantity) || 1);
+    const desc = String(spareReq.description || '').trim();
+    if (!itemName) return alert('Enter spare part name.');
+    try {
+      setSpareReqBusy(true);
+      await api.post('/requests', {
+        item_name: itemName,
+        quantity: qty,
+        description: `PPM spare request\nTask: ${selected._id}\nAsset UID: ${selected.asset?.uniqueId || 'N/A'}\nAsset ABS: ${selected.asset?.abs_code || 'N/A'}\n${desc}`.trim(),
+        request_type: 'PPM Spare Parts',
+        ppm_task: selected._id,
+        asset: selected.asset._id
+      });
+      setSpareReq(spareReqInit);
+      alert('Spare parts request sent to admin.');
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to send spare parts request');
+    } finally {
+      setSpareReqBusy(false);
     }
   };
 
@@ -461,6 +524,10 @@ const PpmManagement = () => {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">PPM Management — 180-day overview</h1>
+      <div className="flex items-center gap-2 text-sm">
+        <Link to="/ppm" className="px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 font-medium">Schedule</Link>
+        <Link to="/ppm/panel" className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">Work Orders</Link>
+      </div>
 
       {user?.role === 'Technician' && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
@@ -584,6 +651,13 @@ const PpmManagement = () => {
           </select>
           <input type="date" value={form.scheduled_for} onChange={(e) => setForm({ ...form, scheduled_for: e.target.value })} className="border rounded-lg px-3 py-2 text-sm" title="Scheduled for (optional)" />
           <input type="date" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} className="border rounded-lg px-3 py-2 text-sm" title="Due date (optional — defaults to ~180 days)" />
+          <input
+            value={form.work_order_ticket}
+            onChange={(e) => setForm({ ...form, work_order_ticket: e.target.value })}
+            className="border rounded-lg px-3 py-2 text-sm"
+            placeholder="Work order ticket number (required)"
+            title="Work order ticket number (required)"
+          />
           <button disabled={creating} onClick={createTask} className="rounded-lg bg-indigo-600 text-white px-3 py-2 text-sm hover:bg-indigo-700 disabled:opacity-50">
             {creating ? 'Creating...' : 'Create PPM Task'}
           </button>
@@ -598,74 +672,121 @@ const PpmManagement = () => {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         <div className="xl:col-span-2 bg-white border rounded-xl shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b flex flex-wrap gap-2 items-center">
-            <input
-              value={q}
-              onChange={(e) => {
-                setTaskPage(1);
-                setQ(e.target.value);
-              }}
-              placeholder="Search by Unique ID, ABS code, IP, serial, model…"
-              className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[220px]"
-            />
-            <select
-              value={statusFilter}
-              onChange={(e) => {
-                setTaskPage(1);
-                setStatusFilter(e.target.value);
-              }}
-              className="border rounded-lg px-3 py-2 text-sm"
-            >
-              <option value="">All status</option>
-              <option value="Scheduled">Scheduled</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Overdue">Overdue</option>
-              <option value="Completed">Completed</option>
-              <option value="Not Completed">Not completed</option>
-              <option value="Cancelled">Cancelled</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => load()}
-              className="text-sm px-3 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 shrink-0"
-            >
-              Refresh
-            </button>
-            <button
-              type="button"
-              disabled={exportBusy}
-              onClick={downloadPpmExcel}
-              className="text-sm px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 shrink-0"
-              title="Each export uses a new file name (date and time) so downloads are not overwritten."
-            >
-              {exportBusy ? 'Preparing…' : 'Download Excel'}
-            </button>
-            {isAdminUi ? (
+          <div className="px-4 py-3 border-b space-y-2">
+            <div className="flex flex-wrap gap-2 items-center">
+              <input
+                value={q}
+                onChange={(e) => {
+                  setTaskPage(1);
+                  setQ(e.target.value);
+                }}
+                placeholder="Search by Unique ID, ABS code, IP, serial, model…"
+                className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[220px]"
+              />
+              <select
+                value={statusFilter}
+                onChange={(e) => {
+                  setTaskPage(1);
+                  setStatusFilter(e.target.value);
+                }}
+                className="border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">All status</option>
+                <option value="Scheduled">Scheduled</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Overdue">Overdue</option>
+                <option value="Completed">Completed</option>
+                <option value="Not Completed">Not completed</option>
+                <option value="Cancelled">Cancelled</option>
+              </select>
               <button
                 type="button"
-                onClick={() => {
-                  setResetProgramPassword('');
-                  setResetProgramOpen(true);
-                }}
-                className="text-sm px-3 py-2 rounded-lg border border-rose-300 bg-rose-50 text-rose-900 hover:bg-rose-100 shrink-0"
-                title="Deletes all PPM tasks for this store and removes all assets from the PPM program. Requires your password."
+                onClick={() => load()}
+                className="text-sm px-3 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 shrink-0"
               >
-                Reset PPM program
+                Refresh
               </button>
-            ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <select value={density} onChange={(e) => setDensity(e.target.value)} className="border rounded-lg px-3 py-2 text-sm">
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+              </select>
+              <select value={columnPreset} onChange={(e) => setColumnPreset(e.target.value)} className="border rounded-lg px-3 py-2 text-sm">
+                <option value="full">Full columns</option>
+                <option value="core">Core columns</option>
+              </select>
+              {isAdminUi ? (
+                <>
+                  <input
+                    value={bulkTicket}
+                    onChange={(e) => setBulkTicket(e.target.value)}
+                    className="border rounded-lg px-3 py-2 text-sm"
+                    placeholder="Bulk ticket number"
+                    title="Apply one ticket to selected task rows"
+                  />
+                  <button
+                    type="button"
+                    disabled={bulkTicketBusy}
+                    onClick={applyBulkWorkOrderTicket}
+                    className="text-sm px-3 py-2 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
+                  >
+                    {bulkTicketBusy ? 'Applying…' : 'Apply to selected'}
+                  </button>
+                </>
+              ) : null}
+              <button
+                type="button"
+                disabled={exportBusy}
+                onClick={downloadPpmExcel}
+                className="text-sm px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 shrink-0"
+                title="Each export uses a new file name (date and time) so downloads are not overwritten."
+              >
+                {exportBusy ? 'Preparing…' : 'Download Excel'}
+              </button>
+              {isAdminUi ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetProgramPassword('');
+                    setResetProgramOpen(true);
+                  }}
+                  className="text-sm px-3 py-2 rounded-lg border border-rose-300 bg-rose-50 text-rose-900 hover:bg-rose-100 shrink-0"
+                  title="Deletes all PPM tasks for this store and removes all assets from the PPM program. Requires your password."
+                >
+                  Reset PPM program
+                </button>
+              ) : null}
+            </div>
             {q.trim() ? (
-              <span className="text-xs text-slate-500 w-full sm:w-auto">While searching, all task statuses are shown; clear the box to use the status filter.</span>
+              <span className="text-xs text-slate-500 block">While searching, all task statuses are shown; clear the box to use the status filter.</span>
             ) : null}
           </div>
           <div className="overflow-x-auto max-h-[min(70vh,40rem)] overflow-y-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 border-b">
+            <table className={`min-w-full ${density === 'compact' ? 'text-xs [&_th]:py-1.5 [&_td]:py-1.5' : 'text-sm'}`}>
+              <thead className="bg-slate-50 border-b sticky top-0 z-10">
                 <tr>
+                  <th className="px-2 py-2 text-left">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleTasksSelected}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedTaskIds(visibleTaskIds);
+                        else setSelectedTaskIds([]);
+                      }}
+                      title="Select all visible tasks"
+                    />
+                  </th>
                   <th className="px-3 py-2 text-left">Unique ID</th>
                   <th className="px-3 py-2 text-left">ABS Code</th>
-                  <th className="px-3 py-2 text-left">IP Address</th>
-                  <th className="px-3 py-2 text-left">Asset / model</th>
+                  <th className="px-3 py-2 text-left">Name</th>
+                  <th className={`px-3 py-2 text-left ${columnPreset === 'core' ? 'hidden' : ''}`}>Model Number</th>
+                  <th className={`px-3 py-2 text-left ${columnPreset === 'core' ? 'hidden' : ''}`}>Serial Number</th>
+                  <th className={`px-3 py-2 text-left ${columnPreset === 'core' ? 'hidden' : ''}`}>MAC Address</th>
+                  <th className="px-3 py-2 text-left">Ticket</th>
+                  <th className={`px-3 py-2 text-left ${columnPreset === 'core' ? 'hidden' : ''}`}>Manufacturer</th>
                   <th className="px-3 py-2 text-left">Status</th>
+                  <th className={`px-3 py-2 text-left ${columnPreset === 'core' ? 'hidden' : ''}`}>Maintenance Vendor</th>
                   <th className="px-3 py-2 text-left">Next Service</th>
                   <th className="px-3 py-2 text-left">Assigned To</th>
                   <th className="px-3 py-2 text-left max-w-[200px]">Technician comment</th>
@@ -673,10 +794,10 @@ const PpmManagement = () => {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={8} className="px-3 py-4 text-slate-500">Loading...</td></tr>
+                  <tr><td colSpan={14} className="px-3 py-4 text-slate-500">Loading...</td></tr>
                 ) : displayRows.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-4 text-slate-500">
+                    <td colSpan={14} className="px-3 py-4 text-slate-500">
                       {q.trim()
                         ? searchLoading
                           ? 'Searching assets…'
@@ -697,13 +818,32 @@ const PpmManagement = () => {
                             setSelected(r);
                           }}
                         >
+                          <td className="px-2 py-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedTaskIds.includes(String(r._id))}
+                              onChange={(e) => {
+                                const id = String(r._id);
+                                setSelectedTaskIds((prev) => (
+                                  e.target.checked ? Array.from(new Set([...prev, id])) : prev.filter((x) => x !== id)
+                                ));
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              title="Select task for bulk ticket update"
+                            />
+                          </td>
                           <td className="px-3 py-2 font-mono text-xs">{r.asset?.uniqueId || '-'}</td>
                           <td className="px-3 py-2 font-mono text-xs">{r.asset?.abs_code || '-'}</td>
-                          <td className="px-3 py-2 font-mono text-xs">{r.asset?.ip_address || '-'}</td>
-                          <td className="px-3 py-2">{r.asset?.model_number || r.asset?.name || '-'}</td>
+                          <td className="px-3 py-2">{r.asset?.name || r.asset?.product_name || '-'}</td>
+                          <td className={`px-3 py-2 ${columnPreset === 'core' ? 'hidden' : ''}`}>{r.asset?.model_number || '-'}</td>
+                          <td className={`px-3 py-2 font-mono text-xs ${columnPreset === 'core' ? 'hidden' : ''}`}>{r.asset?.serial_number || '-'}</td>
+                          <td className={`px-3 py-2 font-mono text-xs ${columnPreset === 'core' ? 'hidden' : ''}`}>{r.asset?.mac_address || '-'}</td>
+                          <td className="px-3 py-2">{r.work_order_ticket || r.asset?.ticket_number || '-'}</td>
+                          <td className={`px-3 py-2 ${columnPreset === 'core' ? 'hidden' : ''}`}>{r.asset?.manufacturer || '-'}</td>
                           <td className="px-3 py-2">
                             <span className={`inline-flex border rounded-full px-2 py-0.5 text-xs ${statusTone(r.status)}`}>{r.status}</span>
                           </td>
+                          <td className={`px-3 py-2 ${columnPreset === 'core' ? 'hidden' : ''}`}>{r.asset?.maintenance_vendor || '-'}</td>
                           <td className="px-3 py-2">{fmtDate(r.due_at)}</td>
                           <td className="px-3 py-2">{r.assigned_to?.name || '-'}</td>
                           <td className="px-3 py-2 text-xs text-slate-600 max-w-[220px] align-top whitespace-pre-wrap break-words">
@@ -736,13 +876,19 @@ const PpmManagement = () => {
                         onClick={pick}
                         title={isAdminUi ? 'No PPM task yet — click to pre-select for Create PPM Task' : 'Open Work Orders with this asset in search'}
                       >
+                        <td className="px-2 py-2">—</td>
                         <td className="px-3 py-2 font-mono text-xs">{a.uniqueId || '-'}</td>
                         <td className="px-3 py-2 font-mono text-xs">{a.abs_code || '-'}</td>
-                        <td className="px-3 py-2 font-mono text-xs">{a.ip_address || '-'}</td>
-                        <td className="px-3 py-2">{a.model_number || a.name || a.product_name || '-'}</td>
+                        <td className="px-3 py-2">{a.name || a.product_name || '-'}</td>
+                        <td className={`px-3 py-2 ${columnPreset === 'core' ? 'hidden' : ''}`}>{a.model_number || '-'}</td>
+                        <td className={`px-3 py-2 font-mono text-xs ${columnPreset === 'core' ? 'hidden' : ''}`}>{a.serial_number || '-'}</td>
+                        <td className={`px-3 py-2 font-mono text-xs ${columnPreset === 'core' ? 'hidden' : ''}`}>{a.mac_address || '-'}</td>
+                        <td className="px-3 py-2">{a.ticket_number || '-'}</td>
+                        <td className={`px-3 py-2 ${columnPreset === 'core' ? 'hidden' : ''}`}>{a.manufacturer || '-'}</td>
                         <td className="px-3 py-2">
                           <span className={`inline-flex border rounded-full px-2 py-0.5 text-xs ${statusTone('No PPM task')}`}>No PPM task</span>
                         </td>
+                        <td className={`px-3 py-2 ${columnPreset === 'core' ? 'hidden' : ''}`}>{a.maintenance_vendor || '-'}</td>
                         <td className="px-3 py-2">—</td>
                         <td className="px-3 py-2">—</td>
                         <td className="px-3 py-2">—</td>
@@ -824,9 +970,9 @@ const PpmManagement = () => {
             </div>
           ) : null}
           {selected ? (
-            <div className="space-y-3 min-h-0">
+            <div className="min-h-0 flex flex-col gap-3">
               <h3 className="text-lg font-semibold shrink-0">PPM maintenance checklist</h3>
-              <div className="text-xs text-slate-600">
+              <div className="text-xs text-slate-600 shrink-0">
                 [{selected.asset?.abs_code || '-'}] · {selected.asset?.name || selected.asset?.model_number || 'Asset'}
               </div>
               {selected.status === 'Not Completed' ? (
@@ -838,35 +984,37 @@ const PpmManagement = () => {
                   ) : null}
                 </div>
               ) : null}
-              {(selected.checklist || []).map((item, idx) => {
-                const isVms = item.key === VMS_CHECKLIST_KEY;
-                const choices = isVms ? ['Online', 'Offline'] : ['Good', 'Needs Replace', 'No'];
-                return (
-                  <div key={item.key || idx} className="border rounded-lg p-2">
-                    <div className="text-sm font-medium mb-1">{item.label}</div>
-                    <div className="flex gap-2 flex-wrap">
-                      {choices.map((choice) => (
-                        <button
-                          key={choice}
-                          type="button"
+              <div className="max-h-[38vh] overflow-y-auto pr-1 space-y-2">
+                {(selected.checklist || []).map((item, idx) => {
+                  const isVms = item.key === VMS_CHECKLIST_KEY;
+                  const choices = isVms ? ['Online', 'Offline'] : ['Good', 'Needs Replace', 'No'];
+                  return (
+                    <div key={item.key || idx} className="border rounded-lg p-2">
+                      <div className="text-sm font-medium mb-1">{item.label}</div>
+                      <div className="flex gap-2 flex-wrap">
+                        {choices.map((choice) => (
+                          <button
+                            key={choice}
+                            type="button"
+                            disabled={busy || checklistFieldsLocked}
+                            onClick={() => updateChecklistValue(idx, choice)}
+                            className={`px-2 py-1 text-xs border rounded ${item.value === choice ? 'bg-amber-300 border-amber-400' : 'bg-white border-slate-300'} disabled:opacity-50`}
+                          >
+                            {choice}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        value={item.notes || ''}
                         disabled={busy || checklistFieldsLocked}
-                        onClick={() => updateChecklistValue(idx, choice)}
-                          className={`px-2 py-1 text-xs border rounded ${item.value === choice ? 'bg-amber-300 border-amber-400' : 'bg-white border-slate-300'} disabled:opacity-50`}
-                        >
-                          {choice}
-                        </button>
-                      ))}
+                        onChange={(e) => updateChecklistNote(idx, e.target.value)}
+                        className="mt-2 w-full border rounded px-2 py-1 text-xs"
+                        placeholder="Optional notes"
+                      />
                     </div>
-                    <input
-                      value={item.notes || ''}
-                      disabled={busy || checklistFieldsLocked}
-                      onChange={(e) => updateChecklistNote(idx, e.target.value)}
-                      className="mt-2 w-full border rounded px-2 py-1 text-xs"
-                      placeholder="Optional notes"
-                    />
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
               <div>
                 <div className="text-sm font-medium mb-1">Equipment Used</div>
                 <div className="flex flex-wrap gap-2">
@@ -898,7 +1046,41 @@ const PpmManagement = () => {
                 placeholder="Technician notes"
                 rows={3}
               />
-              <div className="flex flex-wrap gap-2">
+              <div className="border rounded-lg p-3 bg-slate-50/70">
+                <div className="text-sm font-semibold mb-2">Required spare parts for maintenance</div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  <input
+                    value={spareReq.item_name}
+                    onChange={(e) => setSpareReq((p) => ({ ...p, item_name: e.target.value }))}
+                    className="border rounded px-2 py-2 text-sm md:col-span-2"
+                    placeholder="Part name"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    value={spareReq.quantity}
+                    onChange={(e) => setSpareReq((p) => ({ ...p, quantity: Math.max(1, Number(e.target.value) || 1) }))}
+                    className="border rounded px-2 py-2 text-sm"
+                    placeholder="Qty"
+                  />
+                  <button
+                    type="button"
+                    disabled={spareReqBusy || busy}
+                    onClick={submitSpareRequest}
+                    className="px-3 py-2 rounded bg-indigo-600 text-white text-sm hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {spareReqBusy ? 'Sending…' : 'Send to admin'}
+                  </button>
+                </div>
+                <textarea
+                  value={spareReq.description}
+                  onChange={(e) => setSpareReq((p) => ({ ...p, description: e.target.value }))}
+                  rows={2}
+                  className="w-full border rounded px-2 py-2 text-sm mt-2"
+                  placeholder="Reason / notes (optional)"
+                />
+              </div>
+              <div className="sticky bottom-0 bg-white pt-2 border-t flex flex-wrap gap-2">
                 {showReopenChecklistButton ? (
                   <button
                     type="button"

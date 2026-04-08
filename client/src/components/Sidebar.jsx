@@ -208,8 +208,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
       icon: <ClipboardCheck size={18} strokeWidth={1.5} />,
       roles: ['Admin', 'Viewer', 'Technician'],
       subItems: [
-        { name: 'Schedule', path: '/ppm', uniqueKey: 'ppm-schedule', roles: ['Admin', 'Viewer', 'Technician'] },
-        { name: 'Work Orders', path: '/ppm/panel', uniqueKey: 'ppm-work-orders', roles: ['Technician', 'Admin'] },
+        { name: 'PPM', path: '/ppm', uniqueKey: 'ppm-main', roles: ['Admin', 'Viewer', 'Technician'] },
         { name: 'History', path: '/ppm/history', uniqueKey: 'ppm-history', roles: ['Admin', 'Viewer', 'Technician'] }
       ]
     },

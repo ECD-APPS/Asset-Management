@@ -62,8 +62,10 @@ const app = express();
 // Ensure runtime directories exist on Linux containers and k3s volumes
 try {
   const uploadsDir = path.join(__dirname, 'uploads');
+  const brandingUploadDir = path.join(uploadsDir, 'branding');
   const backupsDir = path.join(__dirname, 'backups');
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  if (!fs.existsSync(brandingUploadDir)) fs.mkdirSync(brandingUploadDir, { recursive: true });
   if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
 } catch {}
 
@@ -129,8 +131,14 @@ const allowedOrigins = allowedOrigin
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
+// Branding files are exposed via GET /api/system/public-config without auth; the browser
+// loads logoUrl as <img src>. Those URLs live under /uploads/branding only — serve that
+// subtree publicly even when UPLOADS_PUBLIC=false so login and gate-pass PDFs keep working.
+const uploadsRoot = path.join(__dirname, 'uploads');
+const brandingStaticRoot = path.join(uploadsRoot, 'branding');
+app.use('/uploads/branding', express.static(brandingStaticRoot));
 const uploadsPublic = String(process.env.UPLOADS_PUBLIC || (isProd ? 'false' : 'true')).toLowerCase() === 'true';
-const uploadsStatic = express.static(path.join(__dirname, 'uploads'));
+const uploadsStatic = express.static(uploadsRoot);
 if (uploadsPublic) {
   app.use('/uploads', uploadsStatic);
 } else {

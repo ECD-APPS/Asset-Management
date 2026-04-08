@@ -34,6 +34,26 @@ export const AuthProvider = ({ children }) => {
     return '';
   }, [activeStore, user]);
 
+  const resolvePublicAssetUrl = useCallback((rawUrl, fallback = '/logo.svg') => {
+    const input = String(rawUrl || '').trim();
+    if (!input) return fallback;
+    if (/^(data:|blob:|https?:\/\/)/i.test(input)) return input;
+    if (input.startsWith('//')) return `${window.location.protocol}${input}`;
+
+    const apiBase = String(api?.defaults?.baseURL || '/api');
+    let apiOrigin = window.location.origin;
+    try {
+      apiOrigin = new URL(apiBase, window.location.origin).origin;
+    } catch {
+      apiOrigin = window.location.origin;
+    }
+
+    if (input.startsWith('/')) {
+      return `${apiOrigin}${input}`;
+    }
+    return `${apiOrigin}/${input.replace(/^\.?\//, '')}`;
+  }, []);
+
   const setFavicon = (href) => {
     try {
       const head = document.head || document.getElementsByTagName('head')[0];
@@ -57,17 +77,18 @@ export const AuthProvider = ({ children }) => {
       );
       const params = storeId ? { storeId } : undefined;
       const res = await api.get('/system/public-config', { params });
-      const logoUrl = res.data?.logoUrl || '/logo.svg';
+      const logoUrl = resolvePublicAssetUrl(res.data?.logoUrl, '/logo.svg');
       const theme = res.data?.theme || 'default';
       setBranding({ logoUrl, theme });
       setFavicon(logoUrl);
       document.documentElement.dataset.theme = theme;
     } catch {
-      setBranding({ logoUrl: '/logo.svg', theme: 'default' });
-      setFavicon('/logo.svg');
+      const fallbackLogoUrl = resolvePublicAssetUrl('/logo.svg', '/logo.svg');
+      setBranding({ logoUrl: fallbackLogoUrl, theme: 'default' });
+      setFavicon(fallbackLogoUrl);
       document.documentElement.dataset.theme = 'default';
     }
-  }, [activeStore, resolveStoreIdForBranding, user]);
+  }, [activeStore, resolvePublicAssetUrl, resolveStoreIdForBranding, user]);
 
   useEffect(() => {
     const verifySession = async () => {
