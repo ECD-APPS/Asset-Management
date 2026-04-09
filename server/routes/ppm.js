@@ -541,13 +541,21 @@ const ppmTaskDocToBellRow = (t) => ({
 const fetchOpenPpmTasksForManagerBell = async (storeOid, coveredAssetIds, limit, { sinceDate } = {}) => {
   if (limit <= 0) return [];
   const storeScope = matchPpmStoreScope(storeOid);
+  const needsAttention = {
+    $or: [
+      { 'manager_review.status': 'Pending' },
+      { manager_notification_pending: true }
+    ]
+  };
   const q = {
     store: storeScope,
-    status: { $in: ['Scheduled', 'In Progress'] },
-    'manager_review.status': 'Pending'
+    status: { $in: ['Scheduled', 'In Progress', 'Not Completed'] },
+    $and: [needsAttention]
   };
   if (sinceDate) {
-    q.$or = [{ updatedAt: { $gte: sinceDate } }, { createdAt: { $gte: sinceDate } }];
+    q.$and.push({
+      $or: [{ updatedAt: { $gte: sinceDate } }, { createdAt: { $gte: sinceDate } }]
+    });
   }
   const nin = [...coveredAssetIds].filter((id) => mongoose.Types.ObjectId.isValid(id));
   if (nin.length) {
@@ -556,7 +564,7 @@ const fetchOpenPpmTasksForManagerBell = async (storeOid, coveredAssetIds, limit,
   const rows = await PpmTask.find(q)
     .sort({ updatedAt: -1 })
     .limit(limit)
-    .select('_id manager_review manager_notes createdAt updatedAt')
+    .select('_id manager_review manager_notes manager_notification_pending createdAt updatedAt')
     .lean();
   return rows.map(ppmTaskDocToBellRow);
 };
@@ -1683,20 +1691,27 @@ router.post('/notify-bulk-program', protect, restrictViewer, async (req, res) =>
 // @desc    List pending manager PPM reviews in active store
 router.get('/manager/pending', protect, restrictViewer, async (req, res) => {
   try {
-    if (!['Manager', 'Admin', 'Super Admin'].includes(req.user?.role)) {
+    if (!isManagerLikeRole(req.user?.role) && req.user?.role !== 'Admin' && req.user?.role !== 'Super Admin') {
       return res.status(403).json({ message: 'Only Manager/Admin can view manager PPM queue' });
     }
-    const resolvedStoreId =
+    let effectiveStore =
       (req.activeStore && mongoose.Types.ObjectId.isValid(req.activeStore))
         ? req.activeStore
         : ((req.user?.assignedStore && mongoose.Types.ObjectId.isValid(String(req.user.assignedStore)))
           ? String(req.user.assignedStore)
           : null);
-    if (!resolvedStoreId) {
+    if (!effectiveStore) {
+      const hs = req.headers['x-active-store'] && String(req.headers['x-active-store']).trim();
+      if (hs && hs !== 'undefined' && hs !== 'all' && mongoose.Types.ObjectId.isValid(hs)) {
+        effectiveStore = hs;
+      }
+    }
+    if (!effectiveStore) {
       return res.status(400).json({ message: 'Active store is required' });
     }
+    const storeScope = matchPpmStoreScope(new mongoose.Types.ObjectId(effectiveStore));
     const rows = await PpmTask.find({
-      store: new mongoose.Types.ObjectId(resolvedStoreId),
+      store: storeScope,
       manager_notification_pending: true,
       $or: [
         { 'manager_review.status': 'Pending' },
@@ -1705,7 +1720,7 @@ router.get('/manager/pending', protect, restrictViewer, async (req, res) => {
       ],
       status: { $in: ['Scheduled', 'In Progress', 'Not Completed'] }
     })
-      .populate('asset', 'uniqueId abs_code name model_number serial_number ticket_number')
+      .populate('asset', 'uniqueId abs_code name model_number serial_number ticket_number maintenance_vendor')
       .sort({ createdAt: -1 })
       .limit(300)
       .lean();
@@ -1719,7 +1734,7 @@ router.get('/manager/pending', protect, restrictViewer, async (req, res) => {
 // @desc    Manager approves/rejects/modifies PPM with comment
 router.patch('/:id/manager-review', protect, restrictViewer, async (req, res) => {
   try {
-    if (!['Manager', 'Admin', 'Super Admin'].includes(req.user?.role)) {
+    if (!isManagerLikeRole(req.user?.role) && req.user?.role !== 'Admin' && req.user?.role !== 'Super Admin') {
       return res.status(403).json({ message: 'Only Manager/Admin can review PPM tasks' });
     }
     const taskId = String(req.params?.id || '');

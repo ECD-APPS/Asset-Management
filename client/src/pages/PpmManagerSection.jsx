@@ -1,6 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 
+const workOrderQueueRow = (t) => {
+  const a = t.asset && typeof t.asset === 'object' ? t.asset : {};
+  return {
+    ...t,
+    queueKind: 'work_order',
+    reviewStatus: String(t.manager_review?.status || 'Pending'),
+    assets: [
+      {
+        unique_id: a.uniqueId || '',
+        abs_code: a.abs_code || '',
+        name: a.name || a.model_number || '',
+        model_number: a.model_number || '',
+        serial_number: a.serial_number || '',
+        ticket: t.work_order_ticket || a.ticket_number || '',
+        maintenance_vendor: a.maintenance_vendor || ''
+      }
+    ]
+  };
+};
+
 const PpmManagerSection = () => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -13,32 +33,35 @@ const PpmManagerSection = () => {
   const load = async () => {
     try {
       setLoading(true);
-      // Preferred isolated route
-      try {
-        const { data } = await api.get('/ppm/manager/section');
-        setRows(Array.isArray(data) ? data : []);
-        return;
-      } catch (primaryError) {
-        // Fallback for older backend: manager pending route
-        if (Number(primaryError?.response?.status) !== 404) throw primaryError;
+      const [sectionResult, pendingResult] = await Promise.allSettled([
+        api.get('/ppm/manager/section'),
+        api.get('/ppm/manager/pending')
+      ]);
+
+      let workflowRows = [];
+      if (sectionResult.status === 'fulfilled') {
+        const data = sectionResult.value?.data;
+        workflowRows = (Array.isArray(data) ? data : []).map((t) => ({ ...t, queueKind: 'workflow' }));
+      } else if (Number(sectionResult.reason?.response?.status) !== 404) {
+        throw sectionResult.reason;
       }
-      try {
-        const { data } = await api.get('/ppm/manager/pending');
-        const normalized = (Array.isArray(data) ? data : []).map((t) => ({
-          ...t,
-          assets: Array.isArray(t?.assets) ? t.assets : (t?.asset ? [t.asset] : [])
-        }));
-        setRows(normalized);
-        return;
-      } catch (legacyError) {
-        if (Number(legacyError?.response?.status) !== 404) throw legacyError;
+
+      let workOrderRows = [];
+      if (pendingResult.status === 'fulfilled') {
+        const data = pendingResult.value?.data;
+        workOrderRows = (Array.isArray(data) ? data : []).map(workOrderQueueRow);
       }
-      // Final compatibility fallback: use generic PPM tasks list and treat open tasks as manager queue
-      const { data: tasksData } = await api.get('/ppm', { params: { limit: 500 } });
-      const rowsCompat = (Array.isArray(tasksData) ? tasksData : (tasksData?.items || []))
-        .filter((t) => ['Scheduled', 'In Progress', 'Not Completed'].includes(String(t?.status || '')))
-        .map((t) => ({ ...t, assets: t?.asset ? [t.asset] : [] }));
-      setRows(rowsCompat);
+
+      if (workflowRows.length === 0 && workOrderRows.length === 0 && sectionResult.status === 'rejected' && pendingResult.status === 'rejected') {
+        const { data: tasksData } = await api.get('/ppm', { params: { limit: 500 } });
+        const rowsCompat = (Array.isArray(tasksData) ? tasksData : (tasksData?.items || []))
+          .filter((t) => ['Scheduled', 'In Progress', 'Not Completed'].includes(String(t?.status || '')))
+          .map((t) => workOrderQueueRow({ ...t, asset: t.asset }));
+        setRows(rowsCompat);
+        return;
+      }
+
+      setRows([...workflowRows, ...workOrderRows]);
     } catch (error) {
       const msg = String(error?.response?.data?.message || '');
       if (!/not allowed/i.test(msg) && !/api endpoint not found/i.test(msg) && Number(error?.response?.status) !== 404) {
@@ -54,15 +77,17 @@ const PpmManagerSection = () => {
 
   const filteredRows = useMemo(() => {
     const q = String(query || '').trim().toLowerCase();
+    const rowStatus = (r) => (r.queueKind === 'work_order' ? String(r.reviewStatus || '').toLowerCase() : String(r?.status || '').toLowerCase());
     const byStatus = statusFilter === 'all'
       ? rows
-      : rows.filter((r) => String(r?.status || '').toLowerCase() === statusFilter);
+      : rows.filter((r) => rowStatus(r) === statusFilter);
     if (!q) return byStatus;
     return byStatus.filter((t) => {
       const assets = Array.isArray(t?.assets) ? t.assets : [];
+      const statusStr = t.queueKind === 'work_order' ? String(t.reviewStatus || '') : String(t?.status || '');
       return (
         String(t?._id || '').toLowerCase().includes(q)
-        || String(t?.status || '').toLowerCase().includes(q)
+        || statusStr.toLowerCase().includes(q)
         || assets.some((a) => (
           String(a?.unique_id || '').toLowerCase().includes(q)
           || String(a?.abs_code || '').toLowerCase().includes(q)
@@ -76,23 +101,27 @@ const PpmManagerSection = () => {
 
   const summary = useMemo(() => {
     const total = rows.length;
-    const pending = rows.filter((x) => String(x?.status || '') === 'Pending').length;
-    const modified = rows.filter((x) => String(x?.status || '') === 'Modified').length;
+    const rowReviewStatus = (x) => (x.queueKind === 'work_order' ? String(x.reviewStatus || 'Pending') : String(x?.status || ''));
+    const pending = rows.filter((x) => rowReviewStatus(x) === 'Pending').length;
+    const modified = rows.filter((x) => rowReviewStatus(x) === 'Modified').length;
     const totalAssets = rows.reduce((acc, t) => acc + (Array.isArray(t?.assets) ? t.assets.length : 0), 0);
     return { total, pending, modified, totalAssets };
   }, [rows]);
 
-  const act = async (taskId, status) => {
+  const act = async (taskId, status, queueKind) => {
     const c = String(comment[taskId] || '').trim();
     if (!c) return alert('Comment is required.');
     try {
       setBusyId(String(taskId));
-      // Preferred isolated manager-action route, fallback to legacy manager-review route.
-      try {
-        await api.patch('/ppm/manager-action', { ppm_task_id: taskId, status, comment: c });
-      } catch (primaryError) {
-        if (Number(primaryError?.response?.status) !== 404 && !/api endpoint not found/i.test(String(primaryError?.response?.data?.message || ''))) throw primaryError;
+      if (queueKind === 'work_order') {
         await api.patch(`/ppm/${taskId}/manager-review`, { decision: status, comment: c });
+      } else {
+        try {
+          await api.patch('/ppm/manager-action', { ppm_task_id: taskId, status, comment: c });
+        } catch (primaryError) {
+          if (Number(primaryError?.response?.status) !== 404 && !/api endpoint not found/i.test(String(primaryError?.response?.data?.message || ''))) throw primaryError;
+          await api.patch(`/ppm/${taskId}/manager-review`, { decision: status, comment: c });
+        }
       }
       await load();
     } catch (error) {
@@ -105,6 +134,10 @@ const PpmManagerSection = () => {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">PPM Manager Section</h1>
+      <p className="text-sm text-slate-600 max-w-3xl">
+        <strong>Bulk workflow</strong> batches (Excel / notify-manager) appear first. <strong>Work orders</strong> you were nudged about via
+        &quot;Send notification to managers&quot; or open tasks awaiting review appear below.
+      </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-white border rounded-xl p-4 shadow-sm">
           <div className="text-xs uppercase text-slate-500">Queue Tasks</div>
@@ -156,16 +189,23 @@ const PpmManagerSection = () => {
         {filteredRows.map((t) => {
           const assets = Array.isArray(t?.assets) ? t.assets : [];
           const expanded = expandedTaskId === String(t._id);
+          const qk = t.queueKind === 'work_order' ? 'work_order' : 'workflow';
+          const badgeStatus = t.queueKind === 'work_order' ? (t.reviewStatus || 'Pending') : t.status;
           return (
-            <div key={t._id} className="rounded-xl border bg-white p-3 shadow-sm">
+            <div key={`${qk}-${t._id}`} className="rounded-xl border bg-white p-3 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-semibold text-slate-800">
-                  Task: <span className="font-mono">{t._id}</span>
+                  {t.queueKind === 'work_order' ? 'Work order' : 'Workflow batch'}: <span className="font-mono">{t._id}</span>
                 </div>
                 <div className="flex items-center gap-2 text-xs">
                   <span className="inline-flex px-2 py-0.5 rounded-full border border-[rgb(var(--accent-color)/0.35)] bg-app-accent-soft text-app-accent">
-                    {t.status}
+                    {badgeStatus}
                   </span>
+                  {t.queueKind === 'work_order' && t.status ? (
+                    <span className="inline-flex px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200" title="Task lifecycle status">
+                      Task: {t.status}
+                    </span>
+                  ) : null}
                   <span className="inline-flex px-2 py-0.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200">
                     Assets: {assets.length}
                   </span>
@@ -225,9 +265,9 @@ const PpmManagerSection = () => {
                 onChange={(e) => setComment((prev) => ({ ...prev, [t._id]: e.target.value }))}
               />
               <div className="mt-2 flex flex-wrap gap-2">
-                <button type="button" disabled={busyId === String(t._id)} onClick={() => act(t._id, 'Approved')} className="btn-app-primary">Approve</button>
-                <button type="button" disabled={busyId === String(t._id)} onClick={() => act(t._id, 'Rejected')} className="btn-app-outline">Reject</button>
-                <button type="button" disabled={busyId === String(t._id)} onClick={() => act(t._id, 'Modified')} className="btn-app-soft">Modify</button>
+                <button type="button" disabled={busyId === String(t._id)} onClick={() => act(t._id, 'Approved', qk)} className="btn-app-primary">Approve</button>
+                <button type="button" disabled={busyId === String(t._id)} onClick={() => act(t._id, 'Rejected', qk)} className="btn-app-outline">Reject</button>
+                <button type="button" disabled={busyId === String(t._id)} onClick={() => act(t._id, 'Modified', qk)} className="btn-app-soft">Modify</button>
               </div>
             </div>
           );
