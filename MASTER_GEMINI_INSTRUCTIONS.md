@@ -63,7 +63,7 @@ Dashboard / stats (if troubleshooting SCY asset analytics):
 
 Dependency policy:
 - Prefer semver-safe bumps (same major). Full jumps to Express 5, React 19, Vite 8, Tailwind 4, Mongoose 9 require explicit migration work.
-- Client `xlsx` may still show npm audit advisories with no patched community release; replacing the library is a separate task.
+- Client in-browser Excel downloads use **`exceljs`** (not the community `xlsx` package); run `npm audit` in `client/` after dependency changes.
 
 Now generate a clean deployment runbook with exact commands for:
 - Fresh install

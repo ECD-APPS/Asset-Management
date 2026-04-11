@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { Plus, Edit, Trash2, Eye, Printer, Paperclip, Download, FileSpreadsheet } from 'lucide-react';
-import * as XLSX from 'xlsx';
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
 const asNumber = (value, fallback = 0) => {

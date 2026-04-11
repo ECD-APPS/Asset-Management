@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '../api/axios';
 import { Plus, Edit, Trash2, Download } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { downloadJsonAutoXlsx } from '../utils/excelExport';
 import { useAuth } from '../context/AuthContext';
 
 const Vendors = () => {
@@ -91,7 +91,7 @@ const Vendors = () => {
     setEditingId(null);
   };
 
-  const exportVendors = () => {
+  const exportVendors = async () => {
     const dataToExport = vendors.map(v => ({
       'Vendor Name': v.name,
       'Contact Person': v.contactPerson,
@@ -103,10 +103,7 @@ const Vendors = () => {
       'Status': v.status
     }));
 
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Vendors");
-    XLSX.writeFile(wb, "vendors_export.xlsx");
+    await downloadJsonAutoXlsx('vendors_export.xlsx', 'Vendors', dataToExport);
   };
 
   return (

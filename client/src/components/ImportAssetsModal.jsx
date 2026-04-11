@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Upload, FileSpreadsheet, Download } from 'lucide-react';
-import * as XLSX from 'xlsx';
 import api from '../api/axios';
+import { downloadMultiSheetAoAXlsx } from '../utils/excelExport';
 
 const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
   const [file, setFile] = useState(null);
@@ -87,12 +87,10 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
         'JOHN DOE',
         '2024-01-01 10:00'
       ];
-      const wb = XLSX.utils.book_new();
-      const wsTemplate = XLSX.utils.aoa_to_sheet([headers]);
-      const wsSample = XLSX.utils.aoa_to_sheet([headers, sample]);
-      XLSX.utils.book_append_sheet(wb, wsTemplate, 'Template');
-      XLSX.utils.book_append_sheet(wb, wsSample, 'Sample');
-      XLSX.writeFile(wb, 'Asset_Import_Template.xlsx', { bookType: 'xlsx' });
+      await downloadMultiSheetAoAXlsx('Asset_Import_Template.xlsx', [
+        { name: 'Template', rows: [headers] },
+        { name: 'Sample', rows: [headers, sample] },
+      ]);
     } catch (err) {
       setError(err.response?.data?.message || err.message || 'Failed to download template');
     }

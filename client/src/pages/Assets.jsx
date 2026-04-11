@@ -4,11 +4,7 @@ import { Edit, Trash2, UserCheck, UserX, Filter, SlidersHorizontal, Download, Ro
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import LoadingLogo from '../components/LoadingLogo';
-
-async function loadXlsx() {
-  const mod = await import('xlsx');
-  return mod.default && mod.default.utils ? mod.default : mod;
-}
+import { downloadBlob, downloadMultiSheetAoAXlsx, jsonHeadersRowsToXlsxBuffer } from '../utils/excelExport';
 
 const flattenProducts = (list, level = 0, ancestors = []) => {
   const out = [];
@@ -871,18 +867,11 @@ const Assets = () => {
       return out;
     });
 
-    const XLSX = await loadXlsx();
-    const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Selected Assets');
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([wbout], { type: 'application/octet-stream' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'selected_assets.xlsx';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const buf = await jsonHeadersRowsToXlsxBuffer('Selected Assets', headers, rows);
+    const blob = new Blob([buf], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    downloadBlob(blob, 'selected_assets.xlsx');
   };
 
   const closeConfirm = () => {
@@ -1613,15 +1602,12 @@ const Assets = () => {
 
   const handleDownloadTemplate = async () => {
     try {
-      const XLSX = await loadXlsx();
       const headers = BULK_ASSET_EXCEL_HEADERS;
       const sample = BULK_ASSET_TEMPLATE_SAMPLE_ROW;
-      const wb = XLSX.utils.book_new();
-      const wsTemplate = XLSX.utils.aoa_to_sheet([headers]);
-      const wsSample = XLSX.utils.aoa_to_sheet([headers, sample]);
-      XLSX.utils.book_append_sheet(wb, wsTemplate, 'Template');
-      XLSX.utils.book_append_sheet(wb, wsSample, 'Sample');
-      XLSX.writeFile(wb, 'assets_import_template.xlsx', { bookType: 'xlsx' });
+      await downloadMultiSheetAoAXlsx('assets_import_template.xlsx', [
+        { name: 'Template', rows: [headers] },
+        { name: 'Sample', rows: [headers, sample] },
+      ]);
     } catch (error) {
       console.error('Error downloading template:', error);
       alert(error?.response?.data?.message || error?.message || 'Failed to download template');

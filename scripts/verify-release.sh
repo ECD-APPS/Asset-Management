@@ -18,6 +18,10 @@ echo
 if [[ "${VERIFY_RELEASE_STRICT:-}" == "1" ]]; then
   echo "==> STRICT mode: npm run build (lockfile-clean ci + client production build)"
   npm run build
+  echo "==> STRICT mode: client ESLint"
+  npm run lint --prefix client
+  echo "==> STRICT mode: server route sanity"
+  (cd server && node -e "require('./routes/auth'); require('./routes/tools'); require('./routes/spareParts'); console.log('server routes ok')")
 else
   echo "==> default mode: server + client npm install, client build + lint + server route sanity"
   echo "    (If server install fails with ENOTEMPTY/EBUSY, remove server/node_modules and retry.)"

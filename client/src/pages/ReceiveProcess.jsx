@@ -3,7 +3,7 @@ import PurchaseOrders from './PurchaseOrders';
 import api from '../api/axios';
 import ImportAssetsModal from '../components/ImportAssetsModal';
 import { Upload, Download, FileSpreadsheet, RefreshCw, Truck, Briefcase, UserCog } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { downloadJsonAutoXlsx } from '../utils/excelExport';
 
 const ReceiveProcess = () => {
   const [activeTab, setActiveTab] = useState('vendor');
@@ -137,7 +137,7 @@ const ReceiveProcess = () => {
     }
   };
 
-  const exportTechnicianReturns = () => {
+  const exportTechnicianReturns = async () => {
     if (pendingReturns.length === 0) return;
     
     const data = pendingReturns.map(item => ({
@@ -149,13 +149,11 @@ const ReceiveProcess = () => {
       'Request Date': item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : '-'
     }));
 
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Technician Returns');
-    XLSX.writeFile(wb, `Technician_Returns_${new Date().toISOString().split('T')[0]}.xlsx`);
+    const day = new Date().toISOString().split('T')[0];
+    await downloadJsonAutoXlsx(`Technician_Returns_${day}.xlsx`, 'Technician Returns', data);
   };
 
-  const exportRecentAssets = () => {
+  const exportRecentAssets = async () => {
     if (recentAssets.length === 0) return;
 
     const data = recentAssets.map(item => ({
@@ -170,10 +168,8 @@ const ReceiveProcess = () => {
       'Last Updated': item.updatedAt ? new Date(item.updatedAt).toLocaleString() : '-'
     }));
 
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Received Assets');
-    XLSX.writeFile(wb, `Received_Assets_${new Date().toISOString().split('T')[0]}.xlsx`);
+    const day = new Date().toISOString().split('T')[0];
+    await downloadJsonAutoXlsx(`Received_Assets_${day}.xlsx`, 'Received Assets', data);
   };
 
   const handleApplyAssetFilters = (e) => {

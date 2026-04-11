@@ -41,7 +41,7 @@ Code reference (troubleshooting):
 
 Dependencies:
 - Prefer same-major npm upgrades; Express 5 / React 19 / Vite 8 / Tailwind 4 / Mongoose 9 need planned migrations.
-- Client package xlsx may still flag npm audit with no upstream fix in the free package.
+- Client uses **exceljs** for spreadsheet downloads; keep `npm audit` clean in `client/` when updating dependencies.
 
 Now produce exact command blocks for:
 1) fresh install

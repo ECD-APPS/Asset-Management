@@ -40,7 +40,7 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
-          if (id.includes('xlsx')) return 'vendor-xlsx';
+          if (id.includes('exceljs')) return 'vendor-exceljs';
           if (id.includes('apexcharts') || id.includes('react-apexcharts')) return 'vendor-apexcharts';
           if (id.includes('recharts')) return 'vendor-recharts';
           if (id.includes('html2canvas') || id.includes('jspdf')) return 'vendor-pdf-canvas';

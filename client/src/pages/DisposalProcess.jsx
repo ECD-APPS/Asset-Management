@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../api/axios';
-import * as XLSX from 'xlsx';
+import { downloadJsonAutoXlsx } from '../utils/excelExport';
 
 const DisposalProcess = () => {
   const [assets, setAssets] = useState([]);
@@ -80,7 +80,7 @@ const DisposalProcess = () => {
     }
   };
 
-  const exportRepairedToExcel = () => {
+  const exportRepairedToExcel = async () => {
     const rows = assets.map(a => ({
       UniqueID: a.uniqueId || '',
       Category: a.category || '',
@@ -103,10 +103,9 @@ const DisposalProcess = () => {
       CreatedAt: a.createdAt ? new Date(a.createdAt).toLocaleString() : '',
       UpdatedAt: a.updatedAt ? new Date(a.updatedAt).toLocaleString() : ''
     }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, activeTab === 'disposed' ? 'Disposed' : 'Repaired');
-    XLSX.writeFile(wb, activeTab === 'disposed' ? 'disposed_assets.xlsx' : 'repaired_assets.xlsx');
+    const sheetName = activeTab === 'disposed' ? 'Disposed' : 'Repaired';
+    const filename = activeTab === 'disposed' ? 'disposed_assets.xlsx' : 'repaired_assets.xlsx';
+    await downloadJsonAutoXlsx(filename, sheetName, rows);
   };
 
   return (
