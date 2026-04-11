@@ -165,7 +165,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
   const ppmAckStoreId = activeStore?._id != null ? String(activeStore._id) : 'no-store';
 
   const effectivePpmBadge = useMemo(
-    () => countUnreadActivePpmAlerts(ppmDashboardAlerts, user, ppmAckUserId, ppmAckStoreId),
+    () => countUnreadActivePpmAlerts(ppmDashboardAlerts, user, ppmAckUserId, ppmAckStoreId, ppmAckTick),
     [ppmDashboardAlerts, user, ppmAckUserId, ppmAckStoreId, ppmAckTick]
   );
 

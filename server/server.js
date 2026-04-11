@@ -75,9 +75,25 @@ app.disable('x-powered-by');
 const trustProxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
 app.set('trust proxy', Number.isFinite(trustProxyHops) ? trustProxyHops : 1);
 const isProd = process.env.NODE_ENV === 'production';
+const enableHsts = String(process.env.ENABLE_HSTS || '').toLowerCase() === 'true';
+// HSTS and upgrade-insecure-requests are opt-in so plain-HTTP / lab installs are not broken.
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  hsts: enableHsts ? { maxAge: 31536000, includeSubDomains: true } : false,
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      upgradeInsecureRequests: null,
+    },
+  },
 }));
+app.use((req, res, next) => {
+  const incoming = String(req.get('x-request-id') || '').trim();
+  const id = incoming && incoming.length <= 128 ? incoming.slice(0, 128) : crypto.randomUUID();
+  req.requestId = id;
+  res.setHeader('X-Request-ID', id);
+  next();
+});
 // Rate limit (general)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -131,7 +147,8 @@ const allowedOrigins = allowedOrigin
   ? allowedOrigin.split(',').map((origin) => origin.trim()).filter(Boolean)
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 app.use(cors({ origin: allowedOrigins, credentials: true }));
-app.use(express.json());
+const jsonBodyLimit = String(process.env.JSON_BODY_LIMIT || '').trim() || (isProd ? '5mb' : '10mb');
+app.use(express.json({ limit: jsonBodyLimit }));
 // Branding files are exposed via GET /api/system/public-config without auth; the browser
 // loads logoUrl as <img src>. Those URLs live under /uploads/branding only — serve that
 // subtree publicly even when UPLOADS_PUBLIC=false so login and gate-pass PDFs keep working.
@@ -271,6 +288,7 @@ app.use((req, res, next) => {
     const durationMs = Date.now() - start;
     auditLogger.info({
       msg: 'request',
+      request_id: req.requestId || null,
       method: req.method,
       url: req.originalUrl,
       status: res.statusCode,

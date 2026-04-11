@@ -43,6 +43,9 @@ Production builds of the client use **`axios` `baseURL: '/api'`** (same origin).
 - **`EMAIL_CONFIG_ENCRYPTION_KEY`** / **`EMERGENCY_RESET_SECRET`** — set before first prod use (see `server/.env.example`).
 - **`COOKIE_SECURE`** — use `auto` or `true` behind HTTPS; for plain HTTP lab installs you may need `false` (see `README_LOCAL.md` “Common fixes”).
 - **`TRUST_PROXY_HOPS`** — if behind Nginx/load balancer, usually `1` (see `server/server.js`).
+- **`JSON_BODY_LIMIT`** — optional; caps JSON upload size (defaults **5mb** in production, **10mb** in development).
+- **`ENABLE_HSTS`** — set to **`true`** only when users always reach the app over HTTPS; leave unset/false for plain-HTTP or lab URLs.
+- **`LOGIN_RATE_LIMIT_MAX`** — optional override for `POST /api/auth/login` throttling (defaults **60** in production per IP+login per 5 minutes).
 
 ## 5) How to run in production (short)
 

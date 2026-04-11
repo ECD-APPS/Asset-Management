@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Outlet, Link, useLocation, useSearchParams } from 'react-router-dom';
-import { Menu, ChevronDown, Settings, Bell } from 'lucide-react';
+import { Menu, ChevronDown, Settings, Bell, Copy } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
@@ -189,6 +189,8 @@ const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [copyToast, setCopyToast] = useState('');
+  const copyToastTimerRef = useRef(null);
   const [systemHealthy, setSystemHealthy] = useState(true);
   const [dbMode, setDbMode] = useState('unknown');
   const { user, logout, activeStore } = useAuth();
@@ -239,10 +241,44 @@ const Layout = () => {
   const ppmAckUserId = String(user?._id || user?.id || user?.email || 'anon').trim() || 'anon';
   const ppmAckStoreId = activeStore?._id != null ? String(activeStore._id) : 'no-store';
 
-  const headerUnreadActiveCount = useMemo(() => {
-    void ppmAckTick;
-    return countUnreadActivePpmAlerts(ppmHeaderAlerts, user, ppmAckUserId, ppmAckStoreId);
-  }, [ppmHeaderAlerts, user, ppmAckUserId, ppmAckStoreId, ppmAckTick]);
+  const headerUnreadActiveCount = useMemo(
+    () => countUnreadActivePpmAlerts(ppmHeaderAlerts, user, ppmAckUserId, ppmAckStoreId, ppmAckTick),
+    [ppmHeaderAlerts, user, ppmAckUserId, ppmAckStoreId, ppmAckTick]
+  );
+
+  const showCopyToast = useCallback((message) => {
+    if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+    setCopyToast(message);
+    copyToastTimerRef.current = setTimeout(() => {
+      setCopyToast('');
+      copyToastTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  const copyCurrentPageUrl = useCallback(async () => {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      showCopyToast('Page link copied');
+      setProfileOpen(false);
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showCopyToast('Page link copied');
+        setProfileOpen(false);
+      } catch {
+        showCopyToast('Could not copy link');
+      }
+    }
+  }, [showCopyToast]);
 
   const ppmHeaderHref = isManagerLike ? '/ppm/manager-section' : '/ppm';
 
@@ -334,6 +370,22 @@ const Layout = () => {
       cancelled = true;
     };
   }, [ppmNotifOpen, showPpmProfileAlerts, activeStore?._id]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      setProfileOpen(false);
+      setPpmNotifOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!ppmNotifOpen) return;
@@ -642,6 +694,15 @@ const Layout = () => {
 
                 {profileOpen && (
                   <div className="absolute right-0 mt-2 w-60 rounded-xl border border-app-card bg-white p-2 shadow-md">
+                    <button
+                      type="button"
+                      onClick={() => void copyCurrentPageUrl()}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      title="Copy this page URL (share with teammates)"
+                    >
+                      <Copy size={16} strokeWidth={1.75} className="shrink-0 text-slate-500" aria-hidden />
+                      Copy page link
+                    </button>
                     <Link
                       to="/portal"
                       onClick={() => setProfileOpen(false)}
@@ -692,6 +753,15 @@ const Layout = () => {
           <Outlet />
         </div>
       </div>
+
+      {copyToast ? (
+        <div
+          role="status"
+          className="pointer-events-none fixed bottom-6 left-1/2 z-[220] max-w-[min(90vw,20rem)] -translate-x-1/2 rounded-xl border border-slate-700/20 bg-slate-900 px-4 py-2.5 text-center text-sm font-medium text-white shadow-lg"
+        >
+          {copyToast}
+        </div>
+      ) : null}
     </div>
   );
 };

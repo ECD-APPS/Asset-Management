@@ -83,7 +83,12 @@ export function isPpmWorkflowAlertActiveForUser(user, alert) {
   return false;
 }
 
-export function countUnreadActivePpmAlerts(alerts, user, userId, storeId) {
+/**
+ * @param {number} [ackRevision] — Bump when client acks (e.g. localStorage) so callers can
+ *   re-run the memo without the alerts array reference changing; not read for logic.
+ */
+export function countUnreadActivePpmAlerts(alerts, user, userId, storeId, ackRevision = 0) {
+  void ackRevision;
   return (Array.isArray(alerts) ? alerts : []).filter(
     (a) => isPpmWorkflowAlertActiveForUser(user, a) && isPpmNotificationUnread(a, userId, storeId)
   ).length;

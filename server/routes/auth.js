@@ -12,10 +12,14 @@ const Session = require('../models/Session');
 const { sidSetOptions, sidClearOptions } = require('../utils/sessionCookie');
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Login rate limiter (relaxed for internal use)
+const isProd = process.env.NODE_ENV === 'production';
+const loginMaxRaw = Number.parseInt(process.env.LOGIN_RATE_LIMIT_MAX || '', 10);
+const loginMax = Number.isFinite(loginMaxRaw) && loginMaxRaw > 0 ? loginMaxRaw : (isProd ? 60 : 200);
+
+// Login rate limiter (tighter in production; override with LOGIN_RATE_LIMIT_MAX)
 const loginLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,   // 5 minutes window
-  max: 200,                  // Internal deployments can have many concurrent users behind one IP
+  max: loginMax,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
