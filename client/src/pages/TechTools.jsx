@@ -27,6 +27,18 @@ const consumableAtOrBelowMin = (item) => {
   return min > 0 && qty <= min;
 };
 
+const formatToolLocation = (tool) => {
+  if (!tool) return '-';
+  if (tool.locationStore) {
+    const p = tool.locationStore?.parentStore?.name;
+    const n = tool.locationStore?.name;
+    const chain = p && n ? `${p} › ${n}` : (n || p || '');
+    const d = tool.locationDetail ? String(tool.locationDetail).trim() : '';
+    return [chain, d].filter(Boolean).join(' — ') || tool.location || '-';
+  }
+  return tool.location || '-';
+};
+
 const TechTools = () => {
   const [tools, setTools] = useState([]);
   const [mine, setMine] = useState([]);
@@ -175,7 +187,7 @@ const TechTools = () => {
                 <td className="px-3 py-2">{toDisplay(tool.model)}</td>
                 <td className="px-3 py-2">{toDisplay(tool.serial_number)}</td>
                 <td className="px-3 py-2">{toDisplay(tool.mac_address)}</td>
-                <td className="px-3 py-2">{toDisplay(tool.location)}</td>
+                <td className="px-3 py-2">{toDisplay(formatToolLocation(tool))}</td>
                 <td className="px-3 py-2">{toDisplay(tool.po_number)}</td>
                 <td className="px-3 py-2">
                   <button
@@ -216,7 +228,7 @@ const TechTools = () => {
                 <td className="px-3 py-2">{toDisplay(tool.type)}</td>
                 <td className="px-3 py-2">{toDisplay(tool.model)}</td>
                 <td className="px-3 py-2">{toDisplay(tool.serial_number)}</td>
-                <td className="px-3 py-2">{toDisplay(tool.location)}</td>
+                <td className="px-3 py-2">{toDisplay(formatToolLocation(tool))}</td>
                 <td className="px-3 py-2">
                   <button
                     onClick={() => returnTool(tool._id)}

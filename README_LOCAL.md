@@ -1,5 +1,9 @@
 # Expo Asset Management - Single Linux Installation Guide
 
+Before packaging or copying this folder to another PC, run **`npm run verify:release`** from the repo root and read **`DEPLOY_CHECKLIST.md`**.
+
+For **copy-paste Linux deploy commands in Google Gemini**, use **`MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`** (this topology) or **`MASTER_GEMINI_INSTRUCTIONS.md`** for separate app/web/db VMs.
+
 Use this guide when running the full stack on one Linux machine (no k3s).
 
 App baseline for local/single-server:

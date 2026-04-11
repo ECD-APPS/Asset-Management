@@ -2,6 +2,10 @@
 
 Use this file when deploying on one Linux server (frontend + backend + MongoDB on same host).
 
+**Application status:** Production-ready. Before packaging or cloning to a new machine, run **`npm run verify:release`** from the repo root and read **`DEPLOY_CHECKLIST.md`**. Use **`VERIFY_RELEASE_STRICT=1 npm run verify:release`** for a strict lockfile-clean build.
+
+**3-tier VM deploy (separate app/web/db):** use **`MASTER_GEMINI_INSTRUCTIONS.md`**.
+
 ## GEMINI PROMPT
 
 ```text
@@ -30,6 +34,10 @@ Environment:
 Code reference (troubleshooting):
 - Asset stats API: GET /api/assets/stats — overview.total = active rows (excl. disposed), overview.totalQuantity = qty sum; maintenanceVendors = per-vendor qty sums; maintenanceVendorAssets = per-vendor row counts. Vendor Mongo pipelines must use $addFields before $group when summing quantity (not $project-only stages that drop quantity).
 - Dashboard UI: client/src/pages/Dashboard.jsx, client/src/components/DashboardCharts.jsx
+- Release check: from repo root run npm run verify:release; VERIFY_RELEASE_STRICT=1 for full npm ci + build. Human checklist: DEPLOY_CHECKLIST.md (CORS_ORIGIN, cookies, Mongo, proxy).
+- Tools: POST /api/tools/:id/assign (admin/manager assign to technician or external holder), POST /api/tools/:id/issue and /return; bulk Excel export/import under /api/tools.
+- Spare parts: POST /api/spare-parts/:id/issue with body fromAssignModal for full assign audit on history; bulk import/export under /api/spare-parts.
+- Tool/spare assign flows record gate-pass intent in history only; formal PDF passes use the Gate Passes module.
 
 Dependencies:
 - Prefer same-major npm upgrades; Express 5 / React 19 / Vite 8 / Tailwind 4 / Mongoose 9 need planned migrations.
@@ -135,6 +143,13 @@ Run this on any new laptop/host clone before deploy:
 
 ```bash
 cd /opt/Expo
+npm run verify:release
+```
+
+Optional stack / endpoint probe:
+
+```bash
+cd /opt/Expo
 chmod +x scripts/preflight.sh
 ./scripts/preflight.sh
 ```
@@ -199,5 +214,7 @@ npm run start:prod:3000
 
 ## See also
 
+- **Env + smoke tests:** `DEPLOY_CHECKLIST.md`
 - **3-tier production (separate app/web/db VMs):** `MASTER_GEMINI_INSTRUCTIONS.md`
 - **Docker Compose (single host):** `DEPLOY.md`, `docker-compose.yml`, `Dockerfile.app`, `Dockerfile.web`, `./deploy.sh safe-release`
+- **IP-only production layout:** `README.md`

@@ -13,7 +13,8 @@ import {
   Calendar,
   Lock,
   Wrench,
-  ClipboardCheck
+  ClipboardCheck,
+  Package
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -268,6 +269,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
     { name: 'Locations', path: '/stores', icon: <Store size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer'] },
     { name: 'Gate Passes', path: '/passes', icon: <Ticket size={18} strokeWidth={1.5} />, roles: ['Admin'] },
     { name: 'Products', path: '/products', icon: <Box size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer'] },
+    { name: 'Spare Parts', path: '/spare-parts', icon: <Package size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer', 'Technician'] },
     {
       name: 'Tools',
       icon: <Wrench size={18} strokeWidth={1.5} />,

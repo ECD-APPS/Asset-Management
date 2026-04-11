@@ -48,6 +48,9 @@ server/storage/immutable-backups/
 # Embedded/local MongoDB data directory (if present)
 server/.mongodb/
 
+# Local deploy metadata (may contain env snippets)
+.deploy-meta/
+
 # Local runtime state (do not commit)
 server/storage/runtime/
 server/storage/oplog-archive/

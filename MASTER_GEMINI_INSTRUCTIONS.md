@@ -3,11 +3,17 @@
 Use this file for 3-tier deployment as your single source of truth.  
 You can paste the **Gemini prompt section** directly into Gemini to get clean, step-by-step commands.
 
+**Application status:** Feature-complete and **production-ready** for SCY / Expo Stores (assets, tools, spare parts, locations, gate passes, assignments, bulk Excel where implemented).
+
+**Before any release or VM image:** On a build machine or CI, from the repo root run **`npm run verify:release`** (installs **server/** + **client/**, production client build, ESLint, server route load). For a lockfile-clean install matching production `npm ci`, use **`VERIFY_RELEASE_STRICT=1 npm run verify:release`**. Read **`DEPLOY_CHECKLIST.md`** for `CORS_ORIGIN`, cookies, Mongo, proxy, and smoke tests.
+
+**Single-server / laptop deploy prompts:** See **`MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`**.
+
 ---
 
 ## 1) Gemini Master Prompt (Copy/Paste)
 
-Paste everything below into Gemini:
+Paste everything below into Gemini (edit IPs, repo path, and branch if yours differ):
 
 ```text
 You are my Linux deployment assistant for Expo Stores.
@@ -45,6 +51,10 @@ Rules you MUST follow:
 10) Backup/restore workflow must use mongodump/mongorestore archive files.
 11) Keep existing endpoints for compatibility unless migration is complete.
 12) Health checks: `/healthz`, `/readyz`, and aliases `/api/healthz`, `/api/readyz` on the app.
+13) Before tagging or promoting a build, the codebase should pass `npm run verify:release` from repo root; use `VERIFY_RELEASE_STRICT=1 npm run verify:release` for full `npm ci` in server + client. Operators should follow DEPLOY_CHECKLIST.md for env alignment (CORS_ORIGIN vs browser URL, COOKIE_SECURE, TRUST_PROXY_HOPS, MONGO_URI).
+14) Tools module: Admins/Super Admins/Managers can assign an Available tool via POST /api/tools/:id/assign (technician = currentHolder, or external person = externalHolder on the Tool document). Return uses POST /api/tools/:id/return (privileged users may return any issued tool). Bulk Excel: GET /api/tools/export, GET /api/tools/import/template, POST /api/tools/import.
+15) Spare parts: POST /api/spare-parts/:id/issue supports fromAssignModal for the full “assign to technician / other + gate pass metadata” audit trail on the history entry. Quick issue without fromAssignModal unchanged. Bulk import/export on /api/spare-parts.
+16) Gate pass PDF/email auto-creation for tool/spare assign flows is not implemented; assignment records gate-pass intent in tool history or spare-part history — use the Gate Passes module if a formal pass document is required.
 
 Dashboard / stats (if troubleshooting SCY asset analytics):
 - GET /api/assets/stats returns overview (total = active asset rows excluding disposed; totalQuantity = sum of quantity in that scope) plus maintenanceVendors (per-vendor quantity sums) and maintenanceVendorAssets (per-vendor document counts).
@@ -251,6 +261,14 @@ curl -fsS http://127.0.0.1/api/healthz >/dev/null && echo "OK: nginx /api/health
 
 ## 4) Preflight Checks Before Every Deployment
 
+On a **developer laptop or CI runner** (optional but recommended after `git pull`):
+
+```bash
+cd /opt/Expo   # or your clone path
+npm run verify:release
+# or: VERIFY_RELEASE_STRICT=1 npm run verify:release
+```
+
 On each VM from `/opt/Expo`:
 
 ```bash
@@ -447,15 +465,26 @@ curl -fsS http://localhost:3000/healthz        # via nginx → app /healthz
 |------|------|
 | API entry | `server/server.js` |
 | Asset routes + `/stats` | `server/routes/assets.js` |
+| Tool routes (assign, issue, return, import/export) | `server/routes/tools.js` |
+| Tool model (externalHolder, history) | `server/models/Tool.js` |
+| Spare part routes (issue with fromAssignModal, import/export) | `server/routes/spareParts.js` |
+| Spare part model (history recipient fields) | `server/models/SparePart.js` |
+| Assign UI (tools + spare parts, mirrors Assets assign pattern) | `client/src/components/AssignRecipientModal.jsx` |
+| Tools admin UI | `client/src/pages/Tools.jsx` |
+| Spare parts UI | `client/src/pages/SpareParts.jsx` |
 | React app | `client/src/` |
 | Dashboard page | `client/src/pages/Dashboard.jsx` |
 | Charts + key metrics | `client/src/components/DashboardCharts.jsx` |
 | API client | `client/src/api/axios.js` |
+| Release verify script | `scripts/verify-release.sh`, root `npm run verify:release` |
+| Env + deploy checklist | `DEPLOY_CHECKLIST.md` |
 | Deploy helpers | `scripts/*.sh`, root `package.json` scripts |
 
 **Local dev:** repo root `npm run install:all` (first time), then `npm run dev`.
 
 **Production build (reference):** root `npm run build:prod` or manual `npm ci` in server + client with `npm run build` in client.
+
+**Pre-release verification:** `npm run verify:release` (see `DEPLOY_CHECKLIST.md` §2).
 
 **SCY dashboard vendor filter:** URL query `?maintenance_vendor=Siemens|G42` passes through to `/api/assets/stats` when SCY-scoped user; stats and charts stay consistent with that filter.
 

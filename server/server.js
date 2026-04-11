@@ -43,6 +43,7 @@ const permitRoutes = require('./routes/permits');
 const systemRoutes = require('./routes/system');
 const toolRoutes = require('./routes/tools');
 const consumableRoutes = require('./routes/consumables');
+const sparePartRoutes = require('./routes/spareParts');
 const ppmRoutes = require('./routes/ppm');
 const { backupDatabase } = require('./backup_db');
 const { protect } = require('./middleware/authMiddleware');
@@ -296,6 +297,7 @@ app.use('/api/permits', permitRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/tools', toolRoutes);
 app.use('/api/consumables', consumableRoutes);
+app.use('/api/spare-parts', sparePartRoutes);
 app.use('/api/ppm', ppmRoutes);
 
 const User = require('./models/User');

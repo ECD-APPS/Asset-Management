@@ -25,6 +25,20 @@ const flattenProducts = (list, level = 0, ancestors = []) => {
 
 const escapeRegExpForHighlight = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** One-line store hierarchy + physical location for finding assets quickly. */
+const formatAssetStoreLocation = (asset, fallbackStoreName = '') => {
+  const parent = String(asset?.store?.parentStore?.name || '').trim();
+  const storeName = String(asset?.store?.name || '').trim();
+  const chain = (parent && storeName)
+    ? `${parent} › ${storeName}`
+    : (storeName || parent || String(fallbackStoreName || '').trim());
+  const loc = String(asset?.location || '').trim();
+  if (chain && loc) return `${chain} — ${loc}`;
+  if (chain) return chain;
+  if (loc) return loc;
+  return '—';
+};
+
 /**
  * Wrap every non-overlapping occurrence of `query` in <mark> (case-insensitive).
  * Typing "e" highlights all e's; "ex" highlights every "ex" substring, etc.
@@ -98,6 +112,7 @@ const DEFAULT_COLUMN_DEFS = [
   { id: 'prevStatus', label: 'Prev Status', key: 'previous_status', visible: true, builtin: true },
   { id: 'store', label: 'Store', key: 'store.name', visible: true, builtin: true },
   { id: 'location', label: 'Location', key: 'location', visible: true, builtin: true },
+  { id: 'storeLocation', label: 'Store & location', key: '_computed_store_location', visible: true, builtin: true },
   { id: 'quantity', label: 'Quantity', key: 'quantity', visible: true, builtin: true },
   { id: 'vendor', label: 'Vendor', key: 'vendor_name', visible: true, builtin: true },
   { id: 'maintenanceVendor', label: 'Maintenance Vendor', key: 'maintenance_vendor', visible: true, builtin: true },
@@ -283,6 +298,7 @@ const KNOWN_EDIT_KEYS = new Set([
   'mac_address',
   'manufacturer',
   'location',
+  '_computed_store_location',
   'condition',
   'status',
   'store',
@@ -2392,6 +2408,7 @@ const Assets = () => {
     prevStatus: { label: 'Prev Status', thClass: 'hidden xl:table-cell', tdClass: 'hidden xl:table-cell text-xs' },
     store: { label: 'Store', thClass: 'hidden sm:table-cell', tdClass: 'hidden sm:table-cell text-sm' },
     location: { label: 'Location', thClass: 'hidden md:table-cell', tdClass: 'hidden md:table-cell text-sm' },
+    storeLocation: { label: 'Store & location', thClass: 'text-left', tdClass: 'text-sm text-slate-800' },
     quantity: { label: 'Quantity', thClass: 'hidden lg:table-cell', tdClass: 'hidden lg:table-cell text-sm' },
     vendor: { label: 'Vendor', thClass: 'hidden xl:table-cell', tdClass: 'hidden xl:table-cell text-xs' },
     source: { label: 'Source', thClass: 'hidden xl:table-cell', tdClass: 'hidden xl:table-cell text-xs' },
@@ -2596,6 +2613,17 @@ const Assets = () => {
       if (value === '-' && isMaintenanceVendorColumn(colDef)) {
         value = getMaintenanceVendorValue(asset);
       }
+    }
+
+    if (key === 'storeLocation') {
+      const v = formatAssetStoreLocation(asset, activeStore?.name);
+      return (
+        <td key={key} className={`px-3 py-2 md:px-6 md:py-4 text-left align-top ${columnMeta[key]?.tdClass || ''}`}>
+          <span className="whitespace-normal break-words leading-snug" title={v === '—' ? undefined : v}>
+            {highlightSearchInText(v, searchQ)}
+          </span>
+        </td>
+      );
     }
 
     if (key === 'status') {
@@ -3590,13 +3618,9 @@ const Assets = () => {
                 <span className="text-xs text-gray-500 block">Serial</span>
                 <span className="font-mono font-medium">{asset.serial_number}</span>
               </div>
-              <div>
-                <span className="text-xs text-gray-500 block">Store</span>
-                <span className="font-medium">{(asset.store?.parentStore?.name) || (asset.store?.name) || (activeStore?.name) || '-'}</span>
-              </div>
-              <div>
-                <span className="text-xs text-gray-500 block">Location</span>
-                <span className="font-medium">{asset.location || '-'}</span>
+              <div className="col-span-2">
+                <span className="text-xs text-gray-500 block">Store & location</span>
+                <span className="font-medium text-gray-900">{formatAssetStoreLocation(asset, activeStore?.name)}</span>
               </div>
                <div>
                 <span className="text-xs text-gray-500 block">Ticket</span>

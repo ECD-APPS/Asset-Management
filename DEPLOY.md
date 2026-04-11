@@ -6,6 +6,18 @@ Current app behavior this runbook assumes:
 - Authentication is HTTP-only cookie based (no JWT tokens).
 - Database backup/restore uses `mongodump`/`mongorestore` archive flow.
 
+For **Gemini-style paste prompts** alongside Docker, see **`MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`** (single host) or **`MASTER_GEMINI_INSTRUCTIONS.md`** (3-tier VMs).
+
+## Build verification (any host, including CI)
+
+From a clean clone or before tagging a release:
+
+```bash
+npm run verify:release
+```
+
+Default: `npm install` in **server/** and **client/**, production **client** build, client lint, and a quick server route load. For a **lockfile-clean** build (like CI), run **`VERIFY_RELEASE_STRICT=1 npm run verify:release`**.
+
 ## Prerequisites
 
 - Docker with Compose plugin installed (`docker compose version`; BuildKit enabled by default for faster image builds)

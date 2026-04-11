@@ -38,6 +38,7 @@ const SystemLogs = lazy(() => import('./pages/SystemLogs'));
 const Tools = lazy(() => import('./pages/Tools'));
 const TechTools = lazy(() => import('./pages/TechTools'));
 const Consumables = lazy(() => import('./pages/Consumables'));
+const SpareParts = lazy(() => import('./pages/SpareParts'));
 // Eager-load PPM routes: soft refresh can abort lazy chunk loads and leave the page stuck on “Loading…”.
 import TechPpmPanel from './pages/TechPpmPanel';
 import PpmHistory from './pages/PpmHistory';
@@ -203,6 +204,12 @@ function App() {
           <Route path="/consumables" element={
             <ProtectedRoute allowedRoles={['Admin', 'Viewer']}>
               <Consumables />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/spare-parts" element={
+            <ProtectedRoute allowedRoles={['Admin', 'Viewer', 'Technician']}>
+              <SpareParts />
             </ProtectedRoute>
           } />
 

@@ -1,5 +1,7 @@
 # Expo Asset Management - IP-Only Deployment Guide
 
+> **Release / new machine:** run **`npm run verify:release`** from the repo root (`npm install` in **server/** and **client/**, production client build, lint, server route sanity), then follow **`DEPLOY_CHECKLIST.md`** for env, CORS, cookies, and smoke tests. For a lockfile-clean CI-style build, use **`VERIFY_RELEASE_STRICT=1 npm run verify:release`**.
+
 This guide is for production deployment using IP addresses only (no domain).
 For single-machine setup, use `README_LOCAL.md`.
 For step-by-step server installation, use `README_SERVER_INSTALL.md`.
@@ -12,6 +14,8 @@ App baseline:
 
 | Mode | Doc |
 |------|-----|
+| Pre-flight build + env checklist | **`DEPLOY_CHECKLIST.md`**, **`npm run verify:release`** |
+| AI / Gemini deploy prompts (paste into Gemini) | **`MASTER_GEMINI_INSTRUCTIONS.md`** (3-tier), **`MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`** (single server) |
 | Docker Compose (single host) | `DEPLOY.md`, `./deploy.sh safe-release`, `Makefile` |
 | 3-tier VMs (this IP guide + install steps) | `README.md`, `README_SERVER_INSTALL.md`, `MASTER_GEMINI_INSTRUCTIONS.md` |
 | One Linux box, Node + Mongo (no Docker) | `README_LOCAL.md` |

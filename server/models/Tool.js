@@ -71,6 +71,17 @@ const toolSchema = new mongoose.Schema({
     trim: true,
     index: true
   },
+  vendor_name: {
+    type: String,
+    default: '',
+    trim: true,
+    index: true
+  },
+  registered_at: {
+    type: Date,
+    default: Date.now,
+    index: true
+  },
   comment: {
     type: String,
     default: '',
@@ -81,6 +92,17 @@ const toolSchema = new mongoose.Schema({
     default: '',
     trim: true,
     index: true
+  },
+  locationStore: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Store',
+    default: null,
+    index: true
+  },
+  locationDetail: {
+    type: String,
+    default: '',
+    trim: true
   },
   store: {
     type: mongoose.Schema.Types.ObjectId,
@@ -98,6 +120,12 @@ const toolSchema = new mongoose.Schema({
     ref: 'User',
     default: null,
     index: true
+  },
+  /** When issued to a non-system person (no User row). Cleared when returned or status ≠ Issued. */
+  externalHolder: {
+    name: { type: String, default: '', trim: true },
+    email: { type: String, default: '', trim: true },
+    phone: { type: String, default: '', trim: true }
   },
   history: {
     type: [toolHistorySchema],

@@ -15,7 +15,8 @@
     "start:prod": "NODE_ENV=production node server/server.js",
     "start:prod:3000": "PORT=3000 NODE_ENV=production node server/server.js",
     "check:regression": "bash scripts/regression-checklist.sh",
-    "check:smoke": "bash scripts/api-smoke-dev.sh"
+    "check:smoke": "bash scripts/api-smoke-dev.sh",
+    "verify:release": "bash scripts/verify-release.sh"
   },
   "engines": {
     "node": ">=20.0.0 <21"

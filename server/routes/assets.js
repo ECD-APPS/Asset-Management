@@ -2015,7 +2015,11 @@ router.get('/', protect, async (req, res) => {
         .sort({ updatedAt: -1 })
         .limit(limit)
         .select('name serial_number status condition location updatedAt store')
-        .populate('store', 'name')
+        .populate({
+          path: 'store',
+          select: 'name parentStore',
+          populate: { path: 'parentStore', select: 'name' }
+        })
         .lean();
       const items = Array.isArray(fetchedItems) ? fetchedItems : [];
       return res.json({
