@@ -10,7 +10,7 @@ const Store = require('../models/Store');
 const Vendor = require('../models/Vendor');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const ActivityLog = require('../models/ActivityLog');
-const { getStoreTreeIds } = require('../utils/storeTree');
+const { storeInventoryBranchesOverlap } = require('../utils/storeTree');
 const { protect, adminOrViewer, restrictViewer } = require('../middleware/authMiddleware');
 
 const upload = multer({
@@ -265,15 +265,17 @@ const canAccess = (req, item) => {
   return String(req.activeStore) === String(item.store);
 };
 
-/** Same tree as GET /api/assets: active store + every nested location (any depth). */
+/**
+ * Asset store must sit on the same Locations tree as the active store (any relative depth).
+ * Matches how assets are filed: main inventory vs child “locations”, siblings under one parent, etc.
+ */
 const canAccessAssetStore = async (req, asset) => {
   if (req.user?.role === 'Super Admin') return true;
   const assetStoreId = asset?.store?._id || asset?.store;
   const activeRaw = req?.activeStore;
   if (!assetStoreId || activeRaw == null || activeRaw === '') return false;
   if (!mongoose.Types.ObjectId.isValid(String(activeRaw))) return false;
-  const allowedIds = await getStoreTreeIds(activeRaw);
-  return allowedIds.some((id) => String(id) === String(assetStoreId));
+  return storeInventoryBranchesOverlap(activeRaw, assetStoreId);
 };
 
 const sumLotsRemaining = (doc) => (doc.stockLots || []).reduce(

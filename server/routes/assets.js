@@ -6,6 +6,7 @@ const Asset = require('../models/Asset');
 const PpmTask = require('../models/PpmTask');
 const Product = require('../models/Product');
 const Store = require('../models/Store');
+const { getStoreTreeIds, storeInventoryBranchesOverlap } = require('../utils/storeTree');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
 const Request = require('../models/Request');
@@ -1221,8 +1222,6 @@ async function readUploadedWorkbook(file) {
         res.status(500).json({ message: error.message });
       }
     });
-
-const { getStoreTreeIds } = require('../utils/storeTree');
 
 // Helper: active store + all nested location sites (any depth) for ObjectId $in clauses
 async function getStoreIds(storeId) {

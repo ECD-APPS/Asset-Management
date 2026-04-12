@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Session = require('../models/Session');
 const Store = require('../models/Store');
+const { getStoreTreeIds } = require('../utils/storeTree');
 
 function parseActiveStoreHeader(raw) {
   if (!raw || raw === 'undefined' || raw === 'null' || raw === 'all') return null;
@@ -64,12 +65,29 @@ const protect = async (req, res, next) => {
       const headerId = parseActiveStoreHeader(req.headers['x-active-store']);
       if (headerId) req.activeStore = headerId;
     } else {
+      // Admin / Technician / Manager: UI sends x-active-store from the header picker.
+      // If we always prefer assignedStore, the picker is ignored and harvest/RBAC break for
+      // assets under a different (but valid) site in the same inventory tree.
       const resolvedStore = resolveAssignedStoreId(req.user);
       const headerId = parseActiveStoreHeader(req.headers['x-active-store']);
-      if (resolvedStore) {
+
+      if (headerId) {
+        if (!resolvedStore || String(headerId) === String(resolvedStore)) {
+          req.activeStore = headerId;
+        } else {
+          try {
+            const idsFromAssigned = await getStoreTreeIds(resolvedStore);
+            const idsFromHeader = await getStoreTreeIds(headerId);
+            const sameInventoryTree =
+              idsFromAssigned.some((id) => String(id) === String(headerId)) ||
+              idsFromHeader.some((id) => String(id) === String(resolvedStore));
+            req.activeStore = sameInventoryTree ? headerId : resolvedStore;
+          } catch {
+            req.activeStore = resolvedStore;
+          }
+        }
+      } else if (resolvedStore) {
         req.activeStore = resolvedStore;
-      } else if (headerId) {
-        req.activeStore = headerId;
       }
     }
 
