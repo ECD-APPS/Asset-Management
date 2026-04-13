@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { Eye, Pencil, Wrench } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import api from '../api/axios';
@@ -162,6 +162,7 @@ const ppmSearchFields = (asset, row) => ([
 
 const TechPpmPanel = () => {
   const { user, activeStore } = useAuth();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const roleLower = String(user?.role || '').toLowerCase();
   const managerLikeRole = roleLower.includes('manager');
@@ -232,6 +233,11 @@ const TechPpmPanel = () => {
   const assetsLoadGen = useRef(0);
   const toastTimerRef = useRef(null);
   const workOrderColSpan = canManagePpmInclusion ? 20 : 19;
+
+  const assetHistorySearch = useMemo(() => {
+    const back = encodeURIComponent(`${location.pathname}${location.search}`);
+    return `?from=ppm&back=${back}`;
+  }, [location.pathname, location.search]);
 
   const bulkNotifySessionKey = useMemo(() => {
     const id = activeStore?._id != null ? String(activeStore._id) : '';
@@ -1968,7 +1974,7 @@ const TechPpmPanel = () => {
                       <td className="px-3 py-2 font-mono text-xs">
                         {a._id ? (
                           <Link
-                            to={`/asset/${a._id}`}
+                            to={`/asset/${a._id}${assetHistorySearch}`}
                             className="text-indigo-700 hover:text-indigo-900 hover:underline font-medium"
                             title="Open asset history"
                           >
@@ -2065,7 +2071,7 @@ const TechPpmPanel = () => {
                         <div className="flex items-center gap-1">
                           {canOpenAssetHistory && a._id ? (
                             <Link
-                              to={`/asset/${a._id}`}
+                              to={`/asset/${a._id}${assetHistorySearch}`}
                               className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 inline-flex"
                               title="View asset"
                             >

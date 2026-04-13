@@ -2293,6 +2293,9 @@ router.get('/stats', protect, async (req, res) => {
     const disposedScopeFilter = { ...filter };
     delete disposedScopeFilter.disposed;
 
+    /** ~24 months: same ABS with repeated faulty-related history (serial/MAC may change on replacement). */
+    const recurringFaultySince = new Date(Date.now() - 730 * 86400000);
+
     const [
       totalAssets,
       bucketCounts,
@@ -2311,7 +2314,8 @@ router.get('/stats', protect, async (req, res) => {
       usageBreakdownCounts,
       assetTypeCountAgg,
       maintenanceVendorCounts,
-      maintenanceVendorAssetCounts
+      maintenanceVendorAssetCounts,
+      recurringFaultyByAbsAgg
     ] = await Promise.all([
       // Total should represent full fleet (including disposed) for consistent KPI math.
       countAssets(disposedScopeFilter),
@@ -2510,6 +2514,77 @@ router.get('/stats', protect, async (req, res) => {
           }
         },
         { $group: { _id: '$vendorBucket', count: { $sum: 1 } } }
+      ]),
+      Asset.aggregate([
+        { $match: filter },
+        {
+          $addFields: {
+            absNorm: {
+              $toUpper: {
+                $trim: {
+                  input: { $toString: { $ifNull: ['$abs_code', ''] } }
+                }
+              }
+            }
+          }
+        },
+        { $match: { absNorm: { $ne: '' }, history: { $exists: true, $ne: [] } } },
+        { $unwind: '$history' },
+        {
+          $match: {
+            'history.date': { $gte: recurringFaultySince },
+            $expr: {
+              $or: [
+                {
+                  $eq: [
+                    {
+                      $toLower: {
+                        $trim: {
+                          input: { $toString: { $ifNull: ['$history.condition', ''] } }
+                        }
+                      }
+                    },
+                    'faulty'
+                  ]
+                },
+                {
+                  $regexMatch: {
+                    input: { $toString: { $ifNull: ['$history.action', ''] } },
+                    regex: /faulty/i
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: '$absNorm',
+            faultyEventCount: { $sum: 1 },
+            assetIds: { $addToSet: '$_id' },
+            lastFaultAt: { $max: '$history.date' },
+            sampleName: { $first: '$name' },
+            sampleSerial: { $first: '$serial_number' },
+            sampleUniqueId: { $first: '$uniqueId' },
+            sampleModel: { $first: '$model_number' }
+          }
+        },
+        { $match: { faultyEventCount: { $gte: 2 } } },
+        { $sort: { faultyEventCount: -1, lastFaultAt: -1 } },
+        { $limit: 30 },
+        {
+          $project: {
+            _id: 0,
+            abs_code: '$_id',
+            faultyEventCount: 1,
+            distinctAssetCount: { $size: '$assetIds' },
+            lastFaultAt: 1,
+            sampleName: 1,
+            sampleSerial: 1,
+            sampleUniqueId: 1,
+            sampleModel: 1
+          }
+        }
       ])
     ]);
 
@@ -2592,7 +2667,8 @@ router.get('/stats', protect, async (req, res) => {
         Siemens: 0,
         G42: 0,
         Other: 0
-      }
+      },
+      recurringFaultyByAbs: Array.isArray(recurringFaultyByAbsAgg) ? recurringFaultyByAbsAgg : []
     };
 
     const usageMap = { Installed: 0, Used: 0, Faulty: 0, Other: 0 };
@@ -4478,6 +4554,11 @@ router.post('/mark-faulty-with-replacement', protect, admin, async (req, res) =>
   const note = String(req.body.note || '').trim();
   const ticketNumber = String(req.body.ticketNumber || '').trim();
   const manualPick = req.body.manualPick === true || String(req.body.manualPick || '').toLowerCase() === 'true';
+  const rawTransfer = req.body.transferAssignment;
+  const transferAssignment =
+    rawTransfer === undefined || rawTransfer === null
+      ? true
+      : rawTransfer === true || String(rawTransfer).toLowerCase() === 'true';
 
   try {
     if (!mongoose.Types.ObjectId.isValid(faultyAssetId) || !mongoose.Types.ObjectId.isValid(replacementAssetId)) {
@@ -4531,9 +4612,95 @@ router.post('/mark-faulty-with-replacement', protect, admin, async (req, res) =>
     const snapAssignedExternal = faulty.assigned_to_external
       ? { ...faulty.assigned_to_external }
       : null;
-    const snapStatus = String(faulty.status || '').trim() || 'In Store';
     const snapLocation = String(faulty.location || '').trim();
     const snapTicket = String(faulty.ticket_number || '').trim();
+
+    const installationLocation = String(req.body.installationLocation || '').trim();
+    const finalRepLocation = installationLocation || snapLocation || String(replacement.location || '').trim();
+    const rawMode = String(req.body.faultyAssignmentMode || 'transfer').trim().toLowerCase();
+    const faultyAssignmentMode = ['transfer', 'technician', 'other'].includes(rawMode) ? rawMode : 'transfer';
+    const notifyManager =
+      req.body.notifyManager === true || String(req.body.notifyManager || '').toLowerCase() === 'true';
+    const notifyViewer =
+      req.body.notifyViewer === true || String(req.body.notifyViewer || '').toLowerCase() === 'true';
+    const notifyAdmin =
+      req.body.notifyAdmin === true || String(req.body.notifyAdmin || '').toLowerCase() === 'true';
+    const needGatePass = req.body.needGatePass === true || String(req.body.needGatePass || '').toLowerCase() === 'true';
+    const sendGatePassEmail =
+      req.body.sendGatePassEmail === true || String(req.body.sendGatePassEmail || '').toLowerCase() === 'true';
+    const gatePassOrigin = String(req.body.gatePassOrigin || '').trim();
+    const gatePassDestination = String(req.body.gatePassDestination || '').trim();
+    const gatePassJustification = String(req.body.gatePassJustification || '').trim();
+    const recipientEmailBody = String(req.body.recipientEmail || '').trim();
+    const recipientPhoneBody = String(req.body.recipientPhone || '').trim();
+    const technicianIdBody = String(req.body.technicianId || '').trim();
+    const otherRecipientBody =
+      req.body.otherRecipient && typeof req.body.otherRecipient === 'object' ? req.body.otherRecipient : {};
+
+    let repAssignedTo = snapAssignedTo;
+    let repAssignedExternal = snapAssignedExternal ? { ...snapAssignedExternal } : null;
+
+    if (transferAssignment) {
+      if (!String(finalRepLocation || '').trim()) {
+        return res.status(400).json({
+          message: 'Installation / site location is required when the replacement is issued In Use.'
+        });
+      }
+      if (faultyAssignmentMode === 'technician') {
+        if (!mongoose.Types.ObjectId.isValid(technicianIdBody)) {
+          return res.status(400).json({ message: 'Select a technician for the replacement.' });
+        }
+        const techRow = await User.findById(technicianIdBody).select('_id name email phone').lean();
+        if (!techRow) {
+          return res.status(404).json({ message: 'Technician not found' });
+        }
+        repAssignedTo = techRow._id;
+        repAssignedExternal = null;
+      } else if (faultyAssignmentMode === 'other') {
+        const on = String(otherRecipientBody.name || '').trim();
+        const oe = String(otherRecipientBody.email || '').trim();
+        if (!on) {
+          return res.status(400).json({ message: 'Other recipient name is required for the replacement.' });
+        }
+        if (!oe) {
+          return res.status(400).json({ message: 'Other recipient email is required for the replacement.' });
+        }
+        repAssignedTo = null;
+        repAssignedExternal = {
+          name: on,
+          email: oe,
+          phone: String(otherRecipientBody.phone || '').trim(),
+          note: String(otherRecipientBody.note || '').trim()
+        };
+      }
+
+      const ticketForGate = String(ticketNumber || '').trim() || snapTicket;
+      if (needGatePass) {
+        if (!ticketForGate) {
+          return res.status(400).json({ message: 'Ticket number is required when gate pass is enabled.' });
+        }
+        const passOrigin = String(gatePassOrigin || snapLocation || faulty.location || '').trim();
+        let passDest = String(gatePassDestination || '').trim();
+        if (!passDest && faultyAssignmentMode === 'technician' && repAssignedTo) {
+          const tnm = await User.findById(repAssignedTo).select('name').lean();
+          passDest = String(tnm?.name || '').trim();
+        }
+        if (!passDest && repAssignedExternal?.name) {
+          passDest = String(repAssignedExternal.name).trim();
+        }
+        if (!passOrigin || !passDest) {
+          return res.status(400).json({
+            message: 'Gate pass requires Moving From and Moving To (or a recipient name to use as destination).'
+          });
+        }
+        if (faultyAssignmentMode === 'other') {
+          const ph = String(recipientPhoneBody || repAssignedExternal?.phone || '').trim();
+          if (!ph) {
+            return res.status(400).json({ message: 'Recipient phone is required for external gate pass.' });
+          }
+        }
+      }
+    }
 
     const faultyPrevStatus = faulty.status;
     const faultyPrevCondition = faulty.condition;
@@ -4552,8 +4719,17 @@ router.post('/mark-faulty-with-replacement', protect, admin, async (req, res) =>
     const modelNote = manualPick && !modelMatch
       ? `Manual pick — models differ (faulty model: ${modelFaulty || '—'}; replacement: ${modelReplacement || '—'})`
       : null;
+    const assignmentSummary = transferAssignment
+      ? faultyAssignmentMode === 'technician'
+        ? 'Replacement In Use — assigned to selected technician.'
+        : faultyAssignmentMode === 'other'
+          ? 'Replacement In Use — assigned to external recipient.'
+          : 'Replacement In Use — assignment carried over from faulty unit.'
+      : 'Replacement left In Store (no assignment transfer).';
     const faultyDetails = [
       `Replacement unit: ${replacement.name || 'Asset'} (SN: ${replacement.serial_number || 'N/A'}, ID: ${replacement.uniqueId || 'N/A'})`,
+      assignmentSummary,
+      transferAssignment && finalRepLocation ? `Installation / site: ${finalRepLocation}` : null,
       modelNote,
       note ? `Note: ${note}` : null
     ].filter(Boolean).join(' — ');
@@ -4574,28 +4750,42 @@ router.post('/mark-faulty-with-replacement', protect, admin, async (req, res) =>
     const repPrevCondition = replacement.condition;
 
     replacement.previous_status = repPrevStatus;
-    replacement.assigned_to = snapAssignedTo || null;
-    replacement.assigned_to_external = snapAssignedExternal;
-    replacement.status = snapStatus;
-    replacement.location = snapLocation;
-    if (snapTicket) {
-      replacement.ticket_number = snapTicket;
+    if (transferAssignment) {
+      replacement.assigned_to = repAssignedTo || null;
+      replacement.assigned_to_external = repAssignedExternal;
+      replacement.status = 'In Use';
+      replacement.location = finalRepLocation;
+      const repTicket = String(ticketNumber || '').trim() || snapTicket;
+      if (repTicket) {
+        replacement.ticket_number = repTicket;
+      }
+    } else {
+      replacement.assigned_to = null;
+      replacement.assigned_to_external = null;
+      replacement.status = 'In Store';
     }
 
     const repDetails = [
       `Replaces faulty: ${faulty.name || 'Asset'} (SN: ${faulty.serial_number || 'N/A'}, ID: ${faulty.uniqueId || 'N/A'})`,
+      assignmentSummary,
+      transferAssignment && finalRepLocation ? `Installation / site: ${finalRepLocation}` : null,
       modelNote,
       note ? `Note: ${note}` : null
     ].filter(Boolean).join(' — ');
 
+    const repHistoryLocation = transferAssignment ? finalRepLocation : String(replacement.location || '').trim();
+
+    const replacementTicketForHist = transferAssignment
+      ? String(String(ticketNumber || '').trim() || snapTicket || 'N/A')
+      : String(replacement.ticket_number || ticketNumber || '').trim() || 'N/A';
     appendAssetHistory(replacement, {
       action: 'Issued as replacement for faulty unit',
       req,
-      ticketNumber: snapTicket || ticketNumber || 'N/A',
+      ticketNumber: replacementTicketForHist,
       details: repDetails,
       previousStatus: repPrevStatus,
       previousCondition: repPrevCondition,
-      location: snapLocation
+      location: repHistoryLocation
     });
 
     await replacement.save();
@@ -4605,9 +4795,98 @@ router.post('/mark-faulty-with-replacement', protect, admin, async (req, res) =>
       email: req.user.email,
       role: req.user.role,
       action: 'Faulty replacement',
-      details: `Faulty: ${faulty.name} (${faulty.serial_number || 'N/A'}) → Replacement: ${replacement.name} (${replacement.serial_number || 'N/A'})`,
+      details: `Faulty: ${faulty.name} (${faulty.serial_number || 'N/A'}) → Replacement: ${replacement.name} (${replacement.serial_number || 'N/A'})${transferAssignment ? ` [In Use; mode=${faultyAssignmentMode}]` : ' [In Store]'}`,
       store: faulty.store
     });
+
+    let gatePass = null;
+    let gatePassEmail = { skipped: true, reason: 'Gate pass not requested' };
+    if (transferAssignment) {
+      const repFresh = await Asset.findById(replacement._id)
+        .populate('assigned_to', 'name email phone')
+        .populate('store', 'name parentStore');
+      const storeRecipientOptions = {
+        assignStrictLists: true,
+        includeManagers: notifyManager === true,
+        includeViewers: notifyViewer === true,
+        includeAdmins: notifyAdmin === true
+      };
+      let recipientName = '';
+      let targetEmail = recipientEmailBody.toLowerCase();
+      if (faultyAssignmentMode === 'technician' && repFresh?.assigned_to) {
+        recipientName = String(repFresh.assigned_to.name || '').trim();
+        if (!targetEmail) targetEmail = String(repFresh.assigned_to.email || '').trim().toLowerCase();
+      } else if (faultyAssignmentMode === 'other' && repFresh?.assigned_to_external?.name) {
+        recipientName = String(repFresh.assigned_to_external.name || '').trim();
+        if (!targetEmail) targetEmail = String(repFresh.assigned_to_external.email || '').trim().toLowerCase();
+      } else if (faultyAssignmentMode === 'transfer') {
+        if (repFresh?.assigned_to) {
+          recipientName = String(repFresh.assigned_to.name || '').trim();
+          if (!targetEmail) targetEmail = String(repFresh.assigned_to.email || '').trim().toLowerCase();
+        } else if (repFresh?.assigned_to_external?.name) {
+          recipientName = String(repFresh.assigned_to_external.name || '').trim();
+          if (!targetEmail) targetEmail = String(repFresh.assigned_to_external.email || '').trim().toLowerCase();
+        }
+      }
+      const phoneForPass =
+        faultyAssignmentMode === 'technician'
+          ? String(recipientPhoneBody || repFresh?.assigned_to?.phone || '').trim()
+          : String(recipientPhoneBody || repFresh?.assigned_to_external?.phone || '').trim();
+      const ticketForPass = String(ticketNumber || repFresh.ticket_number || '').trim() || snapTicket;
+
+      if (needGatePass) {
+        const passOrigin = String(gatePassOrigin || snapLocation || faulty.location || '').trim();
+        let passDest = String(gatePassDestination || '').trim();
+        if (!passDest && faultyAssignmentMode === 'technician' && repFresh?.assigned_to) {
+          passDest = String(repFresh.assigned_to.name || '').trim();
+        }
+        if (!passDest && repFresh?.assigned_to_external?.name) {
+          passDest = String(repFresh.assigned_to_external.name).trim();
+        }
+        gatePass = await createAssignmentGatePass({
+          asset: repFresh,
+          allAssets: [repFresh],
+          issuedBy: req.user,
+          recipientName: recipientName || passDest || 'Recipient',
+          recipientEmail: targetEmail,
+          recipientPhone: phoneForPass,
+          recipientCompany:
+            faultyAssignmentMode === 'other' ? String(repFresh?.assigned_to_external?.note || '').trim() : '',
+          ticketNumber: ticketForPass,
+          origin: passOrigin,
+          destination: passDest,
+          justification:
+            String(gatePassJustification || '').trim() || 'Faulty replacement — outbound movement / gate pass'
+        });
+        if (sendGatePassEmail === true && targetEmail) {
+          gatePassEmail = await sendAssignmentGatePassEmail({
+            pass: gatePass,
+            recipientEmail: targetEmail,
+            storeId: repFresh.store || null
+          });
+        } else if (sendGatePassEmail === true && !targetEmail) {
+          gatePassEmail = { skipped: true, reason: 'Recipient email is empty' };
+        }
+      }
+
+      await notifyAssetEvent({
+        asset: repFresh,
+        recipientEmail: targetEmail,
+        subject: 'Faulty replacement — spare issued',
+        storeRecipientOptions,
+        lines: [
+          'A replacement unit was issued after marking the original asset faulty.',
+          recipientName ? `Recipient: ${recipientName}` : null,
+          `Replacement: ${repFresh.name} (SN: ${repFresh.serial_number || 'N/A'}, UID: ${repFresh.uniqueId || 'N/A'})`,
+          `Installation / site: ${finalRepLocation || '—'}`,
+          `Ticket: ${ticketForPass || 'N/A'}`,
+          gatePass?.pass_number ? `Gate pass: ${gatePass.pass_number}` : null,
+          gatePass?.origin ? `From: ${gatePass.origin}` : null,
+          gatePass?.destination ? `To: ${gatePass.destination}` : null,
+          `Faulty unit (now in store): ${faulty.name} (SN: ${faulty.serial_number || 'N/A'})`
+        ]
+      });
+    }
 
     const populated = await Asset.find({ _id: { $in: [faulty._id, replacement._id] } })
       .populate('store')
@@ -4617,7 +4896,10 @@ router.post('/mark-faulty-with-replacement', protect, admin, async (req, res) =>
     return res.json({
       message: 'Faulty recorded and replacement unit updated.',
       faulty: byId.get(String(faulty._id)),
-      replacement: byId.get(String(replacement._id))
+      replacement: byId.get(String(replacement._id)),
+      gatePass: gatePass || null,
+      gatePassEmailSent: gatePassEmail.skipped === false,
+      gatePassEmailSkippedReason: gatePassEmail.skipped ? gatePassEmail.reason : undefined
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });

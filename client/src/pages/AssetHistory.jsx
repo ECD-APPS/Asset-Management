@@ -1,10 +1,27 @@
-import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import { ArrowLeft, Activity, User, AlertCircle } from 'lucide-react';
 
+/** `back` query must stay in-app (relative path) and match the list the user came from. */
+const sanitizeListBackHref = (rawEncoded, kind) => {
+  if (!rawEncoded || typeof rawEncoded !== 'string') return null;
+  let s;
+  try {
+    s = decodeURIComponent(rawEncoded);
+  } catch {
+    return null;
+  }
+  if (!s.startsWith('/') || s.startsWith('//')) return null;
+  if (s.includes('://')) return null;
+  if (kind === 'assets' && /^\/assets(\/|\?|$)/.test(s)) return s;
+  if (kind === 'ppm' && /^\/ppm(\/|\?|$)/.test(s)) return s;
+  return null;
+};
+
 const AssetHistory = () => {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
   const [asset, setAsset] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -29,8 +46,23 @@ const AssetHistory = () => {
     ? [...asset.history].sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt))
     : [];
 
-  const backHref = '/ppm';
-  const backLabel = 'PPM Asset';
+  const from = searchParams.get('from');
+  const rawBack = searchParams.get('back');
+  const { backHref, backLabel } = useMemo(() => {
+    if (from === 'assets') {
+      return {
+        backHref: sanitizeListBackHref(rawBack, 'assets') || '/assets',
+        backLabel: 'All Assets'
+      };
+    }
+    if (from === 'ppm') {
+      return {
+        backHref: sanitizeListBackHref(rawBack, 'ppm') || '/ppm',
+        backLabel: 'PPM Asset'
+      };
+    }
+    return { backHref: '/ppm', backLabel: 'PPM Asset' };
+  }, [from, rawBack]);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">

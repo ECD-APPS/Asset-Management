@@ -1,6 +1,7 @@
 import Chart from 'react-apexcharts';
 import PropTypes from 'prop-types';
 import { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Box,
   CheckCircle,
@@ -273,6 +274,7 @@ const DashboardCharts = ({
 }) => {
   const overview = stats?.overview;
   const growth = stats?.growth;
+  const recurringFaultyByAbs = Array.isArray(stats?.recurringFaultyByAbs) ? stats.recurringFaultyByAbs : [];
   const locations = stats?.locations;
   const products = stats?.products;
   const maintenanceVendors = stats?.maintenanceVendors;
@@ -741,22 +743,86 @@ const DashboardCharts = ({
         </div>
       </section>
     ) : null,
-    growth: (growth || []).length > 0 && showWidget('growthArea') ? (
-      <section className="space-y-4" aria-label="Acquisition trend">
-        <SectionLabel icon={TrendingUp}>Growth</SectionLabel>
-        <div className={chartCardClass}>
-          <span className={chartCardAccent} aria-hidden />
-          <h3 className={`${chartTitleClass} mt-0.5`}>
-            <TrendingUp className="w-5 h-5 text-app-accent shrink-0" />
-            Asset Acquisition Trend (Last 6 Months)
-          </h3>
-          <p className={chartSubtitleClass}>New assets registered over recent months.</p>
-          <div className="h-[300px] w-full">
-            <Chart options={growthOptions} series={growthSeries} type="area" height="100%" />
-          </div>
-        </div>
-      </section>
-    ) : null
+    growth:
+      showWidget('growthArea') && ((growth || []).length > 0 || recurringFaultyByAbs.length > 0) ? (
+        <section className="space-y-4" aria-label="Growth and acquisition">
+          <SectionLabel icon={TrendingUp}>Growth</SectionLabel>
+          {recurringFaultyByAbs.length > 0 ? (
+            <div className={chartCardClass}>
+              <span className={chartCardAccent} aria-hidden />
+              <h3 className={`${chartTitleClass} mt-0.5`}>
+                <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+                Recurring faults by ABS code
+              </h3>
+              <p className={chartSubtitleClass}>
+                Same permanent <strong>ABS</strong> with two or more faulty-related history events in the last ~24 months (hardware may have been swapped — serial/MAC can change while ABS stays the same).
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-app-card bg-app-elevated/20">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="border-b border-app-card bg-app-elevated/40 text-app-muted text-xs uppercase tracking-wide">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">ABS</th>
+                      <th className="px-3 py-2 font-semibold tabular-nums">Faulty events</th>
+                      <th className="px-3 py-2 font-semibold tabular-nums">Asset rows</th>
+                      <th className="px-3 py-2 font-semibold">Last event</th>
+                      <th className="px-3 py-2 font-semibold">Latest row (hint)</th>
+                      <th className="px-3 py-2 font-semibold w-28"> </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-app-card text-app-main">
+                    {recurringFaultyByAbs.map((row) => {
+                      const abs = String(row.abs_code || '').trim();
+                      const qParams = new URLSearchParams();
+                      if (abs) qParams.set('q', abs);
+                      if (selectedMaintenanceVendor && selectedMaintenanceVendor !== 'All') {
+                        qParams.set('maintenance_vendor', selectedMaintenanceVendor);
+                      }
+                      const toAssets = `/assets${qParams.toString() ? `?${qParams.toString()}` : ''}`;
+                      const hint = [row.sampleName, row.sampleModel, row.sampleSerial, row.sampleUniqueId]
+                        .filter(Boolean)
+                        .slice(0, 3)
+                        .join(' · ');
+                      const last = row.lastFaultAt ? new Date(row.lastFaultAt).toLocaleString() : '—';
+                      return (
+                        <tr key={`${abs}-${String(row.lastFaultAt || '')}`} className="hover:bg-app-elevated/30">
+                          <td className="px-3 py-2 font-mono text-xs font-semibold">{abs || '—'}</td>
+                          <td className="px-3 py-2 tabular-nums">{Number(row.faultyEventCount) || 0}</td>
+                          <td className="px-3 py-2 tabular-nums">{Number(row.distinctAssetCount) || 0}</td>
+                          <td className="px-3 py-2 text-xs text-app-muted whitespace-nowrap">{last}</td>
+                          <td className="px-3 py-2 text-xs text-app-muted max-w-[14rem] truncate" title={hint}>
+                            {hint || '—'}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Link
+                              to={toAssets}
+                              className="inline-flex text-xs font-bold text-app-accent hover:underline"
+                            >
+                              View assets
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+          {(growth || []).length > 0 ? (
+            <div className={chartCardClass}>
+              <span className={chartCardAccent} aria-hidden />
+              <h3 className={`${chartTitleClass} mt-0.5`}>
+                <TrendingUp className="w-5 h-5 text-app-accent shrink-0" />
+                Asset Acquisition Trend (Last 6 Months)
+              </h3>
+              <p className={chartSubtitleClass}>New assets registered over recent months.</p>
+              <div className="h-[300px] w-full">
+                <Chart options={growthOptions} series={growthSeries} type="area" height="100%" />
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null
   };
 
   const orderedSectionIds = Array.isArray(analyticsSectionOrder) && analyticsSectionOrder.length > 0

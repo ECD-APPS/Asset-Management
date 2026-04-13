@@ -476,6 +476,55 @@ const Assets = () => {
   const hasNocHint = scopeHints.includes('NOC ASSET') || /\bNOC\b/.test(scopeHints);
   const isScyStoreContext = hasScyHint || (!hasItHint && !hasNocHint && user?.role !== 'Super Admin');
 
+  /** Persist faulty-replacement toggles per user (local only). */
+  const faultyModalPrefsKey = useMemo(
+    () => `faulty_replacement_modal_prefs_v1:${String(user?._id || user?.id || user?.email || 'anon')}`,
+    [user?._id, user?.id, user?.email]
+  );
+  const readFaultyModalPrefs = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(faultyModalPrefsKey);
+      if (!raw) return {};
+      const p = JSON.parse(raw);
+      return p && typeof p === 'object' ? p : {};
+    } catch {
+      return {};
+    }
+  }, [faultyModalPrefsKey]);
+  const persistFaultyModalPrefs = useCallback(
+    (patch) => {
+      try {
+        const cur = readFaultyModalPrefs();
+        localStorage.setItem(faultyModalPrefsKey, JSON.stringify({ ...cur, ...patch }));
+      } catch {
+        // ignore quota / private mode
+      }
+    },
+    [faultyModalPrefsKey, readFaultyModalPrefs]
+  );
+  const mergeFaultyModalSavedToggles = useCallback(
+    (base) => {
+      const p = readFaultyModalPrefs();
+      const needGp = p.needGatePass === true;
+      return {
+        ...base,
+        notifyManager: p.notifyManager === true,
+        notifyViewer: p.notifyViewer === true,
+        notifyAdmin: p.notifyAdmin === true,
+        needGatePass: needGp,
+        sendGatePassEmail: needGp && p.sendGatePassEmail === true
+      };
+    },
+    [readFaultyModalPrefs]
+  );
+  const readSavedIssueReplacementInUse = useCallback(() => {
+    const p = readFaultyModalPrefs();
+    if (Object.prototype.hasOwnProperty.call(p, 'issueReplacementInUse')) {
+      return p.issueReplacementInUse === true;
+    }
+    return true;
+  }, [readFaultyModalPrefs]);
+
   const [assets, setAssets] = useState([]);
   const [stores, setStores] = useState([]);
   const [technicians, setTechnicians] = useState([]); // New: Technicians list
@@ -513,6 +562,33 @@ const Assets = () => {
   const [faultySearchAbs, setFaultySearchAbs] = useState('');
   const [faultySearchQ, setFaultySearchQ] = useState('');
   const [faultyManualPickAnyModel, setFaultyManualPickAnyModel] = useState(false);
+  /** When true, replacement becomes In Use and takes assignee/location/ticket from faulty (like Assign). */
+  const [faultyTransferAssignment, setFaultyTransferAssignment] = useState(true);
+  const [faultyRecipientType, setFaultyRecipientType] = useState('Transfer');
+  const [faultyInstallLocation, setFaultyInstallLocation] = useState('');
+  const [faultyForm, setFaultyForm] = useState({
+    technicianId: '',
+    recipientEmail: '',
+    recipientPhone: '',
+    needGatePass: false,
+    sendGatePassEmail: false,
+    gatePassOrigin: '',
+    gatePassDestination: '',
+    gatePassJustification: '',
+    notifyManager: false,
+    notifyViewer: false,
+    notifyAdmin: false
+  });
+  const [faultyOtherRecipient, setFaultyOtherRecipient] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    note: ''
+  });
+  const [faultyTechSearch, setFaultyTechSearch] = useState('');
+  const [faultyShowTechSuggestions, setFaultyShowTechSuggestions] = useState(false);
+  const [faultyCcPreview, setFaultyCcPreview] = useState(null);
+  const [faultyCcPreviewLoading, setFaultyCcPreviewLoading] = useState(false);
   const [bulkForm, setBulkForm] = useState({
     status: '',
     condition: '',
@@ -975,6 +1051,35 @@ const Assets = () => {
     };
   }, [assigningAsset]);
 
+  useEffect(() => {
+    if (!showFaultyModal || !faultyModalFaultyId) {
+      setFaultyCcPreview(null);
+      setFaultyCcPreviewLoading(false);
+      return undefined;
+    }
+    const row = assets.find((x) => String(x._id) === String(faultyModalFaultyId));
+    const sid = row?.store?._id || row?.store;
+    if (!sid) {
+      setFaultyCcPreview(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setFaultyCcPreviewLoading(true);
+    (async () => {
+      try {
+        const { data } = await api.get(`/stores/${sid}/assign-cc-preview`);
+        if (!cancelled) setFaultyCcPreview(data);
+      } catch {
+        if (!cancelled) setFaultyCcPreview(null);
+      } finally {
+        if (!cancelled) setFaultyCcPreviewLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showFaultyModal, faultyModalFaultyId, assets]);
+
   const showToast = useCallback((message, tone = 'info') => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     setToasts((prev) => [...prev, { id, message: String(message || ''), tone }]);
@@ -1422,6 +1527,23 @@ const Assets = () => {
     setFaultySearchAbs('');
     setFaultySearchQ('');
     setFaultyManualPickAnyModel(false);
+    setFaultyTransferAssignment(readSavedIssueReplacementInUse());
+    setFaultyRecipientType('Transfer');
+    setFaultyOtherRecipient({ name: '', email: '', phone: '', note: '' });
+    setFaultyTechSearch('');
+    setFaultyShowTechSuggestions(false);
+    setFaultyForm(
+      mergeFaultyModalSavedToggles({
+        technicianId: '',
+        recipientEmail: '',
+        recipientPhone: '',
+        gatePassOrigin: '',
+        gatePassDestination: '',
+        gatePassJustification: ''
+      })
+    );
+    setFaultyCcPreview(null);
+    setFaultyCcPreviewLoading(false);
   };
 
   const fetchFaultyReplacementCandidates = useCallback(async ({
@@ -1479,6 +1601,54 @@ const Assets = () => {
     setFaultySearchAbs('');
     setFaultySearchQ('');
     setFaultyManualPickAnyModel(false);
+    setFaultyTransferAssignment(readSavedIssueReplacementInUse());
+    const a = faultySelectionAsset;
+    setFaultyInstallLocation(String(a?.location || '').trim());
+    const hasAssignee = Boolean(a?.assigned_to || (a?.assigned_to_external && String(a.assigned_to_external.name || '').trim()));
+    if (hasAssignee) {
+      setFaultyRecipientType('Transfer');
+    } else {
+      setFaultyRecipientType('Technician');
+    }
+    setFaultyForm(() =>
+      mergeFaultyModalSavedToggles({
+        technicianId: '',
+        recipientEmail: '',
+        recipientPhone: '',
+        gatePassOrigin: String(a?.location || '').trim(),
+        gatePassDestination: '',
+        gatePassJustification: ''
+      })
+    );
+    setFaultyOtherRecipient({ name: '', email: '', phone: '', note: '' });
+    setFaultyTechSearch('');
+    setFaultyShowTechSuggestions(false);
+    if (a?.assigned_to) {
+      const tid = String(a.assigned_to._id || a.assigned_to);
+      const tech = technicians.find((t) => String(t._id) === tid);
+      if (tech) {
+        setFaultyTechSearch(tech.name || '');
+        setFaultyForm((prev) => ({
+          ...prev,
+          technicianId: tid,
+          recipientEmail: tech.email || '',
+          recipientPhone: tech.phone || '',
+          gatePassDestination: tech.name || ''
+        }));
+      }
+    } else if (a?.assigned_to_external?.name) {
+      const ext = a.assigned_to_external;
+      setFaultyOtherRecipient({
+        name: String(ext.name || ''),
+        email: String(ext.email || ''),
+        phone: String(ext.phone || ''),
+        note: String(ext.note || '')
+      });
+      setFaultyForm((prev) => ({
+        ...prev,
+        gatePassDestination: String(ext.name || '')
+      }));
+    }
     setShowFaultyModal(true);
     await fetchFaultyReplacementCandidates({
       faultyId: id,
@@ -1495,21 +1665,106 @@ const Assets = () => {
       alert('Select a replacement asset from the list.');
       return;
     }
+    if (faultyTransferAssignment) {
+      if (!String(faultyInstallLocation || '').trim()) {
+        showToast('Installation / site location is required when the replacement is issued In Use.', 'error');
+        return;
+      }
+      if (faultyRecipientType === 'Technician') {
+        if (!faultyForm.technicianId) {
+          showToast('Select a technician for the replacement.', 'error');
+          return;
+        }
+        if (!String(faultyForm.recipientEmail || '').trim()) {
+          showToast('Enter recipient email for the technician (notifications).', 'error');
+          return;
+        }
+      }
+      if (faultyRecipientType === 'Other') {
+        if (!String(faultyOtherRecipient.name || '').trim()) {
+          showToast('Enter external recipient name.', 'error');
+          return;
+        }
+        if (!String(faultyOtherRecipient.email || '').trim()) {
+          showToast('Enter external recipient email.', 'error');
+          return;
+        }
+      }
+      if (faultyForm.needGatePass) {
+        if (!String(faultyModalTicket || '').trim()) {
+          showToast('Ticket number is required when gate pass is enabled.', 'error');
+          return;
+        }
+        if (!String(faultyForm.gatePassOrigin || '').trim() || !String(faultyForm.gatePassDestination || '').trim()) {
+          showToast('Fill gate pass Moving From and Moving To.', 'error');
+          return;
+        }
+        if (faultyRecipientType === 'Other') {
+          const ph = String(faultyOtherRecipient.phone || faultyForm.recipientPhone || '').trim();
+          if (!ph) {
+            showToast('Recipient phone is required for external gate pass.', 'error');
+            return;
+          }
+        }
+      }
+    }
     setFaultyModalSubmitting(true);
     try {
-      await api.post('/assets/mark-faulty-with-replacement', {
+      const payload = {
         faultyAssetId: faultyModalFaultyId,
         replacementAssetId: faultyModalSelectedId,
         note: faultyModalNote.trim() || undefined,
         ticketNumber: faultyModalTicket.trim() || undefined,
-        manualPick: faultyManualPickAnyModel
-      });
+        manualPick: faultyManualPickAnyModel,
+        transferAssignment: faultyTransferAssignment
+      };
+      if (faultyTransferAssignment) {
+        payload.installationLocation = String(faultyInstallLocation || '').trim();
+        payload.faultyAssignmentMode =
+          faultyRecipientType === 'Technician' ? 'technician' : faultyRecipientType === 'Other' ? 'other' : 'transfer';
+        payload.recipientEmail = String(faultyForm.recipientEmail || '').trim();
+        payload.recipientPhone =
+          faultyRecipientType === 'Technician'
+            ? String(faultyForm.recipientPhone || '').trim()
+            : String(faultyOtherRecipient.phone || faultyForm.recipientPhone || '').trim();
+        payload.notifyManager = Boolean(faultyForm.notifyManager);
+        payload.notifyViewer = Boolean(faultyForm.notifyViewer);
+        payload.notifyAdmin = Boolean(faultyForm.notifyAdmin);
+        payload.needGatePass = Boolean(faultyForm.needGatePass);
+        payload.sendGatePassEmail = Boolean(faultyForm.needGatePass && faultyForm.sendGatePassEmail);
+        payload.gatePassOrigin = String(faultyForm.gatePassOrigin || '').trim();
+        payload.gatePassDestination = String(faultyForm.gatePassDestination || '').trim();
+        payload.gatePassJustification = String(faultyForm.gatePassJustification || '').trim();
+        if (faultyRecipientType === 'Technician') {
+          payload.technicianId = faultyForm.technicianId;
+        }
+        if (faultyRecipientType === 'Other') {
+          payload.otherRecipient = faultyOtherRecipient;
+        }
+      }
+      const res = await api.post('/assets/mark-faulty-with-replacement', payload);
       closeFaultyModal();
       setSelectedIds([]);
       fetchAssets(undefined, { silent: true });
-      alert('Faulty recorded and replacement unit updated. History was logged on both assets.');
+      if (res.data?.gatePass?.pass_number) {
+        const base = `Faulty recorded; replacement issued. Gate pass ${res.data.gatePass.pass_number}`;
+        if (payload.needGatePass && payload.sendGatePassEmail) {
+          if (res.data?.gatePassEmailSent) {
+            showToast(`${base}. Gate pass email sent.`, 'success');
+          } else {
+            showToast(
+              `${base}. Gate pass email not sent${res.data?.gatePassEmailSkippedReason ? ` (${res.data.gatePassEmailSkippedReason})` : ''}.`,
+              'error'
+            );
+          }
+        } else {
+          showToast(base, 'success');
+        }
+      } else {
+        showToast('Faulty recorded and replacement updated. History was logged on both assets.', 'success');
+      }
     } catch (err) {
-      alert(err.response?.data?.message || 'Could not complete faulty replacement');
+      showToast(err.response?.data?.message || 'Could not complete faulty replacement', 'error');
     } finally {
       setFaultyModalSubmitting(false);
     }
@@ -3750,7 +4005,10 @@ const Assets = () => {
           </thead>
           <tbody className="bg-white divide-y divide-slate-100">
             {displayedAssets.map((asset) => (
-              <tr key={asset._id} className={`hover:bg-slate-50 ${asset.isDuplicate ? 'bg-yellow-50' : ''} cursor-pointer`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
+              <tr key={asset._id} className={`hover:bg-slate-50 ${asset.isDuplicate ? 'bg-yellow-50' : ''} cursor-pointer`} onClick={() => {
+                const back = encodeURIComponent(`${location.pathname}${location.search}`);
+                window.open(`/asset/${asset._id}?from=assets&back=${back}`, '_blank');
+              }}>
                 {user?.role !== 'Viewer' && (
                   <td className="px-3 py-2 md:px-4 md:py-4 text-center" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" checked={selectedIds.includes(asset._id)} onChange={() => toggleSelect(asset._id)} />
@@ -3766,7 +4024,10 @@ const Assets = () => {
       {/* Mobile Card View */}
       <div className="md:hidden space-y-4 mb-4 max-h-[min(72vh,calc(100dvh-12rem))] overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]">
         {displayedAssets.map((asset) => (
-          <div key={asset._id} className={`bg-white p-4 rounded-lg shadow-sm border ${asset.isDuplicate ? 'border-yellow-400 bg-yellow-50' : 'border-gray-200'}`} onClick={() => window.open(`/asset/${asset._id}`, '_blank')}>
+          <div key={asset._id} className={`bg-white p-4 rounded-lg shadow-sm border ${asset.isDuplicate ? 'border-yellow-400 bg-yellow-50' : 'border-gray-200'}`} onClick={() => {
+            const back = encodeURIComponent(`${location.pathname}${location.search}`);
+            window.open(`/asset/${asset._id}?from=assets&back=${back}`, '_blank');
+          }}>
             <div className="flex justify-between items-start mb-3">
               <div>
                 <h3 className="font-bold text-gray-900 text-base">{asset.name}</h3>
@@ -5102,12 +5363,12 @@ const Assets = () => {
 
       {showFaultyModal && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex justify-center items-center z-[200] p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
             <div className="p-5 border-b border-gray-200 flex justify-between items-start gap-3">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Mark faulty & choose replacement</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                  The selected unit is set to <strong>Faulty</strong> and returned to store inventory. By default, only{' '}
+                  The faulty unit is saved as <strong>Faulty</strong> with status <strong>In Store</strong> (unassigned). The spare you pick can either take over the assignment as <strong>In Use</strong> (same behaviour as Assign Asset) or stay <strong>In Store</strong> — use the option below. By default, only{' '}
                   <strong>In Store</strong> units with the <strong>same model number</strong> are listed. Use serial / MAC / ABS / quick search to narrow results, or search any in-store model when you need a manual pick.
                 </p>
               </div>
@@ -5152,6 +5413,370 @@ const Assets = () => {
                       className="w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm"
                       placeholder="Ticket / work order"
                     />
+                  </div>
+                  <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 space-y-3">
+                    <div className="text-sm font-semibold text-gray-900">Replacement status & assignment (Assign-style)</div>
+                    <p className="text-xs text-gray-600">
+                      Same fields as <strong>Assign Asset</strong>: who receives the spare, installation site, optional email copies, and gate pass / movement when you need an outbound pass.
+                    </p>
+                    {(() => {
+                      const live = assets.find((x) => String(x._id) === String(faultyModalFaultyId));
+                      const nm =
+                        live?.assigned_to?.name ||
+                        live?.assigned_to_external?.name ||
+                        (String(live?.status || '').trim().toLowerCase() === 'in use' ? 'In Use (no named assignee on record)' : null);
+                      return nm ? (
+                        <p className="text-xs text-indigo-900">
+                          Current faulty unit: <strong>{nm}</strong>
+                          {live?.assigned_to_external?.email ? ` — ${live.assigned_to_external.email}` : ''}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-600">Faulty row has no named assignee — choose technician or external recipient below if you issue the replacement In Use.</p>
+                      );
+                    })()}
+                    <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 rounded border-gray-300"
+                        checked={faultyTransferAssignment}
+                        onChange={(e) => {
+                          const v = e.target.checked;
+                          setFaultyTransferAssignment(v);
+                          persistFaultyModalPrefs({ issueReplacementInUse: v });
+                        }}
+                      />
+                      <span>
+                        <strong>Issue replacement In Use</strong> (not only in store). When enabled, set assignment, installation location, notifications, and optional gate pass below.
+                      </span>
+                    </label>
+                    {!faultyTransferAssignment ? (
+                      <p className="text-xs text-gray-600 pl-6 border-l-2 border-gray-300">
+                        Replacement stays <strong>In Store</strong> with no assignee; location and ticket on the spare are not overwritten.
+                      </p>
+                    ) : (
+                      <div className="space-y-4 border-t border-indigo-200/60 pt-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">Who receives the replacement?</label>
+                          <div className="mt-1 flex flex-wrap gap-4">
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="radio"
+                                name="faultyRecipientType"
+                                checked={faultyRecipientType === 'Transfer'}
+                                onChange={() => setFaultyRecipientType('Transfer')}
+                              />
+                              Carry over from faulty
+                            </label>
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="radio"
+                                name="faultyRecipientType"
+                                checked={faultyRecipientType === 'Technician'}
+                                onChange={() => setFaultyRecipientType('Technician')}
+                              />
+                              Technician
+                            </label>
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="radio"
+                                name="faultyRecipientType"
+                                checked={faultyRecipientType === 'Other'}
+                                onChange={() => setFaultyRecipientType('Other')}
+                              />
+                              Other person
+                            </label>
+                          </div>
+                        </div>
+                        {faultyRecipientType === 'Technician' && (
+                          <div className="relative">
+                            <label className="block text-sm font-medium text-gray-700">Technician</label>
+                            <input
+                              type="text"
+                              value={faultyTechSearch}
+                              onChange={(e) => {
+                                setFaultyTechSearch(e.target.value);
+                                setFaultyShowTechSuggestions(true);
+                                setFaultyForm((prev) => ({ ...prev, technicianId: '' }));
+                              }}
+                              onFocus={() => setFaultyShowTechSuggestions(true)}
+                              placeholder="Search by name, username or phone"
+                              className="mt-1 block w-full rounded-md border border-gray-300 p-2 text-sm shadow-sm"
+                            />
+                            {faultyShowTechSuggestions && (
+                              <div className="absolute z-30 mt-1 max-h-40 w-full overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
+                                {technicians
+                                  .filter(
+                                    (t) =>
+                                      (t.name || '').toLowerCase().includes(faultyTechSearch.toLowerCase()) ||
+                                      (t.username || '').toLowerCase().includes(faultyTechSearch.toLowerCase()) ||
+                                      (t.phone || '').includes(faultyTechSearch)
+                                  )
+                                  .map((tech) => (
+                                    <div
+                                      key={tech._id}
+                                      role="button"
+                                      tabIndex={0}
+                                      onClick={() => {
+                                        setFaultyForm((prev) => ({
+                                          ...prev,
+                                          technicianId: tech._id,
+                                          recipientEmail: tech.email || '',
+                                          recipientPhone: tech.phone || '',
+                                          gatePassDestination: prev.gatePassDestination || tech.name || ''
+                                        }));
+                                        setFaultyTechSearch(tech.name);
+                                        setFaultyShowTechSuggestions(false);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+                                      }}
+                                      className="cursor-pointer border-b p-2 last:border-b-0 hover:bg-amber-50"
+                                    >
+                                      <div className="font-medium">{tech.name}</div>
+                                      <div className="text-xs text-gray-500">
+                                        {tech.username} {tech.phone ? `| ${tech.phone}` : ''}
+                                      </div>
+                                    </div>
+                                  ))}
+                              </div>
+                            )}
+                            {faultyForm.technicianId ? (
+                              <div className="mt-1 text-xs text-green-600">Technician selected</div>
+                            ) : null}
+                          </div>
+                        )}
+                        {faultyRecipientType === 'Other' && (
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="sm:col-span-2">
+                              <label className="block text-xs font-medium text-gray-600">Recipient name</label>
+                              <input
+                                type="text"
+                                value={faultyOtherRecipient.name}
+                                onChange={(e) => {
+                                  const next = e.target.value;
+                                  setFaultyOtherRecipient({ ...faultyOtherRecipient, name: next });
+                                  setFaultyForm((prev) => ({ ...prev, gatePassDestination: prev.gatePassDestination || next }));
+                                }}
+                                className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600">Email</label>
+                              <input
+                                type="email"
+                                value={faultyOtherRecipient.email}
+                                onChange={(e) => setFaultyOtherRecipient({ ...faultyOtherRecipient, email: e.target.value })}
+                                className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600">Phone</label>
+                              <input
+                                type="text"
+                                value={faultyOtherRecipient.phone}
+                                onChange={(e) => setFaultyOtherRecipient({ ...faultyOtherRecipient, phone: e.target.value })}
+                                className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                              />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className="block text-xs font-medium text-gray-600">Note</label>
+                              <input
+                                type="text"
+                                value={faultyOtherRecipient.note}
+                                onChange={(e) => setFaultyOtherRecipient({ ...faultyOtherRecipient, note: e.target.value })}
+                                className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                              />
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700" htmlFor="faulty-install-loc">
+                            Installation / site location <span className="text-rose-600">*</span>
+                          </label>
+                          <input
+                            id="faulty-install-loc"
+                            type="text"
+                            value={faultyInstallLocation}
+                            onChange={(e) => setFaultyInstallLocation(e.target.value)}
+                            placeholder="e.g. Server room, office, site"
+                            className="mt-1 w-full rounded-md border border-gray-300 p-2 text-sm shadow-sm"
+                          />
+                        </div>
+                        {faultyRecipientType === 'Technician' && (
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600">Recipient email</label>
+                              <input
+                                type="email"
+                                value={faultyForm.recipientEmail}
+                                onChange={(e) => setFaultyForm({ ...faultyForm, recipientEmail: e.target.value })}
+                                className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                              />
+                            </div>
+                            {faultyForm.needGatePass ? (
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600">Recipient phone (gate pass)</label>
+                                <input
+                                  type="text"
+                                  value={faultyForm.recipientPhone}
+                                  onChange={(e) => setFaultyForm({ ...faultyForm, recipientPhone: e.target.value })}
+                                  className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                        <div className="rounded-lg border border-slate-200 bg-white/80 p-3 space-y-2">
+                          <p className="text-xs font-medium text-gray-700">Optional: copy notification email</p>
+                          <p className="text-[11px] text-slate-500">
+                            Your tick choices here, gate pass Yes/No, send-by-email, and “issue replacement In Use” are saved automatically for your account on this browser until you change them.
+                          </p>
+                          {faultyCcPreviewLoading ? <p className="text-xs text-slate-500">Loading lists…</p> : null}
+                          <label className="flex items-start gap-2 text-sm text-gray-800">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5"
+                              checked={faultyForm.notifyManager === true}
+                              onChange={(e) => {
+                                const v = e.target.checked;
+                                setFaultyForm({ ...faultyForm, notifyManager: v });
+                                persistFaultyModalPrefs({ notifyManager: v });
+                              }}
+                            />
+                            <span>
+                              <span className="font-medium">Notify manager list</span>
+                              <AssignCcEmailHint
+                                emails={faultyCcPreview?.portalManager}
+                                emptyMessage="No manager emails in Portal for this store."
+                              />
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 text-sm text-gray-800">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5"
+                              checked={faultyForm.notifyViewer === true}
+                              onChange={(e) => {
+                                const v = e.target.checked;
+                                setFaultyForm({ ...faultyForm, notifyViewer: v });
+                                persistFaultyModalPrefs({ notifyViewer: v });
+                              }}
+                            />
+                            <span>
+                              <span className="font-medium">Notify viewer list</span>
+                              <AssignCcEmailHint
+                                emails={faultyCcPreview?.portalViewer}
+                                emptyMessage="No viewer emails in Portal for this store."
+                              />
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 text-sm text-gray-800">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5"
+                              checked={faultyForm.notifyAdmin === true}
+                              onChange={(e) => {
+                                const v = e.target.checked;
+                                setFaultyForm({ ...faultyForm, notifyAdmin: v });
+                                persistFaultyModalPrefs({ notifyAdmin: v });
+                              }}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="font-medium">Notify admin list</span>
+                              <AssignCcEmailHint
+                                emails={faultyCcPreview?.portalAdmin}
+                                emptyMessage="None configured in Portal for this store."
+                              />
+                              <p className="ml-6 mt-1 text-xs text-slate-500">Admin / Super Admin accounts for this store</p>
+                              <AssignCcEmailHint
+                                emails={faultyCcPreview?.platformAdminAccounts}
+                                emptyMessage="No Admin or Super Admin accounts linked to this store."
+                              />
+                            </span>
+                          </label>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">Need gate pass? (asset movement)</label>
+                          <div className="mt-1 flex flex-wrap gap-4">
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="radio"
+                                name="faultyNeedGatePass"
+                                checked={faultyForm.needGatePass === true}
+                                onChange={() => {
+                                  setFaultyForm({ ...faultyForm, needGatePass: true });
+                                  persistFaultyModalPrefs({ needGatePass: true });
+                                }}
+                              />
+                              Yes
+                            </label>
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="radio"
+                                name="faultyNeedGatePass"
+                                checked={faultyForm.needGatePass === false}
+                                onChange={() => {
+                                  setFaultyForm({ ...faultyForm, needGatePass: false, sendGatePassEmail: false });
+                                  persistFaultyModalPrefs({ needGatePass: false, sendGatePassEmail: false });
+                                }}
+                              />
+                              No
+                            </label>
+                          </div>
+                        </div>
+                        {faultyForm.needGatePass && (
+                          <div className="rounded-lg border border-amber-100 bg-amber-50/50 p-3 space-y-2">
+                            <label className="flex items-center gap-2 text-sm text-gray-800">
+                              <input
+                                type="checkbox"
+                                checked={faultyForm.sendGatePassEmail === true}
+                                onChange={(e) => {
+                                  const v = e.target.checked;
+                                  setFaultyForm({ ...faultyForm, sendGatePassEmail: v });
+                                  persistFaultyModalPrefs({ sendGatePassEmail: v });
+                                }}
+                              />
+                              Send gate pass PDF by email to recipient
+                            </label>
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600">Moving from</label>
+                                <input
+                                  type="text"
+                                  value={faultyForm.gatePassOrigin}
+                                  onChange={(e) => setFaultyForm({ ...faultyForm, gatePassOrigin: e.target.value })}
+                                  className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600">Moving to</label>
+                                <input
+                                  type="text"
+                                  value={faultyForm.gatePassDestination}
+                                  onChange={(e) => setFaultyForm({ ...faultyForm, gatePassDestination: e.target.value })}
+                                  className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                                />
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-medium text-gray-600">Justification</label>
+                                <input
+                                  type="text"
+                                  value={faultyForm.gatePassJustification}
+                                  onChange={(e) =>
+                                    setFaultyForm({ ...faultyForm, gatePassJustification: e.target.value })
+                                  }
+                                  placeholder="Reason for movement"
+                                  className="mt-0.5 w-full rounded-md border border-gray-300 p-2 text-sm"
+                                />
+                              </div>
+                            </div>
+                            <p className="text-xs text-amber-900">
+                              Ticket field above is <strong>required</strong> when gate pass is Yes (same as Assign).
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3 space-y-3">
                     <div className="text-sm font-semibold text-gray-800">Find replacement</div>

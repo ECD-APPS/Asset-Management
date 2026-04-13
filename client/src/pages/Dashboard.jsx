@@ -121,7 +121,8 @@ const normalizeStats = (raw) => {
     maintenanceVendorAssets:
       src.maintenanceVendorAssets && typeof src.maintenanceVendorAssets === 'object'
         ? src.maintenanceVendorAssets
-        : { Siemens: 0, G42: 0, Other: 0 }
+        : { Siemens: 0, G42: 0, Other: 0 },
+    recurringFaultyByAbs: Array.isArray(src.recurringFaultyByAbs) ? src.recurringFaultyByAbs : []
   };
 };
 
@@ -1093,7 +1094,7 @@ const Dashboard = () => {
                   { key: 'siemensPie', label: 'Siemens' },
                   { key: 'g42Pie', label: 'G42' },
                   { key: 'maintenanceMixPie', label: 'Maintenance Vendor Mix' },
-                  { key: 'growthArea', label: 'Asset Acquisition Trend' }
+                  { key: 'growthArea', label: 'Growth (recurring ABS faults + acquisition trend)' }
                 ].map((item) => {
                   const disabled = !isScyDashboard && ['siemensPie', 'g42Pie', 'maintenanceMixPie'].includes(item.key);
                   return (

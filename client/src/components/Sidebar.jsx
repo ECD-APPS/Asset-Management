@@ -289,7 +289,7 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
       beforeToggle: ackPpmAlerts,
       subItems: [
         {
-          name: 'PPM',
+          name: 'PPM Asset',
           path: '/ppm',
           uniqueKey: 'ppm-main',
           roles: ['Admin', 'Viewer', 'Technician', 'Manager'],
