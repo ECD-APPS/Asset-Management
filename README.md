@@ -6,6 +6,8 @@ This guide is for production deployment using IP addresses only (no domain).
 For single-machine setup, use `README_LOCAL.md`.
 For step-by-step server installation, use `README_SERVER_INSTALL.md`.
 
+**Application features (login → all modules):** see **`APPLICATION_GUIDE.md`**.
+
 App baseline:
 - Auth is HTTP-only cookie based (no JWT token auth).
 - Backups/restores use **Percona Backup for MongoDB (PBM)** from the API (`pbm` CLI in `Dockerfile.app` / app host; set `PBM_MONGODB_URI`). Operator guide: **`HOW_TO_BACKUP_DATABASE.md`**. See also `DEPLOY.md` and `MASTER_GEMINI_INSTRUCTIONS*.md`.

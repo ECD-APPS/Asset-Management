@@ -3,6 +3,15 @@ const Store = require('../models/Store');
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 
+/**
+ * Canonical bootstrap users (emails + seed passwords) are a contract for labs, smoke tests, and first login.
+ * Do not remove or replace these accounts without an explicit project decision — update APPLICATION_GUIDE.md
+ * and .cursor/rules/expo-default-accounts.mdc in the same change if emails ever change.
+ *
+ * Emails: superadmin@expo.com, scy@expo.com, it@expo.com, noc@expo.com
+ * Plain defaults: see resolveSuperAdminPlainPassword() and defaultAdmins[] below; override superadmin via
+ * DEFAULT_SUPERADMIN_PASSWORD in server/.env only (never commit real production secrets).
+ */
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Only overwrite stored passwords when startup explicitly requests it (ENFORCE_DEFAULT_ACCOUNTS=true). */
