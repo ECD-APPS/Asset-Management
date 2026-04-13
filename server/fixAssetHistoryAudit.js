@@ -99,6 +99,8 @@ run()
     console.error('Backfill failed:', error.message);
     try {
       await mongoose.disconnect();
-    } catch {}
+    } catch {
+      /* ignore disconnect errors after failure */
+    }
     process.exit(1);
   });

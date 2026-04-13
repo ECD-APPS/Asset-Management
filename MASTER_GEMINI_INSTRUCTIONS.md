@@ -30,7 +30,7 @@ Environment:
 - Stack: monorepo — server/ (Express + Mongoose), client/ (Vite + React 18)
 - Local development (developer laptop): from repo root run `npm run dev` (API + Vite; client often http://localhost:5173, API often :5000 per .env)
 - Production dependency install: prefer root `npm ci`, then `npm ci --omit=dev --prefix server`, then `cd client && npm ci && npm run build` (or `npm run build:prod` from root per package.json)
-- MongoDB tools required on DB VM: mongodump and mongorestore
+- **Percona Backup for MongoDB (PBM):** `pbm-agent` + storage on **db-vm** (MongoDB hosts); `pbm` CLI + **`PBM_MONGODB_URI`** on **app-vm** (or Docker `app` image). See https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html
 
 Rules you MUST follow:
 1) Give commands only for Linux bash.
@@ -39,6 +39,7 @@ Rules you MUST follow:
 4) Always show safe checks before destructive actions.
 5) Keep existing user accounts unchanged:
    - superadmin@expo.com / superadmin123
+   - scy@expo.com / admin123
    - it@expo.com / admin123
    - noc@expo.com / admin123
 6) Prefer project scripts when available:
@@ -48,7 +49,7 @@ Rules you MUST follow:
 7) If a command needs sudo, include sudo explicitly.
 8) At the end, provide a verification checklist with curl commands.
 9) Authentication is cookie-based only (httpOnly session cookie), not JWT.
-10) Backup/restore workflow must use mongodump/mongorestore archive files.
+10) Backup/restore workflow must use **PBM** (`pbm backup` / `pbm restore`); the app stores snapshot metadata and calls the `pbm` CLI. No `mongodump`/`mongorestore` archive upload path.
 11) Keep existing endpoints for compatibility unless migration is complete.
 12) Health checks: `/healthz`, `/readyz`, and aliases `/api/healthz`, `/api/readyz` on the app.
 13) Before tagging or promoting a build, the codebase should pass `npm run verify:release` from repo root; use `VERIFY_RELEASE_STRICT=1 npm run verify:release` for full `npm ci` in server + client. Operators should follow DEPLOY_CHECKLIST.md for env alignment (CORS_ORIGIN vs browser URL, COOKIE_SECURE, TRUST_PROXY_HOPS, MONGO_URI).
@@ -145,6 +146,14 @@ db.createUser({
 EOF
 ```
 
+### 3.1.1 Percona Backup for MongoDB (PBM)
+
+**db-vm:** Install and enable **`pbm-agent`** on each `mongod` data node, configure **remote storage** for backups (S3-compatible, MinIO, or filesystem per your policy), and create the **PBM user** with the roles from Percona’s “Create the PBM user” procedure: https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html  
+
+**app-vm:** Install the **`pbm` CLI** (Debian/Ubuntu package `percona-backup-mongodb` — same family as `Dockerfile.app`) so the Node process can run `pbm backup` / `pbm restore`. Set **`PBM_MONGODB_URI`** in `server/.env` to the PBM user connection string (include `replicaSet=` if applicable).
+
+Without PBM configured, `POST /api/system/backups/create` and scheduled backups will fail until `PBM_MONGODB_URI` and cluster-side PBM are correct.
+
 ---
 
 ### 3.2 App VM (`10.96.133.197`)
@@ -200,6 +209,20 @@ PUBLIC_BASE_URL=http://10.96.133.197:5000
 # PUBLIC_APP_URL=http://10.96.133.181
 # CLIENT_URL=http://10.96.133.181
 SEED_DEFAULTS=false
+# Percona Backup for MongoDB (required for API/scheduled backups):
+# PBM_MONGODB_URI=mongodb://pbm:CHANGE_ME_PBM_PASSWORD@10.96.133.213:27017/?authSource=admin&replicaSet=expo-rs0
+# PBM_BACKUP_WAIT_TIME=4h
+```
+
+Install **`pbm`** on the app host (bare metal; skip if you only use Docker, which bundles it):
+
+```bash
+sudo apt install -y wget gnupg2 lsb-release
+wget -qO /tmp/percona-release.deb https://repo.percona.com/apt/percona-release_latest.generic_all.deb
+sudo dpkg -i /tmp/percona-release.deb && rm -f /tmp/percona-release.deb
+sudo percona-release enable pbm release
+sudo apt update && sudo apt install -y percona-backup-mongodb
+command -v pbm && pbm version
 ```
 
 Install + start backend:
@@ -410,7 +433,7 @@ Use only if deploying container stack on a single host (see also `DEPLOY.md`).
 
 Stack files:
 - `docker-compose.yml` + `docker-compose.prod.yml` (merged by `deploy.sh`)
-- `Dockerfile.app` — Node **20-bookworm-slim**, production server deps, MongoDB **database tools** for backups
+- `Dockerfile.app` — Node **20-bookworm-slim**, production server deps, **`pbm`** (Percona Backup for MongoDB CLI)
 - `Dockerfile.web` — multi-stage Vite build + **nginx stable-alpine**
 - `nginx.docker.conf` — SPA + `/api/` proxy to app; **`/healthz`** and **`/readyz`** forwarded to the API
 
@@ -433,6 +456,7 @@ cd /opt/Expo
 cp .env.docker.example .env.docker
 # edit .env.docker and set real secrets (required):
 # COOKIE_SECRET, EMAIL_CONFIG_ENCRYPTION_KEY, EMERGENCY_RESET_SECRET
+# Optional but required for backups from the app container: PBM_MONGODB_URI (see .env.docker.example)
 make validate-prod
 ./deploy.sh safe-release
 ./deploy.sh ps
@@ -466,6 +490,7 @@ curl -fsS http://localhost:3000/healthz        # via nginx → app /healthz
 | API entry | `server/server.js` |
 | Asset routes + `/stats` | `server/routes/assets.js` |
 | Tool routes (assign, issue, return, import/export) | `server/routes/tools.js` |
+| Asset categories + nested products API | `server/routes/assetCategories.js` → `/api/asset-categories` |
 | Tool model (externalHolder, history) | `server/models/Tool.js` |
 | Spare part routes (issue with fromAssignModal, import/export) | `server/routes/spareParts.js` |
 | Spare part model (history recipient fields) | `server/models/SparePart.js` |
@@ -479,6 +504,7 @@ curl -fsS http://localhost:3000/healthz        # via nginx → app /healthz
 | Release verify script | `scripts/verify-release.sh`, root `npm run verify:release` |
 | Env + deploy checklist | `DEPLOY_CHECKLIST.md` |
 | Deploy helpers | `scripts/*.sh`, root `package.json` scripts |
+| PBM backup integration | `server/utils/pbmClient.js`, `server/utils/backupRecovery.js` |
 
 **Local dev:** repo root `npm run install:all` (first time), then `npm run dev`.
 

@@ -1,6 +1,6 @@
 {
   "name": "expo-stores-app",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
   "description": "Root script to manage build and deployment for Expo Stores",
   "scripts": {
@@ -16,7 +16,8 @@
     "start:prod:3000": "PORT=3000 NODE_ENV=production node server/server.js",
     "check:regression": "bash scripts/regression-checklist.sh",
     "check:smoke": "bash scripts/api-smoke-dev.sh",
-    "verify:release": "bash scripts/verify-release.sh"
+    "verify:release": "bash scripts/verify-release.sh",
+    "lint:server": "npm run lint --prefix server"
   },
   "engines": {
     "node": ">=20.0.0 <21"

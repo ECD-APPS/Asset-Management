@@ -732,7 +732,9 @@ const Setup = () => {
                     if (!ok) return;
                     try {
                       setBackupLoading(true);
-                      const res = await api.post('/system/backup');
+                      const res = await api.post('/system/backup', {}, {
+                        timeout: 4 * 60 * 60 * 1000
+                      });
                       alert(res.data?.message || 'Backup completed successfully.');
                     } catch (e) {
                       console.error(e);

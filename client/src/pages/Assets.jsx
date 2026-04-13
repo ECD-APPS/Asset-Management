@@ -5,6 +5,11 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import LoadingLogo from '../components/LoadingLogo';
 import { downloadBlob, downloadMultiSheetAoAXlsx, jsonHeadersRowsToXlsxBuffer } from '../utils/excelExport';
+import {
+  buildAssignModalPrefsKey,
+  mergeAssignModalSavedTogglesWithKey,
+  persistAssignModalPrefsPatch
+} from '../utils/assignModalPrefs';
 
 const flattenProducts = (list, level = 0, ancestors = []) => {
   const out = [];
@@ -524,6 +529,16 @@ const Assets = () => {
     }
     return true;
   }, [readFaultyModalPrefs]);
+
+  const assignModalPrefsKey = useMemo(() => buildAssignModalPrefsKey(user), [user]);
+  const persistAssignModalPrefs = useCallback(
+    (patch) => persistAssignModalPrefsPatch(assignModalPrefsKey, patch),
+    [assignModalPrefsKey]
+  );
+  const mergeAssignModalSavedToggles = useCallback(
+    (base) => mergeAssignModalSavedTogglesWithKey(assignModalPrefsKey, base),
+    [assignModalPrefsKey]
+  );
 
   const [assets, setAssets] = useState([]);
   const [stores, setStores] = useState([]);
@@ -2375,22 +2390,24 @@ const Assets = () => {
   const handleAssignClick = (asset, ids = [asset?._id]) => {
     setAssigningAsset(asset);
     setAssigningAssetIds((ids || []).filter(Boolean));
-    setAssignForm({
-      technicianId: '',
-      recipientEmail: '',
-      recipientPhone: '',
-      assignQuantity: Math.max(1, Number.parseInt(asset?.quantity, 10) > 0 ? Number.parseInt(asset?.quantity, 10) : 1),
-      installationLocation: asset?.location || '',
-      ticketNumber: '',
-      needGatePass: false,
-      sendGatePassEmail: false,
-      gatePassOrigin: asset?.location || '',
-      gatePassDestination: '',
-      gatePassJustification: '',
-      notifyManager: false,
-      notifyViewer: false,
-      notifyAdmin: false
-    });
+    setAssignForm(
+      mergeAssignModalSavedToggles({
+        technicianId: '',
+        recipientEmail: '',
+        recipientPhone: '',
+        assignQuantity: Math.max(1, Number.parseInt(asset?.quantity, 10) > 0 ? Number.parseInt(asset?.quantity, 10) : 1),
+        installationLocation: asset?.location || '',
+        ticketNumber: '',
+        needGatePass: false,
+        sendGatePassEmail: false,
+        gatePassOrigin: asset?.location || '',
+        gatePassDestination: '',
+        gatePassJustification: '',
+        notifyManager: false,
+        notifyViewer: false,
+        notifyAdmin: false
+      })
+    );
     setAssignInstallationLocationError('');
     setTechSearch('');
     setShowTechSuggestions(false);
@@ -4450,7 +4467,11 @@ const Assets = () => {
                           type="checkbox"
                           className="mt-0.5"
                           checked={assignForm.notifyManager === true}
-                          onChange={(e) => setAssignForm({ ...assignForm, notifyManager: e.target.checked })}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            setAssignForm((prev) => ({ ...prev, notifyManager: v }));
+                            persistAssignModalPrefs({ notifyManager: v });
+                          }}
                         />
                         <span>
                           <span className="font-medium">Notify manager list</span>
@@ -4467,7 +4488,11 @@ const Assets = () => {
                           type="checkbox"
                           className="mt-0.5"
                           checked={assignForm.notifyViewer === true}
-                          onChange={(e) => setAssignForm({ ...assignForm, notifyViewer: e.target.checked })}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            setAssignForm((prev) => ({ ...prev, notifyViewer: v }));
+                            persistAssignModalPrefs({ notifyViewer: v });
+                          }}
                         />
                         <span>
                           <span className="font-medium">Notify viewer list</span>
@@ -4484,7 +4509,11 @@ const Assets = () => {
                           type="checkbox"
                           className="mt-0.5"
                           checked={assignForm.notifyAdmin === true}
-                          onChange={(e) => setAssignForm({ ...assignForm, notifyAdmin: e.target.checked })}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            setAssignForm((prev) => ({ ...prev, notifyAdmin: v }));
+                            persistAssignModalPrefs({ notifyAdmin: v });
+                          }}
                         />
                         <span className="min-w-0 flex-1">
                           <span className="font-medium">Notify admin list</span>
@@ -4511,7 +4540,10 @@ const Assets = () => {
                           type="radio"
                           name="needGatePass"
                           checked={assignForm.needGatePass === true}
-                          onChange={() => setAssignForm({ ...assignForm, needGatePass: true })}
+                          onChange={() => {
+                            setAssignForm((prev) => ({ ...prev, needGatePass: true }));
+                            persistAssignModalPrefs({ needGatePass: true });
+                          }}
                         />
                         Yes
                       </label>
@@ -4520,7 +4552,10 @@ const Assets = () => {
                           type="radio"
                           name="needGatePass"
                           checked={assignForm.needGatePass === false}
-                          onChange={() => setAssignForm({ ...assignForm, needGatePass: false, sendGatePassEmail: false })}
+                          onChange={() => {
+                            setAssignForm((prev) => ({ ...prev, needGatePass: false, sendGatePassEmail: false }));
+                            persistAssignModalPrefs({ needGatePass: false, sendGatePassEmail: false });
+                          }}
                         />
                         No
                       </label>
@@ -4534,7 +4569,11 @@ const Assets = () => {
                           <input
                             type="checkbox"
                             checked={assignForm.sendGatePassEmail === true}
-                            onChange={(e) => setAssignForm({ ...assignForm, sendGatePassEmail: e.target.checked })}
+                            onChange={(e) => {
+                              const v = e.target.checked;
+                              setAssignForm((prev) => ({ ...prev, sendGatePassEmail: v }));
+                              persistAssignModalPrefs({ sendGatePassEmail: v });
+                            }}
                           />
                           Send gate pass by email to recipient
                         </label>

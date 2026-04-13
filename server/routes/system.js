@@ -20,19 +20,30 @@ const EmailLog = require('../models/EmailLog');
 const BackupArtifact = require('../models/BackupArtifact');
 const BackupLog = require('../models/BackupLog');
 const bcrypt = require('bcryptjs');
+const unzipper = require('unzipper');
+const serverPackageJson = require('../package.json');
 const { backupDatabase } = require('../backup_db');
 const Setting = require('../models/Setting');
 const { sendStoreEmail, buildTransport } = require('../utils/storeEmail');
 const { encryptEmailSecret, decryptEmailSecret } = require('../utils/emailSecretCrypto');
+const { gatherRuntimeHealth } = require('../utils/opsHealth');
+const {
+  isLocalMongodumpEnabled,
+  createLocalGzipArchive,
+  mongodumpCliAvailable
+} = require('../utils/localMongodump');
+const { runMongorestoreFromArchive, mongorestoreCliAvailable } = require('../utils/localMongorestore');
 const {
   BACKUP_ROOT,
+  isPbmConfigured,
   createBackupArtifact,
   restoreBackupArtifact,
-  restoreFromUploadedZip,
   createBackupLog,
   validateBackupZipForRestore,
   acquireMaintenanceLock,
-  releaseMaintenanceLock
+  releaseMaintenanceLock,
+  readPbmBackupNameFromArtifact,
+  deleteSnapshot
 } = require('../utils/backupRecovery');
 const ResilienceJob = require('../models/ResilienceJob');
 const {
@@ -353,7 +364,7 @@ const parseMajorVersion = (version) => {
 };
 
 const buildVersionCompatibility = (sourceVersion) => {
-  const currentVersion = appPackage.version || 'unknown';
+  const currentVersion = serverPackageJson.version || 'unknown';
   const sourceMajor = parseMajorVersion(sourceVersion);
   const currentMajor = parseMajorVersion(currentVersion);
   if (sourceMajor === null || currentMajor === null) {
@@ -529,8 +540,13 @@ const heavyOpsLimiter = rateLimit({
 
 // Branding logo upload (disk storage)
 const brandingDir = path.join(__dirname, '../uploads/branding');
-if (!fs.existsSync(brandingDir)) {
+const ensureBrandingDirSync = () => {
   fs.mkdirSync(brandingDir, { recursive: true });
+};
+try {
+  ensureBrandingDirSync();
+} catch (e) {
+  console.error('[system] Could not create branding upload directory:', brandingDir, e?.message || e);
 }
 const allowedMime = new Set([
   'image/png',
@@ -541,7 +557,14 @@ const allowedMime = new Set([
 ]);
 const createBrandingUpload = (prefix) => {
   const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, brandingDir),
+    destination: (req, file, cb) => {
+      try {
+        ensureBrandingDirSync();
+        cb(null, brandingDir);
+      } catch (err) {
+        cb(err);
+      }
+    },
     filename: (req, file, cb) => {
       const ts = Date.now();
       const extMatch = file.originalname.match(/\.[a-zA-Z0-9]+$/);
@@ -828,7 +851,9 @@ router.post('/logo', protect, superAdmin, brandingUpload.single('logo'), async (
           fs.unlinkSync(path.join(brandingDir, toDelete));
         }
       }
-    } catch {}
+    } catch {
+      /* best-effort cleanup of old logos */
+    }
 
     const relativeUrl = `/uploads/branding/${req.file.filename}`;
     await Setting.updateOne(
@@ -858,7 +883,9 @@ router.post('/gatepass-logo', protect, superAdmin, gatePassLogoUpload.single('lo
         const toDelete = files.shift();
         if (toDelete) fs.unlinkSync(path.join(brandingDir, toDelete));
       }
-    } catch {}
+    } catch {
+      /* best-effort cleanup of old gate pass logos */
+    }
 
     const relativeUrl = `/uploads/branding/${req.file.filename}`;
     await Setting.updateOne(
@@ -993,8 +1020,8 @@ router.put('/maintenance-vendors', protect, admin, async (req, res) => {
 // @access  Private/Admin
 router.post('/backup', protect, admin, heavyOpsLimiter, async (req, res) => {
   try {
-    const backupDir = await backupDatabase();
-    res.json({ message: 'Backup completed successfully', path: backupDir });
+    const snapshotName = await backupDatabase();
+    res.json({ message: 'PBM backup completed successfully', snapshotName });
   } catch (error) {
     console.error('Error running backup:', error);
     res.status(500).json({ message: error.message || 'Backup failed' });
@@ -1005,16 +1032,9 @@ router.post('/backup', protect, admin, heavyOpsLimiter, async (req, res) => {
 // @route   GET /api/system/backup-file
 // @access  Private/SuperAdmin
 router.get('/backup-file', protect, superAdmin, async (req, res) => {
-  try {
-    const archivePath = await backupDatabase();
-    const fileName = path.basename(archivePath);
-    res.setHeader('Content-Type', 'application/gzip');
-    res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-    res.download(archivePath, fileName);
-  } catch (error) {
-    console.error('Error generating backup file:', error);
-    res.status(500).json({ message: error.message || 'Failed to generate backup file' });
-  }
+  return res.status(501).json({
+    message: 'Direct download backups are not used with Percona Backup for MongoDB. Create a snapshot from Backup & Restore (POST /api/system/backups/create); data is stored in your PBM remote storage.'
+  });
 });
 
 // @desc    Create backup artifact (zip) and store metadata
@@ -1049,9 +1069,64 @@ router.get('/backups', protect, superAdmin, async (req, res) => {
   try {
     const limit = Math.min(Number.parseInt(String(req.query.limit || '100'), 10) || 100, 500);
     const backups = await BackupArtifact.find({}).sort({ createdAt: -1 }).limit(limit).lean();
-    res.json(backups);
+    const [dumpCli, restoreCli] = await Promise.all([mongodumpCliAvailable(), mongorestoreCliAvailable()]);
+    res.json({
+      backups,
+      pbmConfigured: isPbmConfigured(),
+      localMongodumpEnabled: isLocalMongodumpEnabled(),
+      mongodumpAvailable: dumpCli,
+      mongorestoreAvailable: restoreCli
+    });
   } catch (error) {
     res.status(500).json({ message: error.message || 'Failed to list backups' });
+  }
+});
+
+// @desc    Logical full backup on disk (mongodump .gz) — copy file to USB; no cloud
+// @route   POST /api/system/backups/local-mongodump
+// @access  Private/SuperAdmin
+router.post('/backups/local-mongodump', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
+  try {
+    if (!isBackupV3Enabled()) {
+      return res.status(503).json({ message: 'Backup flow is disabled (BACKUP_V3_ENABLED=false).' });
+    }
+    if (!isLocalMongodumpEnabled()) {
+      return res.status(403).json({
+        message:
+          'Local mongodump export is off for this server. Set ENABLE_LOCAL_MONGODUMP=true in server/.env (always required in production), install MongoDB Database Tools (mongodump), restart, then retry.'
+      });
+    }
+    const { filePath, fileName, sizeBytes } = await createLocalGzipArchive();
+    const artifact = await BackupArtifact.create({
+      name: `Local full backup ${new Date().toISOString()}`,
+      fileName,
+      filePath,
+      sizeBytes,
+      backupType: 'Full',
+      appVersion: serverPackageJson.version || 'unknown',
+      status: 'ready',
+      trigger: 'manual',
+      metadata: {
+        backupTool: 'mongodump_archive',
+        note: 'On-disk logical backup. Download from the list, then copy the file to a USB drive. Restore with mongorestore against a compatible MongoDB.'
+      },
+      createdBy: req.user?._id || null
+    });
+    await ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Local mongodump backup',
+      details: `Created ${fileName} (${sizeBytes} bytes)`,
+      store: req.activeStore
+    });
+    res.status(201).json({
+      message:
+        'Local backup file created on the server. Use Download on this row in the table, then copy the file to your USB drive.',
+      backup: artifact
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Local backup failed' });
   }
 });
 
@@ -1062,6 +1137,11 @@ router.get('/backups/:id/download', protect, superAdmin, validateBackupIdParam, 
   try {
     const backup = await BackupArtifact.findById(req.params.id).lean();
     if (!backup) return res.status(404).json({ message: 'Backup not found' });
+    if (String(backup?.metadata?.backupTool || '') === 'pbm') {
+      return res.status(400).json({
+        message: 'PBM snapshots are kept in remote backup storage. Use Restore in the portal or the pbm CLI; there is no file download for this row.'
+      });
+    }
     if (!backup.filePath || !fs.existsSync(backup.filePath)) {
       return res.status(404).json({ message: 'Backup file does not exist on server' });
     }
@@ -1078,6 +1158,12 @@ router.delete('/backups/:id', protect, superAdmin, heavyOpsLimiter, validateBack
   try {
     const backup = await BackupArtifact.findById(req.params.id);
     if (!backup) return res.status(404).json({ message: 'Backup not found' });
+    if (String(backup?.metadata?.backupTool || '') === 'pbm') {
+      const pbmName = readPbmBackupNameFromArtifact(backup);
+      if (pbmName) {
+        await deleteSnapshot(pbmName);
+      }
+    }
     if (backup.filePath && fs.existsSync(backup.filePath)) {
       await fs.promises.unlink(backup.filePath);
     }
@@ -1142,20 +1228,43 @@ router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, han
   if (!req.file) {
     return res.status(400).json({ message: 'Backup file is required' });
   }
+  let lockAcquired = false;
   try {
     if (!isBackupV3Enabled()) {
-      return res.status(503).json({ message: 'Enterprise restore flow is disabled (BACKUP_V3_ENABLED=false).' });
+      return res.status(503).json({ message: 'Backup flow is disabled (BACKUP_V3_ENABLED=false).' });
     }
-    const checksum = await computeChecksum(req.file.path);
-    await writeUploadChecksum({
-      checksum,
-      fileName: req.file.originalname || req.file.filename,
-      sizeBytes: req.file.size || 0
+    if (!isLocalMongodumpEnabled()) {
+      return res.status(403).json({
+        message:
+          'Restore from an uploaded .archive.gz is disabled. Set ENABLE_LOCAL_MONGODUMP=true on the server (same flag as local USB backups), install mongorestore, restart, or use PBM restore from the snapshot list.'
+      });
+    }
+    await acquireMaintenanceLock({ reason: 'mongorestore_upload', actor: req.user });
+    lockAcquired = true;
+    const useDrop = String(process.env.LOCAL_MONGORESTORE_DROP || '').toLowerCase() === 'true';
+    const result = await runMongorestoreFromArchive(req.file.path, { drop: useDrop });
+    await releaseMaintenanceLock({ note: 'mongorestore_upload_complete' });
+    lockAcquired = false;
+    res.json({
+      message:
+        'Database restore from archive finished. Ask everyone to refresh the browser; restart the Node server if anything still looks wrong.',
+      result
     });
-    const result = await restoreFromUploadedZip({ zipPath: req.file.path, user: req.user });
-    return res.json({ message: 'System restore completed successfully', checksum, result });
+    void ActivityLog.create({
+      user: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      action: 'Mongorestore from upload',
+      details: `Archive restored (${useDrop ? 'with --drop' : 'merge mode'}). ${result.note || ''}`,
+      store: req.activeStore
+    }).catch(() => {});
   } catch (error) {
-    return res.status(500).json({ message: error.message || 'Restore failed' });
+    if (lockAcquired) {
+      await releaseMaintenanceLock({ note: `mongorestore_failed: ${error.message || String(error)}` }).catch(() => {});
+    }
+    if (!res.headersSent) {
+      res.status(500).json({ message: error.message || 'Restore from upload failed' });
+    }
   } finally {
     await cleanupUploadedBackupFile(req.file);
   }
@@ -1169,11 +1278,9 @@ router.post('/backups/upload-dry-run', protect, superAdmin, heavyOpsLimiter, han
     return res.status(400).json({ message: 'Backup file is required' });
   }
   try {
-    const checksum = await computeChecksum(req.file.path);
-    const report = await validateBackupZipForRestore(req.file.path, checksum);
-    return res.json({ message: 'Dry-run validation completed', checksum, report });
-  } catch (error) {
-    return res.status(400).json({ message: error.message || 'Dry-run validation failed' });
+    return res.status(410).json({
+      message: 'Upload backup validation is not used with PBM. Use the snapshot list in the portal.'
+    });
   } finally {
     await cleanupUploadedBackupFile(req.file);
   }
@@ -1187,13 +1294,9 @@ router.post('/backups/validate-upload', protect, superAdmin, heavyOpsLimiter, ha
     return res.status(400).json({ message: 'Backup file is required' });
   }
   try {
-    const report = await validateBackupZipForRestore(req.file.path, '');
-    return res.json({
-      message: report.ok ? 'Backup validation completed' : 'Backup validation failed',
-      report
+    return res.status(410).json({
+      message: 'Upload backup validation is not used with PBM. Use the snapshot list in the portal.'
     });
-  } catch (error) {
-    return res.status(400).json({ message: error.message || 'Failed to validate backup file' });
   } finally {
     await cleanupUploadedBackupFile(req.file);
   }
@@ -1294,11 +1397,9 @@ router.post('/restore-from-file', protect, superAdmin, heavyOpsLimiter, handleUp
   }
 
   try {
-    const result = await restoreFromUploadedZip({ zipPath: req.file.path, user: req.user });
-    res.json({ message: 'Restore completed successfully', result });
-  } catch (error) {
-    console.error('Error restoring from backup file:', error);
-    res.status(500).json({ message: error.message || 'Failed to restore from backup file' });
+    return res.status(410).json({
+      message: 'File-based restore is disabled with PBM. Restore from a registered snapshot instead.'
+    });
   } finally {
     await cleanupUploadedBackupFile(req.file);
   }
@@ -2080,6 +2181,18 @@ router.get('/resilience/readiness', protect, superAdmin, async (req, res) => {
     res.json(readiness);
   } catch (error) {
     res.status(500).json({ message: error.message || 'Failed to load backup readiness' });
+  }
+});
+
+// @desc    Single JSON snapshot for ops dashboards (DB, disk, PBM, Prometheus, memory)
+// @route   GET /api/system/operations-status
+// @access  Private/SuperAdmin
+router.get('/operations-status', protect, superAdmin, async (req, res) => {
+  try {
+    const payload = await gatherRuntimeHealth({ getResilienceStatus });
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to load operations status' });
   }
 });
 

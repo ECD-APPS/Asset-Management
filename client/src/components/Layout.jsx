@@ -198,6 +198,8 @@ const Layout = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [dashboardVendorOptions, setDashboardVendorOptions] = useState(DEFAULT_DASHBOARD_VENDOR_OPTIONS);
+  /** Immediate tab highlight while search params catch up (pairs with dashboard stats cache). */
+  const [dashboardVendorPressed, setDashboardVendorPressed] = useState(null);
 
   const scopeHints = useMemo(
     () =>
@@ -436,7 +438,22 @@ const Layout = () => {
     return v;
   }, [searchParams, dashboardVendorOptions]);
 
+  useEffect(() => {
+    if (dashboardVendorPressed == null) return;
+    if (dashboardVendorPressed === headerDashboardVendor) {
+      setDashboardVendorPressed(null);
+    }
+  }, [dashboardVendorPressed, headerDashboardVendor]);
+
+  useEffect(() => {
+    if (!isDashboardHome) setDashboardVendorPressed(null);
+  }, [isDashboardHome]);
+
+  const isDashboardVendorTabActive = (vendor) =>
+    dashboardVendorPressed != null ? dashboardVendorPressed === vendor : headerDashboardVendor === vendor;
+
   const setHeaderDashboardVendor = (vendor) => {
+    setDashboardVendorPressed(vendor);
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -545,7 +562,7 @@ const Layout = () => {
                 <p className="text-[10px] font-bold uppercase tracking-wide text-white/70 mb-1.5">Vendor scope</p>
                 <div className="flex gap-1 overflow-x-auto pb-0.5">
                   {dashboardVendorOptions.map((vendor) => {
-                    const active = headerDashboardVendor === vendor;
+                    const active = isDashboardVendorTabActive(vendor);
                     return (
                       <button
                         key={vendor}
@@ -584,7 +601,7 @@ const Layout = () => {
                     aria-label="Dashboard maintenance vendor filter"
                   >
                     {dashboardVendorOptions.map((vendor) => {
-                      const active = headerDashboardVendor === vendor;
+                      const active = isDashboardVendorTabActive(vendor);
                       return (
                         <button
                           key={vendor}

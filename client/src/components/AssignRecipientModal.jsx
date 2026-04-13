@@ -1,5 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
+import { useAuth } from '../context/AuthContext';
+import {
+  buildAssignModalPrefsKey,
+  mergeAssignModalSavedTogglesWithKey,
+  persistAssignModalPrefsPatch
+} from '../utils/assignModalPrefs';
 
 const CcEmailSub = ({ emails, emptyMessage }) => {
   const list = Array.isArray(emails) ? emails.filter(Boolean) : [];
@@ -44,6 +50,13 @@ export default function AssignRecipientModal({
   onSubmit,
   assignCcStoreId = ''
 }) {
+  const { user } = useAuth();
+  const assignPrefsKey = useMemo(() => buildAssignModalPrefsKey(user), [user]);
+  const persistAssignPrefs = useCallback(
+    (patch) => persistAssignModalPrefsPatch(assignPrefsKey, patch),
+    [assignPrefsKey]
+  );
+
   const [recipientType, setRecipientType] = useState('Technician');
   const [assignForm, setAssignForm] = useState(() => defaultAssignForm(1, 1, ''));
   const [otherRecipient, setOtherRecipient] = useState(defaultOtherRecipient);
@@ -58,12 +71,17 @@ export default function AssignRecipientModal({
   useEffect(() => {
     if (!open) return;
     setRecipientType('Technician');
-    setAssignForm(defaultAssignForm(maxQ, defaultQuantity, defaultInstallationLocation));
+    setAssignForm(
+      mergeAssignModalSavedTogglesWithKey(
+        assignPrefsKey,
+        defaultAssignForm(maxQ, defaultQuantity, defaultInstallationLocation)
+      )
+    );
     setOtherRecipient(defaultOtherRecipient());
     setTechSearch('');
     setShowTechSuggestions(false);
     setInstallError('');
-  }, [open, maxQ, defaultQuantity, defaultInstallationLocation]);
+  }, [open, maxQ, defaultQuantity, defaultInstallationLocation, assignPrefsKey]);
 
   useEffect(() => {
     if (!open || !assignCcStoreId) {
@@ -402,7 +420,11 @@ export default function AssignRecipientModal({
                       type="checkbox"
                       className="mt-0.5"
                       checked={assignForm.notifyManager === true}
-                      onChange={(e) => setAssignForm({ ...assignForm, notifyManager: e.target.checked })}
+                      onChange={(e) => {
+                        const v = e.target.checked;
+                        setAssignForm((prev) => ({ ...prev, notifyManager: v }));
+                        persistAssignPrefs({ notifyManager: v });
+                      }}
                     />
                     <span className="min-w-0 flex-1">
                       <span className="font-medium">Notify manager list</span>
@@ -419,7 +441,11 @@ export default function AssignRecipientModal({
                       type="checkbox"
                       className="mt-0.5"
                       checked={assignForm.notifyViewer === true}
-                      onChange={(e) => setAssignForm({ ...assignForm, notifyViewer: e.target.checked })}
+                      onChange={(e) => {
+                        const v = e.target.checked;
+                        setAssignForm((prev) => ({ ...prev, notifyViewer: v }));
+                        persistAssignPrefs({ notifyViewer: v });
+                      }}
                     />
                     <span className="min-w-0 flex-1">
                       <span className="font-medium">Notify viewer list</span>
@@ -436,7 +462,11 @@ export default function AssignRecipientModal({
                       type="checkbox"
                       className="mt-0.5"
                       checked={assignForm.notifyAdmin === true}
-                      onChange={(e) => setAssignForm({ ...assignForm, notifyAdmin: e.target.checked })}
+                      onChange={(e) => {
+                        const v = e.target.checked;
+                        setAssignForm((prev) => ({ ...prev, notifyAdmin: v }));
+                        persistAssignPrefs({ notifyAdmin: v });
+                      }}
                     />
                     <span className="min-w-0 flex-1">
                       <span className="font-medium">Notify admin list</span>
@@ -463,7 +493,10 @@ export default function AssignRecipientModal({
                       type="radio"
                       name="assignNeedGatePass"
                       checked={assignForm.needGatePass === true}
-                      onChange={() => setAssignForm({ ...assignForm, needGatePass: true })}
+                      onChange={() => {
+                        setAssignForm((prev) => ({ ...prev, needGatePass: true }));
+                        persistAssignPrefs({ needGatePass: true });
+                      }}
                     />
                     Yes
                   </label>
@@ -472,9 +505,10 @@ export default function AssignRecipientModal({
                       type="radio"
                       name="assignNeedGatePass"
                       checked={assignForm.needGatePass === false}
-                      onChange={() =>
-                        setAssignForm({ ...assignForm, needGatePass: false, sendGatePassEmail: false })
-                      }
+                      onChange={() => {
+                        setAssignForm((prev) => ({ ...prev, needGatePass: false, sendGatePassEmail: false }));
+                        persistAssignPrefs({ needGatePass: false, sendGatePassEmail: false });
+                      }}
                     />
                     No
                   </label>
@@ -488,7 +522,11 @@ export default function AssignRecipientModal({
                       <input
                         type="checkbox"
                         checked={assignForm.sendGatePassEmail === true}
-                        onChange={(e) => setAssignForm({ ...assignForm, sendGatePassEmail: e.target.checked })}
+                        onChange={(e) => {
+                          const v = e.target.checked;
+                          setAssignForm((prev) => ({ ...prev, sendGatePassEmail: v }));
+                          persistAssignPrefs({ sendGatePassEmail: v });
+                        }}
                       />
                       Send gate pass by email to recipient
                     </label>

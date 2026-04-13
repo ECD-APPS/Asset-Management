@@ -20,8 +20,10 @@ if [[ "${VERIFY_RELEASE_STRICT:-}" == "1" ]]; then
   npm run build
   echo "==> STRICT mode: client ESLint"
   npm run lint --prefix client
+  echo "==> STRICT mode: server ESLint"
+  npm run lint --prefix server
   echo "==> STRICT mode: server route sanity"
-  (cd server && node -e "require('./routes/auth'); require('./routes/tools'); require('./routes/spareParts'); console.log('server routes ok')")
+  node scripts/load-server-routes.js
 else
   echo "==> default mode: server + client npm install, client build + lint + server route sanity"
   echo "    (If server install fails with ENOTEMPTY/EBUSY, remove server/node_modules and retry.)"
@@ -29,7 +31,9 @@ else
   npm install --prefix client --no-audit --no-fund
   npm run build --prefix client
   npm run lint --prefix client
-  (cd server && node -e "require('./routes/auth'); require('./routes/tools'); require('./routes/spareParts'); console.log('server routes ok')")
+  echo "==> default mode: server ESLint"
+  npm run lint --prefix server
+  node scripts/load-server-routes.js
 fi
 
 echo

@@ -4,7 +4,7 @@ This runbook covers first-time setup, regular deploys, and quick troubleshooting
 
 Current app behavior this runbook assumes:
 - Authentication is HTTP-only cookie based (no JWT tokens).
-- Database backup/restore uses `mongodump`/`mongorestore` archive flow.
+- Database backup/restore uses **Percona Backup for MongoDB (PBM)** (`pbm` in the app image; configure **`PBM_MONGODB_URI`** and cluster-side agents per [PBM initial setup](https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html)).
 
 For **Gemini-style paste prompts** alongside Docker, see **`MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`** (single host) or **`MASTER_GEMINI_INSTRUCTIONS.md`** (3-tier VMs).
 
@@ -73,7 +73,7 @@ Important:
 ./deploy.sh safe-release
 ```
 
-This runs prechecks, creates a pre-deploy `mongodump` backup artifact when the app container is already running, deploys, then verifies API + web health endpoints.
+This runs prechecks, attempts a pre-deploy **PBM full snapshot** when the app container is already running (requires a working **`PBM_MONGODB_URI`** and PBM on MongoDB), deploys, then verifies API + web health endpoints.
 
 ### Option B: Makefile
 

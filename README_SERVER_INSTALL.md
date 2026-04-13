@@ -10,7 +10,7 @@ Management network (`10.96.133.160/28`, VLAN 1746) remains isolated for admin ac
 
 Auth/backup baseline for this guide:
 - Auth is HTTP-only cookie based (no JWT token flow).
-- Backup/restore uses MongoDB tools (`mongodump` and `mongorestore`).
+- Backup/restore uses **Percona Backup for MongoDB (PBM)** via the API (`pbm` on the app host / container and **`PBM_MONGODB_URI`**).
 
 ## IP-Only Access Rule
 
@@ -227,12 +227,13 @@ cd /opt/Expo
 APP_DIR=/opt/Expo WEB_ROOT=/var/www/expo/client NGINX_SITE=/etc/nginx/sites-available/expo HEALTH_URL=http://127.0.0.1/healthz ./scripts/deploy-web-safe.sh
 ```
 
-## 9) Backup and Restore (mongodump/mongorestore)
+## 9) Backup and Restore (Percona Backup for MongoDB)
 
-Use the system backup endpoints from an authenticated Super Admin session.  
-Upload/download artifact format is MongoDB archive (`.archive.gz`).
+**Prerequisites:** Replica set (already required for shadow/PITR), `pbm-agent` on MongoDB nodes, remote storage configured in PBM, a **PBM user** on the cluster, and **`PBM_MONGODB_URI`** set in the app environment (`server/.env` on the app VM or `.env.docker` for Compose). Official flow: [PBM initial setup](https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html).
 
-Create a backup artifact:
+The API triggers `pbm backup --wait` / `pbm restore --wait`. Snapshot bytes live in PBM storage (S3, MinIO, filesystem, etc.), not as a single browser download.
+
+Create a full snapshot (Super Admin session cookie):
 
 ```bash
 curl -sS -X POST http://127.0.0.1:5000/api/system/backups/create \
@@ -241,11 +242,13 @@ curl -sS -X POST http://127.0.0.1:5000/api/system/backups/create \
   --data '{"backupType":"Full","trigger":"manual"}'
 ```
 
-Restore from uploaded archive:
+Restore a snapshot by id (same session):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:5000/api/system/backups/upload-restore \
-  -b "<cookie_file_or_sid>" \
-  -F "backup=@/path/to/backup.archive.gz"
+curl -sS -X POST "http://127.0.0.1:5000/api/system/backups/<BACKUP_ARTIFACT_ID>/restore" \
+  -H "Content-Type: application/json" \
+  -b "<cookie_file_or_sid>"
 ```
+
+**Note:** Upload-based archive restore is disabled; use the portal snapshot list or `pbm` on the database hosts for advanced operations.
 

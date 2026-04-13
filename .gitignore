@@ -27,6 +27,10 @@ yarn-error.log*
 # Editor
 .vscode/
 .idea/
+.cursor/
+
+# Nested copy under repo root (e.g. local tools; may contain .env)
+Expo/
 
 # Environment Variables (IMPORTANT: Do not track secrets)
 .env
@@ -56,3 +60,4 @@ server/storage/runtime/
 server/storage/oplog-archive/
 server/storage/tmp/
 server/storage/tmp-backups/
+server/storage/local-mongodumps/

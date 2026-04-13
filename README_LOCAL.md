@@ -2,13 +2,15 @@
 
 Before packaging or copying this folder to another PC, run **`npm run verify:release`** from the repo root and read **`DEPLOY_CHECKLIST.md`**.
 
+**No public internet on the server?** Use **`OFFLINE_AIRGAP_DEPLOYMENT.md`** for a phased copy/build procedure and env checks.
+
 For **copy-paste Linux deploy commands in Google Gemini**, use **`MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`** (this topology) or **`MASTER_GEMINI_INSTRUCTIONS.md`** for separate app/web/db VMs.
 
 Use this guide when running the full stack on one Linux machine (no k3s).
 
 App baseline for local/single-server:
 - Auth is HTTP-only cookie based (no JWT token auth).
-- Backups/restores use `mongodump` and `mongorestore` archive flow.
+- Backups/restores use **Percona Backup for MongoDB (PBM)**. Configure `pbm-agent` + storage on MongoDB hosts and set **`PBM_MONGODB_URI`** on the Node app (see `server/.env.vm.example`, `MASTER_GEMINI_INSTRUCTIONS_MINIMAL.md`).
 
 ## Prerequisites
 

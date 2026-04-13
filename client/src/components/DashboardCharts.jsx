@@ -1,6 +1,6 @@
 import Chart from 'react-apexcharts';
 import PropTypes from 'prop-types';
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Box,
@@ -849,4 +849,4 @@ DashboardCharts.propTypes = {
   chartWidgets: PropTypes.object
 };
 
-export default DashboardCharts;
+export default memo(DashboardCharts);

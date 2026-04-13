@@ -186,12 +186,53 @@ const startCommandJournaling = () => {
 };
 
 const createImmutableManifestForArtifact = async (artifact) => {
-  if (!artifact?.filePath || !fs.existsSync(artifact.filePath)) return null;
+  if (!artifact) return null;
   const created = artifact.createdAt ? new Date(artifact.createdAt) : new Date();
   const y = String(created.getUTCFullYear());
   const m = String(created.getUTCMonth() + 1).padStart(2, '0');
   const immutableDir = path.join(IMMUTABLE_ROOT, y, m);
   await ensureDir(immutableDir);
+
+  const isPbm = String(artifact?.metadata?.backupTool || '') === 'pbm';
+  if (isPbm) {
+    const pbmName = String(artifact?.metadata?.pbmBackupName || '').trim();
+    if (!pbmName || !artifact?.filePath || !fs.existsSync(artifact.filePath)) return null;
+    const checksum = await computeChecksum(artifact.filePath);
+    const safeName = pbmName.replace(/[^\w.-]+/g, '_');
+    const immutableFileName = `pbm-${safeName}-${checksum.slice(0, 12)}.manifest.json`;
+    const immutablePath = path.join(immutableDir, immutableFileName);
+    const previousBackupId = String(artifact?.metadata?.chain?.previousBackupId || '');
+    const previousChecksumSha256 = String(artifact?.metadata?.chain?.previousChecksumSha256 || '');
+    const manifest = {
+      manifestVersion: Number(artifact?.metadata?.manifestVersion || 1),
+      backupTool: 'pbm',
+      backupId: String(artifact._id || ''),
+      fileName: artifact.fileName,
+      pbmBackupName: pbmName,
+      checksum,
+      chain: {
+        previousBackupId: previousBackupId || null,
+        previousChecksumSha256: previousChecksumSha256 || null
+      },
+      compatibility: artifact?.metadata?.compatibility || {},
+      immutablePath,
+      createdAt: new Date().toISOString()
+    };
+    await fs.promises.writeFile(immutablePath, JSON.stringify(manifest, null, 2), 'utf8');
+    await BackupArtifact.updateOne(
+      { _id: artifact._id },
+      { $set: { 'metadata.immutable': manifest } }
+    );
+    await appendJournalEntry({
+      opType: 'snapshot',
+      collectionName: 'backupartifacts',
+      documentId: String(artifact._id || ''),
+      metadata: manifest
+    });
+    return manifest;
+  }
+
+  if (!artifact?.filePath || !fs.existsSync(artifact.filePath)) return null;
   const checksum = await computeChecksum(artifact.filePath);
   const immutableFileName = `${path.basename(artifact.fileName, '.zip')}-${checksum.slice(0, 12)}.zip`;
   const immutablePath = path.join(immutableDir, immutableFileName);
@@ -596,36 +637,74 @@ const loadCollectionsFromZip = async (zipPath) => {
 const verifyLatestBackupRestore = async () => {
   const latest = await BackupArtifact.findOne({ status: 'ready' }).sort({ createdAt: -1 }).lean();
   if (!latest) throw new Error('No backup available for verification.');
-  const grouped = await loadCollectionsFromZip(latest.filePath);
-  const tmpDbName = `${getDbName()}_verify_${Date.now()}`;
-  const tempDb = mongoose.connection.client.db(tmpDbName);
   let status = 'passed';
   let details = 'Verification passed.';
   const summary = {};
-  try {
-    for (const [name, docs] of grouped.entries()) {
-      const c = tempDb.collection(name);
-      if (docs.length > 0) await c.insertMany(docs, { ordered: false });
-      summary[name] = docs.length;
-    }
-    const storeCount = await tempDb.collection('stores').countDocuments({});
-    const assetCount = await tempDb.collection('assets').countDocuments({});
-    const invalidAssetStoreRefs = await tempDb.collection('assets').countDocuments({
-      store: { $exists: true, $ne: null, $nin: await tempDb.collection('stores').distinct('_id') }
-    });
-    summary.storeCount = storeCount;
-    summary.assetCount = assetCount;
-    summary.invalidAssetStoreRefs = invalidAssetStoreRefs;
-    if (invalidAssetStoreRefs > 0) {
+
+  if (String(latest?.metadata?.backupTool || '') === 'pbm') {
+    const pbmName = String(latest?.metadata?.pbmBackupName || '').trim();
+    if (!pbmName) throw new Error('Latest PBM backup is missing snapshot name.');
+    try {
+      const { describeBackupJson } = require('./pbmClient');
+      const desc = await describeBackupJson(pbmName);
+      summary.pbmBackupName = pbmName;
+      summary.pbmStatus = desc?.status;
+      summary.pbmType = desc?.type;
+      summary.pbmSize = desc?.size;
+      if (String(desc?.status || '').toLowerCase() !== 'done') {
+        status = 'failed';
+        details = `PBM snapshot ${pbmName} is not in done state (${desc?.status || 'unknown'}).`;
+      }
+    } catch (error) {
       status = 'failed';
-      details = `Found ${invalidAssetStoreRefs} assets with invalid store references in verification run.`;
+      details = error.message || String(error);
     }
-  } catch (error) {
-    status = 'failed';
-    details = error.message || String(error);
-  } finally {
-    await mongoose.connection.client.db(tmpDbName).dropDatabase().catch(() => {});
+    if (status === 'passed') {
+      const db = mongoose.connection.db;
+      const storeCount = await db.collection('stores').countDocuments({});
+      const assetCount = await db.collection('assets').countDocuments({});
+      const invalidAssetStoreRefs = await db.collection('assets').countDocuments({
+        store: { $exists: true, $ne: null, $nin: await db.collection('stores').distinct('_id') }
+      });
+      summary.storeCount = storeCount;
+      summary.assetCount = assetCount;
+      summary.invalidAssetStoreRefs = invalidAssetStoreRefs;
+      summary.mode = 'pbm-live-integrity';
+      if (invalidAssetStoreRefs > 0) {
+        status = 'failed';
+        details = `Live DB check: ${invalidAssetStoreRefs} assets have invalid store references.`;
+      }
+    }
+  } else {
+    const grouped = await loadCollectionsFromZip(latest.filePath);
+    const tmpDbName = `${getDbName()}_verify_${Date.now()}`;
+    const tempDb = mongoose.connection.client.db(tmpDbName);
+    try {
+      for (const [name, docs] of grouped.entries()) {
+        const c = tempDb.collection(name);
+        if (docs.length > 0) await c.insertMany(docs, { ordered: false });
+        summary[name] = docs.length;
+      }
+      const storeCount = await tempDb.collection('stores').countDocuments({});
+      const assetCount = await tempDb.collection('assets').countDocuments({});
+      const invalidAssetStoreRefs = await tempDb.collection('assets').countDocuments({
+        store: { $exists: true, $ne: null, $nin: await tempDb.collection('stores').distinct('_id') }
+      });
+      summary.storeCount = storeCount;
+      summary.assetCount = assetCount;
+      summary.invalidAssetStoreRefs = invalidAssetStoreRefs;
+      if (invalidAssetStoreRefs > 0) {
+        status = 'failed';
+        details = `Found ${invalidAssetStoreRefs} assets with invalid store references in verification run.`;
+      }
+    } catch (error) {
+      status = 'failed';
+      details = error.message || String(error);
+    } finally {
+      await mongoose.connection.client.db(tmpDbName).dropDatabase().catch(() => {});
+    }
   }
+
   const record = await ResilienceVerification.create({
     backupId: latest._id,
     backupName: latest.fileName,
@@ -656,15 +735,32 @@ const auditBackupChain = async () => {
   const backups = await BackupArtifact.find({ status: 'ready' }).sort({ createdAt: 1 }).lean();
   let ok = true;
   const issues = [];
+  const { snapshotExistsAndDone } = require('./pbmClient');
   for (let i = 0; i < backups.length; i += 1) {
     const current = backups[i];
-    if (!current?.filePath || !fs.existsSync(current.filePath)) {
-      ok = false;
-      issues.push(`Missing backup file for ${current?.fileName || current?._id}`);
-      continue;
+    const isPbm = String(current?.metadata?.backupTool || '') === 'pbm';
+    if (isPbm) {
+      const pbmName = String(current?.metadata?.pbmBackupName || '').trim();
+      if (!pbmName) {
+        ok = false;
+        issues.push(`PBM snapshot name missing for ${current?.fileName || current?._id}`);
+        continue;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const exists = await snapshotExistsAndDone(pbmName).catch(() => false);
+      if (!exists) {
+        ok = false;
+        issues.push(`PBM snapshot not found or not complete: ${pbmName}`);
+      }
+    } else {
+      if (!current?.filePath || !fs.existsSync(current.filePath)) {
+        ok = false;
+        issues.push(`Missing backup file for ${current?.fileName || current?._id}`);
+        continue;
+      }
     }
     const expectedChecksum = String(current?.metadata?.checksumSha256 || '');
-    if (expectedChecksum) {
+    if (expectedChecksum && current?.filePath && fs.existsSync(current.filePath)) {
       // eslint-disable-next-line no-await-in-loop
       const computed = await computeChecksum(current.filePath);
       if (computed !== expectedChecksum) {

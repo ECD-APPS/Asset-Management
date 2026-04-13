@@ -15,6 +15,7 @@ const cookieParser = require('cookie-parser');
 const { shouldUseSecureCookie, resolveSameSite } = require('./utils/sessionCookie');
 const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
+const { metricsEnabledForProcess } = require('./utils/opsHealth');
 const { createBackupArtifact } = require('./utils/backupRecovery');
 const { migrateStoreEmailPasswords } = require('./utils/migrateEmailSecrets');
 const {
@@ -45,15 +46,12 @@ const toolRoutes = require('./routes/tools');
 const consumableRoutes = require('./routes/consumables');
 const sparePartRoutes = require('./routes/spareParts');
 const ppmRoutes = require('./routes/ppm');
+const assetCategoryRoutes = require('./routes/assetCategories');
 const { backupDatabase } = require('./backup_db');
 const { protect } = require('./middleware/authMiddleware');
 
 // Models for seeding
 const Store = require('./models/Store');
-
-const Asset = require('./models/Asset');
-const Request = require('./models/Request');
-// Removed AssetCategory usage
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
@@ -116,10 +114,12 @@ try {
   const uploadsDir = path.join(__dirname, 'uploads');
   const brandingUploadDir = path.join(uploadsDir, 'branding');
   const backupsDir = path.join(__dirname, 'backups');
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-  if (!fs.existsSync(brandingUploadDir)) fs.mkdirSync(brandingUploadDir, { recursive: true });
-  if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
-} catch {}
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(brandingUploadDir, { recursive: true });
+  fs.mkdirSync(backupsDir, { recursive: true });
+} catch (e) {
+  console.error('[server] Could not ensure runtime upload/backup directories:', e?.message || e);
+}
 
 // Security & hardening
 app.disable('x-powered-by');
@@ -145,6 +145,14 @@ app.use((req, res, next) => {
   res.setHeader('X-Request-ID', id);
   next();
 });
+
+let metricsHandler = null;
+if (metricsEnabledForProcess()) {
+  const metrics = require('./utils/metrics');
+  app.use(metrics.metricsMiddleware);
+  metricsHandler = metrics.handleMetrics;
+}
+
 // Rate limit (general)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -222,6 +230,8 @@ app.get('/healthz', async (req, res) => {
     shadow: { lag: null },
     verification: { status: 'unknown' }
   }));
+  const { gatherRuntimeHealth } = require('./utils/opsHealth');
+  const ops = await gatherRuntimeHealth({ resilienceSnapshot: resilience }).catch(() => null);
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     db_connected: ok,
@@ -231,12 +241,25 @@ app.get('/healthz', async (req, res) => {
       verification_status: resilience?.verification?.status || 'unknown'
     },
     uptime_s: Math.round(process.uptime()),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    mongo_ping_ms: ops?.mongo?.ping_ms ?? null,
+    filesystem: ops?.filesystem,
+    pbm_configured: ops?.pbm?.configured ?? false,
+    prometheus_enabled: ops?.prometheus?.enabled ?? false
   });
 });
 app.get('/readyz', async (req, res) => {
-  const state = mongoose.connection.readyState; // 1=connected
-  res.status(state === 1 ? 200 : 503).json({ ready: state === 1 });
+  const state = mongoose.connection.readyState;
+  if (state !== 1) {
+    return res.status(503).json({ ready: false, reason: 'mongoose_not_connected' });
+  }
+  try {
+    const { measureMongoPingMs } = require('./utils/opsHealth');
+    const mongo_ping_ms = await measureMongoPingMs();
+    return res.json({ ready: true, mongo_ping_ms });
+  } catch {
+    return res.status(503).json({ ready: false, reason: 'mongo_ping_failed' });
+  }
 });
 // API-prefixed aliases to support reverse proxies that only forward /api/*
 app.get('/api/healthz', async (req, res) => {
@@ -246,6 +269,8 @@ app.get('/api/healthz', async (req, res) => {
     shadow: { lag: null },
     verification: { status: 'unknown' }
   }));
+  const { gatherRuntimeHealth } = require('./utils/opsHealth');
+  const ops = await gatherRuntimeHealth({ resilienceSnapshot: resilience }).catch(() => null);
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     db_connected: ok,
@@ -255,13 +280,30 @@ app.get('/api/healthz', async (req, res) => {
       verification_status: resilience?.verification?.status || 'unknown'
     },
     uptime_s: Math.round(process.uptime()),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    mongo_ping_ms: ops?.mongo?.ping_ms ?? null,
+    filesystem: ops?.filesystem,
+    pbm_configured: ops?.pbm?.configured ?? false,
+    prometheus_enabled: ops?.prometheus?.enabled ?? false
   });
 });
 app.get('/api/readyz', async (req, res) => {
-  const state = mongoose.connection.readyState; // 1=connected
-  res.status(state === 1 ? 200 : 503).json({ ready: state === 1 });
+  const state = mongoose.connection.readyState;
+  if (state !== 1) {
+    return res.status(503).json({ ready: false, reason: 'mongoose_not_connected' });
+  }
+  try {
+    const { measureMongoPingMs } = require('./utils/opsHealth');
+    const mongo_ping_ms = await measureMongoPingMs();
+    return res.json({ ready: true, mongo_ping_ms });
+  } catch {
+    return res.status(503).json({ ready: false, reason: 'mongo_ping_failed' });
+  }
 });
+
+if (metricsHandler) {
+  app.get('/metrics', metricsHandler);
+}
 
 // CSRF protection
 const enableCsrf = String(process.env.ENABLE_CSRF || (isProd ? 'true' : 'false')).toLowerCase() === 'true';
@@ -362,6 +404,7 @@ app.use('/api/passes', passRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/purchase-orders', poRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/asset-categories', assetCategoryRoutes);
 app.use('/api/permits', permitRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/tools', toolRoutes);
@@ -447,7 +490,7 @@ app.get('*', (req, res) => {
   // C. Fallback Warning Page (If build is missing)
   res.status(503).send(`
     <div style="font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto;">
-      <h1>API is running successfully (v1.0.2)</h1>
+      <h1>API is running successfully (v${serverPackage.version || 'unknown'})</h1>
       <div style="background: #fff3cd; color: #856404; padding: 15px; border-radius: 4px; margin: 20px 0;">
         <strong>Warning:</strong> Frontend client is not served because the build folder was not found.
       </div>
@@ -611,8 +654,8 @@ const runDeferredDatabaseBootstrap = async () => {
       if (backupRunning) return;
       backupRunning = true;
       try {
-        const dir = await backupDatabase();
-        console.log('Automatic daily backup completed:', dir);
+        const snapshotName = await backupDatabase();
+        console.log('Automatic daily PBM backup completed:', snapshotName);
       } catch (err) {
         console.error('Automatic daily backup failed:', err.message || err);
       } finally {
@@ -810,7 +853,15 @@ app.use((err, req, res, next) => {
     ? 'Uploaded file is too large.'
     : (err?.message || 'Internal server error');
   if (statusCode >= 500) {
-    console.error('Unhandled API error:', err);
+    auditLogger.error({
+      msg: 'unhandled_api_error',
+      request_id: req.requestId || null,
+      method: req.method,
+      path: req.originalUrl,
+      status: statusCode,
+      error: err?.message || String(err),
+      stack: isProd ? undefined : err?.stack
+    });
   }
   if (req.path.startsWith('/api/')) {
     return res.status(statusCode).json({ message });
@@ -831,7 +882,9 @@ const shutdown = async () => {
   await writeRuntimeState({ cleanShutdown: true, shutdownAt: new Date().toISOString() });
   try {
     await mongoose.connection.close();
-  } catch {}
+  } catch {
+    /* ignore close errors during shutdown */
+  }
   try {
     if (serverInstance) {
       serverInstance.close(() => {

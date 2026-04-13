@@ -5,17 +5,14 @@ const bcrypt = require('bcryptjs');
 
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Built-in Expo demo accounts — always re-sync password hash when seeding touches them (even if resetPasswords is false). */
-const CANONICAL_PASSWORD_SYNC_EMAILS = new Set([
-  'superadmin@expo.com',
-  'scy@expo.com',
-  'it@expo.com',
-  'noc@expo.com'
-]);
+/** Only overwrite stored passwords when startup explicitly requests it (ENFORCE_DEFAULT_ACCOUNTS=true). */
+const shouldSyncPasswordOnUpdate = (resetPasswords) => Boolean(resetPasswords);
 
-const shouldSyncCanonicalPassword = (email, resetPasswords) =>
-  Boolean(resetPasswords)
-  || CANONICAL_PASSWORD_SYNC_EMAILS.has(String(email || '').trim().toLowerCase());
+const resolveSuperAdminPlainPassword = () => {
+  const fromEnv = String(process.env.DEFAULT_SUPERADMIN_PASSWORD || '').trim();
+  if (fromEnv) return fromEnv;
+  return 'superadmin123';
+};
 
 const findUsersByEmailLoose = async (email) => {
   const canonical = String(email || '').trim().toLowerCase();
@@ -75,7 +72,8 @@ const seedStoresAndUsers = async (options = {}) => {
     const superAdminCanonical = superAdminEmail.toLowerCase();
     const superAdminMatches = await findUsersByEmailLoose(superAdminEmail);
     let superAdmin = pickPrimaryUser(superAdminMatches, superAdminCanonical);
-    const superAdminHashedPassword = await buildHash('superadmin123');
+    const superPlain = resolveSuperAdminPlainPassword();
+    const superAdminHashedPassword = await buildHash(superPlain);
 
     if (!superAdmin) {
       superAdmin = await User.create({
@@ -98,7 +96,7 @@ const seedStoresAndUsers = async (options = {}) => {
       superAdmin.email = superAdminEmail;
       superAdmin.role = 'Super Admin';
       superAdmin.assignedStore = null;
-      if (shouldSyncCanonicalPassword(superAdminEmail, resetPasswords)) {
+      if (shouldSyncPasswordOnUpdate(resetPasswords)) {
         superAdmin.password = superAdminHashedPassword;
       }
       await superAdmin.save();
@@ -141,7 +139,7 @@ const seedStoresAndUsers = async (options = {}) => {
           adminUser.email = String(adminData.email).toLowerCase();
           adminUser.role = 'Admin';
           adminUser.assignedStore = store._id;
-          if (shouldSyncCanonicalPassword(adminData.email, resetPasswords)) {
+          if (shouldSyncPasswordOnUpdate(resetPasswords)) {
             adminUser.password = hashedPassword;
           }
           await adminUser.save();

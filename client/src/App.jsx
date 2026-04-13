@@ -15,6 +15,7 @@ const Login = lazy(() => import('./pages/Login'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Portal = lazy(() => import('./pages/Portal'));
+const SystemHealth = lazy(() => import('./pages/SystemHealth'));
 const Assets = lazy(() => import('./pages/Assets'));
 const TechScanner = lazy(() => import('./pages/TechScanner'));
 const Technicians = lazy(() => import('./pages/Technicians'));
@@ -68,8 +69,12 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Super Admin / Viewer Logic: Must have active store selected, unless on /portal
-  if ((user.role === 'Super Admin' || user.role === 'Viewer') && !activeStore && location.pathname !== '/portal') {
+  // Super Admin / Viewer: require an active store except on store-optional paths.
+  const storeOptionalPaths = ['/portal', '/system-health'];
+  const mayUseWithoutStore =
+    (user.role === 'Super Admin' && storeOptionalPaths.includes(location.pathname)) ||
+    (user.role === 'Viewer' && location.pathname === '/portal');
+  if ((user.role === 'Super Admin' || user.role === 'Viewer') && !activeStore && !mayUseWithoutStore) {
     return <Navigate to="/portal" />;
   }
 
@@ -148,6 +153,12 @@ function App() {
           <Route path="/events/system-logs" element={
             <ProtectedRoute allowedRoles={['Admin']}>
               <SystemLogs />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/system-health" element={
+            <ProtectedRoute allowedRoles={['Super Admin']}>
+              <SystemHealth />
             </ProtectedRoute>
           } />
           

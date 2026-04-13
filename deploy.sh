@@ -80,12 +80,12 @@ create_pre_deploy_backup_if_possible() {
     return 0
   fi
   if compose ps --services --filter "status=running" | grep -q "^app$"; then
-    echo "Creating pre-deploy full backup from running app container..."
+    echo "Creating pre-deploy PBM snapshot from running app container (requires PBM_MONGODB_URI in ${ENV_FILE})..."
     run_in_app_container_node "const mongoose=require('mongoose'); const {createBackupArtifact}=require('./utils/backupRecovery'); (async()=>{await mongoose.connect(process.env.MONGO_URI); await createBackupArtifact({backupType:'Full', trigger:'pre-update', user:null}); await mongoose.disconnect();})();" || {
-      echo "Warning: pre-deploy backup failed. Deployment will continue." >&2
+      echo "Warning: pre-deploy PBM snapshot failed (check PBM agents, storage, and PBM_MONGODB_URI). Deployment will continue." >&2
     }
   else
-    echo "No running app container detected. Skipping pre-deploy backup."
+    echo "No running app container detected. Skipping pre-deploy snapshot."
   fi
 }
 

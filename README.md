@@ -8,7 +8,7 @@ For step-by-step server installation, use `README_SERVER_INSTALL.md`.
 
 App baseline:
 - Auth is HTTP-only cookie based (no JWT token auth).
-- Backups/restores use `mongodump` and `mongorestore` archive flow.
+- Backups/restores use **Percona Backup for MongoDB (PBM)** from the API (`pbm` CLI in `Dockerfile.app` / app host; set `PBM_MONGODB_URI`). Operator guide: **`HOW_TO_BACKUP_DATABASE.md`**. See also `DEPLOY.md` and `MASTER_GEMINI_INSTRUCTIONS*.md`.
 
 **Where to deploy from this repo**
 

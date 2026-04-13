@@ -103,10 +103,10 @@ if [[ "$ROLE" == "app" ]]; then
   else
     warn "API readiness endpoint not reachable yet."
   fi
-  if command -v mongodump >/dev/null 2>&1 && command -v mongorestore >/dev/null 2>&1; then
-    ok "mongodump/mongorestore available (matches app backup/restore flow)."
+  if command -v pbm >/dev/null 2>&1; then
+    ok "pbm CLI available (Percona Backup for MongoDB; set PBM_MONGODB_URI on the app)."
   else
-    warn "mongodump/mongorestore not on PATH. Install MongoDB Database Tools if this host runs backups or restore jobs."
+    warn "pbm not on PATH. Install percona-backup-mongodb if this host triggers PBM backups from the app."
   fi
 elif [[ "$ROLE" == "web" ]]; then
   print_header "Web VM Readiness"

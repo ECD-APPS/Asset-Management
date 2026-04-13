@@ -5,7 +5,9 @@ ENV_FILE ?= .env.docker
 COMPOSE_FILES := -f docker-compose.yml -f docker-compose.prod.yml
 COMPOSE := docker compose
 
-.PHONY: help validate-prod build-prod up-prod down-prod restart-prod logs-prod ps-prod pull-prod deploy-prod safe-release-prod verify-prod verify-resilience-prod rollback-help-prod
+.PHONY: help server-env-dev validate-prod build-prod up-prod down-prod restart-prod logs-prod ps-prod pull-prod deploy-prod safe-release-prod verify-prod verify-resilience-prod rollback-help-prod
+
+SERVER_ENV ?= server/.env
 
 help:
 	@echo "Available targets:"
@@ -18,10 +20,21 @@ help:
 	@echo "  make ps-prod        - Show production containers"
 	@echo "  make pull-prod      - Pull base images"
 	@echo "  make deploy-prod    - Validate, build, and start"
-	@echo "  make safe-release-prod - Precheck, mongodump pre-backup (if app up), deploy, verify"
+	@echo "  make safe-release-prod - Precheck, PBM pre-snapshot (if app up), deploy, verify"
 	@echo "  make verify-prod    - Verify API/Web health endpoints"
 	@echo "  make verify-resilience-prod - Alias: health verify (legacy resilience checks removed)"
 	@echo "  make rollback-help-prod - Show rollback helper commands"
+	@echo "  make server-env-dev - Create server/.env from server/.env.example if missing (local dev bootstrap)"
+
+# One-time local API env file (does not overwrite an existing server/.env).
+server-env-dev:
+	@if [ -f "$(SERVER_ENV)" ]; then \
+		echo "$(SERVER_ENV) already exists (left unchanged)."; \
+	else \
+		cp server/.env.example "$(SERVER_ENV)"; \
+		echo "Created $(SERVER_ENV) from server/.env.example — edit MONGO_URI, COOKIE_SECRET, and other values."; \
+	fi
+	@echo "USB-style backups: install MongoDB Database Tools (mongodump). See HOW_TO_BACKUP_DATABASE.md"
 
 validate-prod:
 	@test -f "$(ENV_FILE)" || (echo "Missing $(ENV_FILE). Copy .env.docker.example to $(ENV_FILE) and update secrets."; exit 1)

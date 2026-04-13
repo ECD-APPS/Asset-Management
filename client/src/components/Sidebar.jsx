@@ -14,7 +14,8 @@ import {
   Lock,
   Wrench,
   ClipboardCheck,
-  Package
+  Package,
+  Activity
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -232,6 +233,12 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
   const navItems = useMemo(
     () => [
     { name: 'Dashboard', path: '/', icon: <LayoutDashboard size={18} strokeWidth={1.5} />, roles: ['Admin', 'Viewer', 'Manager'] },
+    {
+      name: 'Platform health',
+      path: '/system-health',
+      icon: <Activity size={18} strokeWidth={1.5} />,
+      roles: ['Super Admin']
+    },
     {
       name: 'Events',
       icon: <Calendar size={18} strokeWidth={1.5} />,

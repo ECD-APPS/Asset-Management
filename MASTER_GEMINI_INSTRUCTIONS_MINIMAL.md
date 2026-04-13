@@ -15,9 +15,10 @@ Use sections: server setup, app setup, verify, rollback.
 Do not include sample outputs.
 Always include safe checks before risky actions.
 Authentication must remain HTTP-only cookie based (no JWT).
-Database backup/restore must use mongodump/mongorestore archives.
+Database backup/restore must use **Percona Backup for MongoDB (PBM)** from the app (`pbm` CLI + `PBM_MONGODB_URI`); agents and storage on MongoDB hosts per https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html — no `mongodump`/`mongorestore` upload path.
 Keep these accounts unchanged:
 - superadmin@expo.com / superadmin123
+- scy@expo.com / admin123
 - it@expo.com / admin123
 - noc@expo.com / admin123
 
@@ -63,6 +64,15 @@ sudo apt update
 sudo apt install -y mongodb-org
 sudo systemctl enable --now mongod
 sudo systemctl status mongod --no-pager
+```
+
+If this host runs **both** MongoDB and the Node API, install the **`pbm` CLI** for in-app backups (configure `pbm-agent` + storage on MongoDB per [PBM initial setup](https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html), then set `PBM_MONGODB_URI` in `server/.env`):
+
+```bash
+wget -qO /tmp/percona-release.deb https://repo.percona.com/apt/percona-release_latest.generic_all.deb
+sudo dpkg -i /tmp/percona-release.deb && rm -f /tmp/percona-release.deb
+sudo percona-release enable pbm release
+sudo apt update && sudo apt install -y percona-backup-mongodb
 ```
 
 ```bash
@@ -113,6 +123,9 @@ ENABLE_CSRF=true
 TRUST_PROXY_HOPS=1
 MAX_BACKUP_UPLOAD_MB=1024
 SEED_DEFAULTS=false
+# Percona Backup for MongoDB (required for API / scheduled backups):
+# PBM_MONGODB_URI=mongodb://pbm:CHANGE_ME@127.0.0.1:27017/?authSource=admin
+# PBM_BACKUP_WAIT_TIME=4h
 ```
 
 ```bash
@@ -187,8 +200,7 @@ make validate-prod
 curl -f http://127.0.0.1:3000/ || echo "web unhealthy"
 curl -f http://127.0.0.1:3000/api/healthz || echo "api unhealthy"
 curl -f http://127.0.0.1:3000/healthz || echo "healthz direct"
-mongodump --version
-mongorestore --version
+command -v pbm && pbm version
 ```
 
 Open browser:

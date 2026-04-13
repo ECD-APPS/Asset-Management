@@ -14,6 +14,9 @@ export default defineConfig({
         target: `http://${apiHost}:${apiPort}`,
         changeOrigin: true,
         secure: false,
+        // Large backup downloads through dev proxy (avoid timeouts / "Network Error" on big files)
+        timeout: 4 * 60 * 60 * 1000,
+        proxyTimeout: 4 * 60 * 60 * 1000
       },
       '/uploads': {
         target: `http://${apiHost}:${apiPort}`,

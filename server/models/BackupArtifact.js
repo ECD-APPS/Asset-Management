@@ -18,6 +18,11 @@ const backupArtifactSchema = new mongoose.Schema({
     error: { type: String, default: '' }
   },
   metadata: {
+    backupTool: { type: String, default: '' },
+    pbmBackupName: { type: String, default: '' },
+    pbmDescribe: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    pbmFallbackToFull: { type: Boolean, default: false },
+    immutable: { type: mongoose.Schema.Types.Mixed, default: undefined },
     collections: { type: Object, default: {} },
     includesFiles: { type: Boolean, default: true },
     fromBackupId: { type: mongoose.Schema.Types.ObjectId, ref: 'BackupArtifact', default: null },

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import DashboardCharts from '../components/DashboardCharts';
 import api from '../api/axios';
@@ -22,6 +22,10 @@ import AppSpinner from '../components/AppSpinner';
 
 /** Avoid stacking ApiLoadingOverlay on top of this page’s own loading UI. */
 const DASHBOARD_API = { headers: { 'X-Skip-Global-Loading': '1' } };
+
+/** Vendor scope switches re-hit a heavy /assets/stats pipeline; cache + prefetch keeps Siemens/G42 snappy. */
+const DASHBOARD_STATS_CACHE_TTL_MS = 2 * 60 * 1000;
+const DASHBOARD_PREFETCH_VENDORS = ['Siemens', 'G42'];
 
 function isAbortLike(error) {
   const c = error?.code;
@@ -128,6 +132,7 @@ const normalizeStats = (raw) => {
 
 const Dashboard = () => {
   const { user, activeStore } = useAuth();
+  const activeStoreCacheKey = activeStore?._id ?? activeStore ?? null;
   const [searchParams] = useSearchParams();
   const [stats, setStats] = useState(null);
   const [consumablesStats, setConsumablesStats] = useState(null);
@@ -146,10 +151,16 @@ const Dashboard = () => {
   const fetchSeqRef = useRef(0);
   const recentRidRef = useRef(0);
   const statsRef = useRef(null);
+  /** Map cacheKey -> { data, ts } for normalized stats (stale-while-revalidate). */
+  const statsCacheRef = useRef(new Map());
 
   useEffect(() => {
     statsRef.current = stats;
   }, [stats]);
+
+  useEffect(() => {
+    statsCacheRef.current.clear();
+  }, [activeStoreCacheKey]);
 
   const analyticsSectionOptions = useMemo(
     () => [
@@ -199,9 +210,40 @@ const Dashboard = () => {
     : '';
   const assetsLink = `/assets${assetsQuery}`;
 
-  useEffect(() => {
-    setRecentAssets([]);
-  }, [dashboardVendor, isScyDashboard]);
+  const buildStatsCacheKey = useCallback(
+    (vendor) => {
+      const storePart = String(activeStoreCacheKey ?? 'none');
+      const v = isScyDashboard && vendor !== 'All' ? vendor : 'All';
+      return `${storePart}:${v}`;
+    },
+    [activeStoreCacheKey, isScyDashboard]
+  );
+
+  const prefetchVendorStatsCaches = useCallback(() => {
+    if (!isScyDashboard) return;
+    const storePart = String(activeStoreCacheKey ?? 'none');
+    const run = () => {
+      DASHBOARD_PREFETCH_VENDORS.forEach((vendor) => {
+        const key = `${storePart}:${vendor}`;
+        const ent = statsCacheRef.current.get(key);
+        if (ent && Date.now() - ent.ts < DASHBOARD_STATS_CACHE_TTL_MS) return;
+        api
+          .get('/assets/stats', { params: { maintenance_vendor: vendor }, ...DASHBOARD_API })
+          .then((res) => {
+            statsCacheRef.current.set(key, { data: normalizeStats(res.data), ts: Date.now() });
+          })
+          .catch(() => {
+            /* ignore prefetch errors */
+          });
+      });
+    };
+    const ric = typeof window !== 'undefined' && window.requestIdleCallback;
+    if (ric) {
+      ric(() => run(), { timeout: 2500 });
+    } else {
+      setTimeout(run, 400);
+    }
+  }, [activeStoreCacheKey, isScyDashboard]);
 
   useEffect(() => {
     // Per-user dashboard layout persistence (local-only for now).
@@ -313,14 +355,29 @@ const Dashboard = () => {
     const fetchSeq = ++fetchSeqRef.current;
     const isStale = () => cancelled || fetchSeq !== fetchSeqRef.current;
     const withSignal = { ...DASHBOARD_API, signal: ac.signal };
+    const statsCacheKey = buildStatsCacheKey(dashboardVendor);
 
     const fetchStats = async () => {
       const maxAttempts = 3;
       let lastError = null;
       const hadStats = Boolean(statsRef.current);
+      let cached = statsCacheRef.current.get(statsCacheKey);
+      if (cached && Date.now() - cached.ts >= DASHBOARD_STATS_CACHE_TTL_MS) {
+        statsCacheRef.current.delete(statsCacheKey);
+        cached = null;
+      }
+      const cacheFresh = Boolean(cached?.data);
       if (!isStale()) {
-        if (hadStats) setRefreshing(true);
-        else setLoading(true);
+        if (cacheFresh && cached?.data) {
+          setStats(cached.data);
+          setLastUpdated(new Date(cached.ts));
+          if (hadStats) setRefreshing(true);
+          else setLoading(false);
+        } else if (hadStats) {
+          setRefreshing(true);
+        } else {
+          setLoading(true);
+        }
       }
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
@@ -342,13 +399,19 @@ const Dashboard = () => {
             throw statsSettled.reason;
           }
 
-          setStats(normalizeStats(statsSettled.value.data));
+          const normalized = normalizeStats(statsSettled.value.data);
+          statsCacheRef.current.set(statsCacheKey, { data: normalized, ts: Date.now() });
+          setStats(normalized);
           setLastUpdated(new Date());
 
           // One paint: KPI row + charts (recent table may still stream).
           if (!isStale()) {
             setLoading(false);
             setRefreshing(false);
+          }
+
+          if (isScyDashboard && dashboardVendor === 'All') {
+            prefetchVendorStatsCaches();
           }
 
           recentP
@@ -404,7 +467,7 @@ const Dashboard = () => {
       cancelled = true;
       ac.abort();
     };
-  }, [dashboardVendor, isScyDashboard]);
+  }, [dashboardVendor, isScyDashboard, activeStoreCacheKey, buildStatsCacheKey, prefetchVendorStatsCaches]);
 
   useEffect(() => {
     let cancelled = false;

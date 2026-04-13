@@ -1,11 +1,47 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
-import { Users, ArrowLeft, Database, AlertTriangle, X, Store, Building2, ChevronRight, Settings, ShieldCheck, Activity, Search, Lock, LogOut, Mail, Send } from 'lucide-react';
+import {
+  Users,
+  ArrowLeft,
+  Database,
+  AlertTriangle,
+  X,
+  Store,
+  Building2,
+  ChevronRight,
+  Settings,
+  ShieldCheck,
+  Activity,
+  Search,
+  Lock,
+  LogOut,
+  Mail,
+  Send,
+  Info,
+  RefreshCw
+} from 'lucide-react';
+
+const formatArtifactDate = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+};
+
+const formatArtifactSize = (bytes) => {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+};
+
+const isPbmArtifact = (b) => String(b?.metadata?.backupTool || '') === 'pbm' || Boolean(b?.metadata?.pbmBackupName);
 import AddMembers from './AddMembers';
 import ChangePasswordModal from '../components/ChangePasswordModal';
 import LoadingLogo from '../components/LoadingLogo';
+import { CLIENT_APP_VERSION } from '../appMeta';
 
 const Portal = () => {
   const { user, selectStore, activeStore, logout, branding, refreshBranding } = useAuth();
@@ -19,13 +55,6 @@ const Portal = () => {
   const [includeUsers, setIncludeUsers] = useState(false);
   const [resetPassword, setResetPassword] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
-  const [backupLoading, setBackupLoading] = useState(false);
-  const [restoreLoading, setRestoreLoading] = useState(false);
-  const [restoreFileName, setRestoreFileName] = useState('');
-  const [restoreFile, setRestoreFile] = useState(null);
-  const [backupValidation, setBackupValidation] = useState(null);
-  const [lastRestoreReport, setLastRestoreReport] = useState(null);
-  const [validatingBackup, setValidatingBackup] = useState(false);
   const [bulkFiles, setBulkFiles] = useState([]);
   const [_uploadProgress, _setUploadProgress] = useState({});
   const [_bulkConflicts, _setBulkConflicts] = useState([]);
@@ -36,12 +65,15 @@ const Portal = () => {
   const [_conflictActions, _setConflictActions] = useState({});
   const [_bulkSummary, _setBulkSummary] = useState(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [lastBackupTime, setLastBackupTime] = useState(null);
   const [backupArtifacts, setBackupArtifacts] = useState([]);
   const [backupsLoading, setBackupsLoading] = useState(false);
-  const [creatingFullBackup, setCreatingFullBackup] = useState(false);
+  const [localMongodumpEnabled, setLocalMongodumpEnabled] = useState(false);
+  const [mongodumpAvailable, setMongodumpAvailable] = useState(null);
+  const [mongorestoreAvailable, setMongorestoreAvailable] = useState(null);
+  const [localDumpLoading, setLocalDumpLoading] = useState(false);
+  const [restoreUploading, setRestoreUploading] = useState(false);
+  const restoreArchiveInputRef = useRef(null);
   const [_emergencyRestoreLoading, _setEmergencyRestoreLoading] = useState(false);
-  const [restoringBackupId, setRestoringBackupId] = useState('');
   const [cloudConfig, setCloudConfig] = useState({
     enabled: false,
     provider: 's3',
@@ -119,11 +151,6 @@ const Portal = () => {
       return;
     }
     fetchPortalStores();
-
-    const saved = window.localStorage.getItem('expo_last_backup_download');
-    if (saved) {
-      setLastBackupTime(saved);
-    }
   }, [user, navigate, fetchPortalStores]);
 
   useEffect(() => {
@@ -192,7 +219,18 @@ const Portal = () => {
     try {
       setBackupsLoading(true);
       const res = await api.get('/system/backups?limit=100');
-      setBackupArtifacts(Array.isArray(res.data) ? res.data : []);
+      const body = res.data;
+      if (Array.isArray(body)) {
+        setBackupArtifacts(body);
+        setLocalMongodumpEnabled(false);
+        setMongodumpAvailable(null);
+        setMongorestoreAvailable(null);
+      } else {
+        setBackupArtifacts(Array.isArray(body?.backups) ? body.backups : []);
+        setLocalMongodumpEnabled(body?.localMongodumpEnabled === true);
+        setMongodumpAvailable(typeof body?.mongodumpAvailable === 'boolean' ? body.mongodumpAvailable : null);
+        setMongorestoreAvailable(typeof body?.mongorestoreAvailable === 'boolean' ? body.mongorestoreAvailable : null);
+      }
     } catch (error) {
       console.error('Failed to load backups:', error);
     } finally {
@@ -205,6 +243,12 @@ const Portal = () => {
     fetchBackupArtifacts();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
+
+  useEffect(() => {
+    if (!showResetModal || user?.role !== 'Super Admin') return;
+    fetchBackupArtifacts();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showResetModal]);
 
   const fetchCloudBackupConfig = async () => {
     if (user?.role !== 'Super Admin') return;
@@ -289,180 +333,91 @@ const Portal = () => {
     }
   };
 
-  const handleDownloadBackup = async () => {
-    if (backupLoading) return;
-    if (!window.confirm('Download full system backup now? This may take a moment.')) return;
-    try {
-      setBackupLoading(true);
-      const response = await api.get('/system/backup-file', {
-        responseType: 'blob'
-      });
-      const blob = new Blob([response.data], { type: 'application/gzip' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const now = new Date();
-      const iso = now.toISOString();
-      const timestamp = iso.replace(/[:.]/g, '-');
-      link.href = url;
-      link.download = `expo-backup-${timestamp}.archive.gz`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      window.localStorage.setItem('expo_last_backup_download', iso);
-      setLastBackupTime(iso);
-    } catch (error) {
-      console.error(error);
-      alert('Backup download failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setBackupLoading(false);
+  const handleRestoreArchiveFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (mongorestoreAvailable !== true) {
+      alert('mongorestore is not available on the server. Install MongoDB Database Tools and restart the API.');
+      return;
     }
-  };
-
-  const handleCreateFullBackup = async () => {
-    if (creatingFullBackup) return;
+    const ok = window.confirm(
+      'This will run mongorestore into the database configured by MONGO_URI on the server.\n\n' +
+        '• Use only archives you trust (same app / same Mongo version ideally).\n' +
+        '• By default collections are merged; server can set LOCAL_MONGORESTORE_DROP=true to drop each collection before restore (more destructive).\n' +
+        '• Everyone should refresh the browser after; restart the Node server if data still looks wrong.\n\n' +
+        `Continue with file: ${file.name}?`
+    );
+    if (!ok) return;
+    const formData = new FormData();
+    formData.append('backup', file);
     try {
-      setCreatingFullBackup(true);
-      const res = await api.post('/system/backups/create', { backupType: 'Full', trigger: 'manual' });
-      alert(res.data?.message || 'Full backup created successfully.');
+      setRestoreUploading(true);
+      const res = await api.post('/system/backups/upload-restore', formData, {
+        timeout: 4 * 60 * 60 * 1000
+      });
+      alert(res.data?.message || 'Restore completed.');
       await fetchBackupArtifacts();
     } catch (error) {
-      alert('Create backup failed: ' + (error.response?.data?.message || error.message));
+      alert('Restore failed: ' + (error.response?.data?.message || error.message));
     } finally {
-      setCreatingFullBackup(false);
+      setRestoreUploading(false);
     }
   };
 
-  const handleDownloadBackupArtifact = async (backup) => {
-    try {
-      const response = await api.get(`/system/backups/${backup._id}/download`, { responseType: 'blob' });
-      const blob = new Blob([response.data], { type: 'application/gzip' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = backup.fileName || `${backup.name || 'backup'}.archive.gz`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      alert('Download failed: ' + (error.response?.data?.message || error.message));
+  const handleLocalMongodumpBackup = async () => {
+    if (localDumpLoading) return;
+    if (!mongodumpAvailable) {
+      alert(
+        'The server cannot find mongodump. Install MongoDB Database Tools on the same machine as the API, ensure mongodump is on PATH (or set MONGODUMP_PATH in server/.env), then restart the server.'
+      );
+      return;
     }
+    if (!window.confirm('Create a full logical backup file on this server? Large databases can take several minutes.')) return;
+    try {
+      setLocalDumpLoading(true);
+      const res = await api.post('/system/backups/local-mongodump', {}, { timeout: 2 * 60 * 60 * 1000 });
+      alert(res.data?.message || 'Local backup created.');
+      await fetchBackupArtifacts();
+    } catch (error) {
+      alert('Local backup failed: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setLocalDumpLoading(false);
+    }
+  };
+
+  const handleDownloadBackupArtifact = (backup) => {
+    if (backup?.metadata?.backupTool === 'pbm') {
+      alert('PBM keeps snapshot data in remote storage configured for your cluster. Use Restore, or manage files with the pbm CLI on the database side.');
+      return;
+    }
+    const id = backup?._id;
+    if (!id) {
+      alert('Download failed: missing backup id.');
+      return;
+    }
+    const fileName = backup.fileName || `${backup.name || 'backup'}.archive.gz`;
+    // Use a real navigation-style download so the browser sends cookies and we avoid axios
+    // default 15s timeout + blob buffering issues through the Vite dev proxy ("Network Error").
+    const a = document.createElement('a');
+    a.href = `/api/system/backups/${id}/download`;
+    a.setAttribute('download', fileName);
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleDeleteBackupArtifact = async (backup) => {
-    if (!window.confirm(`Delete backup "${backup.fileName}"?`)) return;
+    const label = backup?.metadata?.pbmBackupName || backup?.fileName || backup?.name || 'this snapshot';
+    const isPbm = String(backup?.metadata?.backupTool || '') === 'pbm';
+    const detail = isPbm ? 'from the catalog and remote PBM storage' : 'and remove the file on this server';
+    if (!window.confirm(`Delete backup "${label}" ${detail}?`)) return;
     try {
       await api.delete(`/system/backups/${backup._id}`);
       await fetchBackupArtifacts();
     } catch (error) {
       alert('Delete failed: ' + (error.response?.data?.message || error.message));
-    }
-  };
-
-  const extractRestoreReport = (responseData) => {
-    const result = responseData?.result;
-    if (result?.restoreReport) return result.restoreReport;
-    if (result && (result.verification || result.restoredCollections || result.backupFormatVersionDetected)) return result;
-    if (responseData?.restoreReport) return responseData.restoreReport;
-    return null;
-  };
-
-  const handleDownloadRestoreReport = () => {
-    if (!lastRestoreReport) return;
-    try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const payload = {
-        generatedAt: new Date().toISOString(),
-        generatedBy: user?.email || user?.name || 'unknown',
-        report: lastRestoreReport
-      };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `restore-report-${timestamp}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      alert('Failed to download restore report: ' + (error?.message || 'Unknown error'));
-    }
-  };
-
-  const handleRestoreBackupArtifact = async (backup) => {
-    if (!window.confirm('This will overwrite current system data. Continue?')) return;
-    try {
-      setRestoringBackupId(backup._id);
-      const res = await api.post(`/system/backups/${backup._id}/restore`);
-      const report = extractRestoreReport(res.data);
-      setLastRestoreReport(report);
-      alert('Restore completed successfully. Review restore report below.');
-    } catch (error) {
-      alert('Restore failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setRestoringBackupId('');
-    }
-  };
-
-  const validateRestoreFile = async (file) => {
-    if (!file) return;
-    const { valid, errors } = validateBackupFiles([file]);
-    if (errors.length > 0 || valid.length === 0) {
-      setRestoreFile(null);
-      setBackupValidation(null);
-      alert(`File rejected:\n${errors.join('\n') || 'Invalid backup file.'}`);
-      return;
-    }
-
-    try {
-      setValidatingBackup(true);
-      const formData = new FormData();
-      formData.append('backup', valid[0]);
-      const res = await api.post('/system/backups/validate-upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      setRestoreFile(valid[0]);
-      setRestoreFileName(valid[0].name || '');
-      setBackupValidation(res.data?.report || null);
-    } catch (error) {
-      setRestoreFile(null);
-      setBackupValidation(null);
-      alert('Validation failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setValidatingBackup(false);
-    }
-  };
-
-  const handleRestoreFromFile = async () => {
-    if (!restoreFile) {
-      alert('Please select and validate a backup file first.');
-      return;
-    }
-    if (restoreLoading) return;
-    if (backupValidation?.status === 'blocked') {
-      alert('This backup is blocked by compatibility checks. Use a compatible file.');
-      return;
-    }
-    if (!window.confirm('Restoring will overwrite current data with the backup file. Continue?')) return;
-
-    const formData = new FormData();
-    formData.append('backup', restoreFile);
-
-    try {
-      setRestoreLoading(true);
-      const res = await api.post('/system/backups/upload-restore', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      const report = extractRestoreReport(res.data);
-      setLastRestoreReport(report);
-      alert('Restore completed successfully. Review restore report below.');
-    } catch (error) {
-      console.error(error);
-      alert('Restore failed: ' + (error.response?.data?.message || error.message));
-    } finally {
-      setRestoreLoading(false);
     }
   };
 
@@ -855,19 +810,19 @@ const Portal = () => {
                <ChevronRight size={18} className="ml-auto text-slate-400 group-hover:text-blue-500 group-hover:translate-x-1 transition-all md:w-[20px] md:h-[20px]" />
              </div>
 
-             {/* System Maintenance Card */}
-             <div 
+             {/* Local file backup / USB + optional controlled reset */}
+             <div
                onClick={() => setShowResetModal(true)}
-               className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 hover:bg-slate-50 hover:border-red-500/30 cursor-pointer transition-all group flex items-center gap-4 md:gap-5 shadow-sm"
+               className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 hover:bg-slate-50 hover:border-indigo-300/80 cursor-pointer transition-all group flex items-center gap-4 md:gap-5 shadow-sm"
              >
-               <div className="p-3 md:p-4 bg-red-50 rounded-lg text-red-600 group-hover:bg-red-500 group-hover:text-white transition-colors border border-red-100">
+               <div className="p-3 md:p-4 bg-indigo-50 rounded-lg text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors border border-indigo-100">
                  <Database size={20} className="md:w-[24px] md:h-[24px]" />
                </div>
                <div>
-                <h3 className="text-base md:text-lg font-bold text-slate-900 mb-0.5 md:mb-1 group-hover:text-red-600 transition-colors">Backup & Restore</h3>
-                <p className="text-slate-500 text-xs md:text-sm">Mongodump backup management</p>
+                <h3 className="text-base md:text-lg font-bold text-slate-900 mb-0.5 md:mb-1 group-hover:text-indigo-700 transition-colors">Backups &amp; database</h3>
+                <p className="text-slate-500 text-xs md:text-sm">Download a local archive (USB-friendly) and restore from file</p>
                </div>
-               <Settings size={18} className="ml-auto text-slate-400 group-hover:text-red-500 group-hover:rotate-45 transition-all md:w-[20px] md:h-[20px]" />
+               <Settings size={18} className="ml-auto text-slate-400 group-hover:text-indigo-500 group-hover:rotate-45 transition-all md:w-[20px] md:h-[20px]" />
              </div>
             
             {/* Customize Application Logo */}
@@ -1146,7 +1101,7 @@ const Portal = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-3 md:gap-4">
            <p className="text-xs md:text-sm">© {new Date().getFullYear()} Expo City Dubai. All rights reserved.</p>
            <div className="flex gap-4 md:gap-6 text-xs md:text-sm opacity-80">
-             <span>v2.5.0</span>
+             <span>v{CLIENT_APP_VERSION}</span>
              <span className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-green-500"></div> System Status: Online</span>
            </div>
         </div>
@@ -1157,197 +1112,190 @@ const Portal = () => {
         onClose={() => setShowPasswordModal(false)} 
       />
 
-      {/* Backup & Restore Modal */}
+      {/* Database maintenance modal */}
       {showResetModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 transition-opacity">
-          <div className="bg-white rounded-2xl p-0 max-w-6xl w-[95vw] max-h-[92vh] shadow-2xl overflow-hidden animate-scale-in">
-            {/* Modal Header */}
-            <div className="bg-red-50 p-6 border-b border-red-100 flex justify-between items-start">
-              <div className="flex items-center gap-3">
-                 <div className="p-2 bg-red-100 rounded-lg text-red-600">
-                    <AlertTriangle size={24} />
-                 </div>
-                 <div>
-                    <h2 className="text-lg font-bold text-red-900">Backup & Restore</h2>
-                    <p className="text-sm text-red-600">Backup & Restore</p>
-                 </div>
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 transition-opacity">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="maintenance-modal-title"
+            className="bg-white rounded-2xl p-0 max-w-6xl w-[95vw] max-h-[92vh] shadow-2xl overflow-hidden border border-slate-200/80"
+          >
+            <div className="bg-gradient-to-r from-slate-50 to-indigo-50/40 px-6 py-5 border-b border-slate-200 flex justify-between items-start gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="p-2.5 bg-white rounded-xl text-indigo-600 border border-indigo-100 shadow-sm shrink-0">
+                  <Database size={22} aria-hidden />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="maintenance-modal-title" className="text-lg font-semibold text-slate-900 tracking-tight">
+                    Backup &amp; restore
+                  </h2>
+                  <p className="text-sm text-slate-600 mt-0.5">
+                    Local full backup files (copy to USB) and restore from an archive; optional data reset below
+                  </p>
+                </div>
               </div>
-              <button 
-                onClick={() => setShowResetModal(false)} 
-                className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-full transition-colors"
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                className="text-slate-500 hover:text-slate-800 p-2 hover:bg-white/80 rounded-lg transition-colors shrink-0"
+                aria-label="Close"
               >
                 <X size={20} />
               </button>
             </div>
-            
-            <div className="p-6 overflow-y-auto max-h-[calc(92vh-120px)]">
-              <div className="bg-yellow-50 border border-yellow-100 rounded-lg p-4 mb-6">
-                 <p className="text-sm text-yellow-800 leading-relaxed">
-                   <strong>Backup/Restore:</strong> Use this panel to create and restore `mongodump` backup archives only.
-                 </p>
-              </div>
 
-              <div className="grid grid-cols-1 gap-5">
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
-                  <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
-                    <Database size={16} className="text-slate-600" />
-                    Backup & Restore
-                  </h3>
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs text-slate-500">
-                      Download a full backup file to your computer, or restore from a previously saved backup file.
-                    </p>
-                    <p className="text-[11px] text-slate-400">
-                      Last backup downloaded:{' '}
-                      {lastBackupTime ? new Date(lastBackupTime).toLocaleString() : 'Not yet'}
+            <div className="p-6 overflow-y-auto max-h-[calc(92vh-140px)]">
+              {!localMongodumpEnabled && (
+                <div className="flex gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 mb-6" role="status">
+                  <Info className="text-slate-600 shrink-0 mt-0.5" size={18} aria-hidden />
+                  <div className="text-sm text-slate-800 leading-relaxed space-y-1">
+                    <p className="font-medium text-slate-900">Local backup and file restore are turned off on this server.</p>
+                    <p className="text-xs text-slate-600">
+                      Set <code className="font-mono text-[11px] bg-white px-1 py-0.5 rounded border border-slate-200">ENABLE_LOCAL_MONGODUMP=true</code> in{' '}
+                      <code className="font-mono text-[11px] bg-white px-1 py-0.5 rounded border border-slate-200">server/.env</code>, install MongoDB Database Tools on the API host, restart the server, then open this dialog again. See{' '}
+                      <code className="font-mono text-[11px]">HOW_TO_BACKUP_DATABASE.md</code> in the repository.
                     </p>
                   </div>
-                  <div className="flex flex-col gap-3">
+                </div>
+              )}
+
+              {localMongodumpEnabled && (
+                <div className="flex gap-3 rounded-xl border border-emerald-200/90 bg-emerald-50/70 px-4 py-3 mb-6" role="region" aria-label="Local USB backup">
+                  <Info className="text-emerald-700 shrink-0 mt-0.5" size={18} aria-hidden />
+                  <div className="text-sm text-emerald-950 leading-relaxed space-y-3 flex-1">
+                    <div>
+                      <p className="font-medium text-emerald-900">Simple local backup (no cloud)</p>
+                      <p className="text-xs text-emerald-900/90 mt-1">
+                        Creates one <code className="rounded bg-white/80 px-1 border border-emerald-200/80">.archive.gz</code> file on this server using{' '}
+                        <code className="rounded bg-white/80 px-1 border border-emerald-200/80">mongodump</code>. Then click <strong>Download</strong> on the new row — your browser saves the file — then copy that file to your USB drive in File Explorer or Finder.
+                        There is <strong>no &quot;upload to USB&quot;</strong> in the app: the USB is just a folder on your computer.
+                        In production, set <code className="font-mono text-[11px]">ENABLE_LOCAL_MONGODUMP=true</code> explicitly.
+                      </p>
+                    </div>
+                    {mongodumpAvailable === false && (
+                      <p className="text-xs font-medium text-slate-700 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1.5">
+                        mongodump was not found on the server PATH. Install MongoDB Database Tools and restart the API.
+                      </p>
+                    )}
                     <button
-                      onClick={handleCreateFullBackup}
-                      disabled={creatingFullBackup}
-                      className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm ${
-                        creatingFullBackup
-                          ? 'bg-indigo-300 text-indigo-800 cursor-not-allowed'
-                          : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      type="button"
+                      onClick={handleLocalMongodumpBackup}
+                      disabled={localDumpLoading || backupsLoading || mongodumpAvailable !== true}
+                      className={`inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-sm font-medium shadow-sm transition-colors ${
+                        localDumpLoading || backupsLoading || mongodumpAvailable !== true
+                          ? 'bg-emerald-200 text-emerald-900 cursor-not-allowed'
+                          : 'bg-emerald-700 text-white hover:bg-emerald-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2'
                       }`}
                     >
-                      {creatingFullBackup ? 'Creating Full Backup…' : 'Create Full Backup'}
+                      {localDumpLoading ? 'Creating local backup…' : 'Create local full backup (USB)'}
                     </button>
-                    <button
-                      onClick={handleDownloadBackup}
-                      disabled={backupLoading}
-                      className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm ${
-                        backupLoading
-                          ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
-                          : 'bg-slate-800 text-white hover:bg-black'
-                      }`}
-                    >
-                      {backupLoading ? 'Preparing backup…' : 'Download Backup File'}
-                    </button>
-                    <label className="flex flex-col gap-2 text-xs text-slate-600 border border-slate-200 rounded-lg p-3 bg-white">
-                      <span className="font-semibold text-slate-800">Upload Backup File From USB / Computer</span>
+                    <div className="pt-3 mt-3 border-t border-emerald-200/80">
+                      <p className="text-xs font-medium text-emerald-900 mb-2">Restore from a file (e.g. copy from USB back to this PC)</p>
                       <input
+                        ref={restoreArchiveInputRef}
                         type="file"
-                        accept="application/gzip,.archive.gz,.archive,.gz,application/octet-stream"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            setRestoreFileName(file.name);
-                            setRestoreFile(null);
-                            setBackupValidation(null);
-                            validateRestoreFile(file);
-                            e.target.value = '';
-                          }
-                        }}
-                        className="block w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 cursor-pointer"
+                        accept=".gz,.archive.gz,application/gzip"
+                        className="hidden"
+                        onChange={handleRestoreArchiveFileChange}
                       />
-                      {restoreFileName && (
-                        <span className="text-[11px] text-slate-500">
-                          Selected: {restoreFileName} {validatingBackup ? '(validating...)' : restoreLoading ? '(restoring...)' : ''}
-                        </span>
-                      )}
-                      {backupValidation && (
-                        <div
-                          className={`text-[11px] rounded p-2 border ${
-                            backupValidation.status === 'safe'
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-                              : backupValidation.status === 'warning'
-                                ? 'bg-amber-50 text-amber-700 border-amber-100'
-                                : 'bg-red-50 text-red-700 border-red-100'
-                          }`}
-                        >
-                          <div className="font-semibold uppercase">Compatibility: {backupValidation.status}</div>
-                          <div>
-                            Source: {backupValidation?.version?.sourceVersion || 'unknown'} | Current: {backupValidation?.version?.currentVersion || 'unknown'}
-                          </div>
-                          <div>
-                            Format: {backupValidation?.format || '-'} | Type: {backupValidation?.backupType || '-'}
-                          </div>
-                          {backupValidation?.version?.reason && <div>{backupValidation.version.reason}</div>}
-                          {Array.isArray(backupValidation?.issues) && backupValidation.issues.length > 0 && (
-                            <div>Issues: {backupValidation.issues.join(' | ')}</div>
-                          )}
-                        </div>
+                      {mongorestoreAvailable === false && (
+                        <p className="text-xs text-slate-700 mb-2 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1.5">
+                          mongorestore was not found on the server PATH. Install MongoDB Database Tools (same package as mongodump) and restart the API.
+                        </p>
                       )}
                       <button
                         type="button"
-                        onClick={handleRestoreFromFile}
-                        disabled={!restoreFile || restoreLoading || validatingBackup || backupValidation?.status === 'blocked'}
-                        className="inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium shadow-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                        onClick={() => restoreArchiveInputRef.current?.click()}
+                        disabled={restoreUploading || backupsLoading || mongorestoreAvailable !== true}
+                        className={`inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-sm font-medium shadow-sm transition-colors border border-emerald-300 ${
+                          restoreUploading || backupsLoading || mongorestoreAvailable !== true
+                            ? 'bg-slate-100 text-slate-500 cursor-not-allowed border-slate-200'
+                            : 'bg-white text-emerald-900 hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2'
+                        }`}
                       >
-                        {restoreLoading ? 'Restoring...' : 'Restore This Backup'}
+                        {restoreUploading ? 'Restoring from file…' : 'Choose backup file to restore (.archive.gz)'}
                       </button>
-                    </label>
-                    {lastRestoreReport && (
-                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-[11px] text-emerald-900 space-y-1">
-                        <div className="font-semibold uppercase">Restore Verification Report</div>
-                        <div>
-                          Backup Format: detected v{lastRestoreReport?.backupFormatVersionDetected ?? '-'} {'->'} applied v{lastRestoreReport?.backupFormatVersionApplied ?? '-'}
-                        </div>
-                        <div>
-                          Verification: users={lastRestoreReport?.verification?.usersCount ?? 0}, stores={lastRestoreReport?.verification?.storesCount ?? 0}, assets={lastRestoreReport?.verification?.assetsCount ?? 0}, superAdmin={lastRestoreReport?.verification?.hasSuperAdmin ? 'yes' : 'no'}
-                        </div>
-                        <div>
-                          Restored Collections: {
-                            Object.entries(lastRestoreReport?.restoredCollections || {})
-                              .map(([name, count]) => `${name}:${count}`)
-                              .join(', ') || 'none'
-                          }
-                        </div>
-                        {Array.isArray(lastRestoreReport?.skippedCollections) && lastRestoreReport.skippedCollections.length > 0 && (
-                          <div>
-                            Skipped Collections: {lastRestoreReport.skippedCollections.join(', ')}
-                          </div>
-                        )}
-                        <div className="pt-1">
-                          <button
-                            type="button"
-                            onClick={handleDownloadRestoreReport}
-                            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[11px] font-medium bg-emerald-700 text-white hover:bg-emerald-800"
-                          >
-                            Download Restore Report (JSON)
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
-                      <table className="min-w-full text-[11px]">
-                        <thead className="bg-slate-50">
-                          <tr className="text-left text-slate-600">
-                            <th className="px-2 py-1">Backup Name</th>
-                            <th className="px-2 py-1">Date</th>
-                            <th className="px-2 py-1">Size</th>
-                            <th className="px-2 py-1">Type</th>
-                            <th className="px-2 py-1">App Version</th>
-                            <th className="px-2 py-1">Actions</th>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-6">
+                <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                      <Database size={16} className="text-indigo-600" aria-hidden />
+                      Local backup files
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => fetchBackupArtifacts()}
+                      disabled={backupsLoading}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700 hover:text-indigo-900 disabled:opacity-50 px-2 py-1 rounded-md hover:bg-indigo-50"
+                    >
+                      <RefreshCw size={14} className={backupsLoading ? 'animate-spin' : ''} aria-hidden />
+                      Refresh list
+                    </button>
+                  </div>
+                  <div className="p-4 space-y-4">
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      Archives created on this server appear here. Use <strong>Download</strong> to save a copy (for example to a USB drive), or <strong>Delete</strong> to remove the file from disk and the catalog.
+                    </p>
+                    <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-slate-50 text-slate-600">
+                          <tr className="text-left">
+                            <th className="px-3 py-2 font-medium">File</th>
+                            <th className="px-3 py-2 font-medium">Created</th>
+                            <th className="px-3 py-2 font-medium">Size</th>
+                            <th className="px-3 py-2 font-medium">Type</th>
+                            <th className="px-3 py-2 font-medium">App</th>
+                            <th className="px-3 py-2 font-medium text-right">Actions</th>
                           </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-slate-100">
                           {backupsLoading && (
-                            <tr><td className="px-2 py-2 text-slate-500" colSpan={6}>Loading backups...</td></tr>
+                            <tr>
+                              <td className="px-3 py-8 text-center text-slate-500" colSpan={6}>
+                                <span className="inline-flex items-center gap-2">
+                                  <RefreshCw size={14} className="animate-spin text-indigo-500" aria-hidden />
+                                  Loading backups…
+                                </span>
+                              </td>
+                            </tr>
                           )}
-                          {!backupsLoading && backupArtifacts.length === 0 && (
-                            <tr><td className="px-2 py-2 text-slate-500" colSpan={6}>No backups found.</td></tr>
+                          {!backupsLoading &&
+                            backupArtifacts.filter((b) => !isPbmArtifact(b)).length === 0 && (
+                            <tr>
+                              <td className="px-3 py-10 text-center text-slate-500" colSpan={6}>
+                                <p className="text-sm text-slate-600 mb-1">No local backup files yet</p>
+                                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                                  When local backup is enabled, use <strong>Create local full backup (USB)</strong> above, then refresh this list.
+                                </p>
+                              </td>
+                            </tr>
                           )}
-                          {!backupsLoading && backupArtifacts.map((b) => (
-                            <tr key={b._id} className="border-t border-slate-100">
-                              <td className="px-2 py-1 text-slate-800">{b.fileName || b.name}</td>
-                              <td className="px-2 py-1 text-slate-600">{new Date(b.createdAt).toLocaleString()}</td>
-                              <td className="px-2 py-1 text-slate-600">{((b.sizeBytes || 0) / (1024 * 1024)).toFixed(2)} MB</td>
-                              <td className="px-2 py-1 text-slate-600">{b.backupType || '-'}</td>
-                              <td className="px-2 py-1 text-slate-600">{b.appVersion || '-'}</td>
-                              <td className="px-2 py-1">
-                                <div className="flex gap-2">
-                                  <button onClick={() => handleDownloadBackupArtifact(b)} className="text-indigo-600 hover:underline">Download</button>
-                                  <button
-                                    onClick={() => handleRestoreBackupArtifact(b)}
-                                    disabled={restoringBackupId === b._id}
-                                    className="text-emerald-600 hover:underline disabled:opacity-50"
-                                  >
-                                    {restoringBackupId === b._id ? 'Restoring...' : 'Restore'}
+                          {!backupsLoading &&
+                            backupArtifacts
+                              .filter((b) => !isPbmArtifact(b))
+                              .map((b) => (
+                            <tr key={b._id} className="hover:bg-slate-50/80">
+                              <td className="px-3 py-2 text-slate-900 font-mono text-[10px] align-top break-all max-w-[200px] sm:max-w-xs">
+                                {b.fileName || b.name}
+                              </td>
+                              <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{formatArtifactDate(b.createdAt)}</td>
+                              <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{formatArtifactSize(b.sizeBytes)}</td>
+                              <td className="px-3 py-2 text-slate-600">{b.backupType || '—'}</td>
+                              <td className="px-3 py-2 text-slate-600">{b.appVersion || '—'}</td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="inline-flex flex-wrap justify-end gap-x-3 gap-y-1">
+                                  <button type="button" onClick={() => handleDownloadBackupArtifact(b)} className="text-indigo-600 hover:text-indigo-800 font-medium">
+                                    Download
                                   </button>
-                                  <button onClick={() => handleDeleteBackupArtifact(b)} className="text-red-600 hover:underline">Delete</button>
+                                  <button type="button" onClick={() => handleDeleteBackupArtifact(b)} className="text-red-600 hover:text-red-800 font-medium">
+                                    Delete
+                                  </button>
                                 </div>
                               </td>
                             </tr>
@@ -1356,7 +1304,7 @@ const Portal = () => {
                       </table>
                     </div>
                   </div>
-                </div>
+                </section>
 
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-4">
                   <h3 className="text-sm font-semibold text-red-800 flex items-center gap-2">
@@ -1443,8 +1391,10 @@ const Portal = () => {
               </div>
             </div>
             
-            <div className="bg-slate-50 px-6 py-3 border-t border-slate-100 text-center">
-               <p className="text-xs text-slate-400">Action ID: {Math.random().toString(36).substr(2, 9).toUpperCase()}</p>
+            <div className="bg-slate-50 px-6 py-3 border-t border-slate-200">
+              <p className="text-xs text-slate-500 text-center">
+                Operations on this page affect live data. Close the dialog when you are finished.
+              </p>
             </div>
           </div>
         </div>

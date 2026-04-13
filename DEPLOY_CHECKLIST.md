@@ -32,6 +32,10 @@ Fix any errors before deploying.
 | `client/.env.example` | Dev proxy template. |
 | `.env.docker` | Docker Compose — copy from `.env.docker.example` if using containers. |
 
+**Backups (PBM):** For API and scheduled snapshots, set **`PBM_MONGODB_URI`** (see `.env.docker.example` / `server/.env.vm.example`) and run **Percona Backup for MongoDB** agents + storage on MongoDB as in [PBM initial setup](https://docs.percona.com/percona-backup-mongodb/install/initial-setup.html). The `app` Docker image includes the `pbm` CLI.
+
+**Observability:** With **`ENABLE_METRICS`** (defaults to on in production, off in dev unless set), the API exposes **`GET /metrics`** in Prometheus format. Set **`METRICS_SCRAPE_TOKEN`** for Bearer / `X-Metrics-Token` / `?token=` scraping on untrusted networks. Super Admins can use the in-app **Platform health** page at **`/system-health`** (`GET /api/system/operations-status`).
+
 Production builds of the client use **`axios` `baseURL: '/api'`** (same origin). Your reverse proxy or `server` static hosting must serve **`/api`** and **`/uploads`** to the Node API (see `README_LOCAL.md` §6 and `nginx.conf` / `nginx.docker.conf`).
 
 ## 4) Minimum `server/.env` sanity (production)
@@ -46,6 +50,7 @@ Production builds of the client use **`axios` `baseURL: '/api'`** (same origin).
 - **`JSON_BODY_LIMIT`** — optional; caps JSON upload size (defaults **5mb** in production, **10mb** in development).
 - **`ENABLE_HSTS`** — set to **`true`** only when users always reach the app over HTTPS; leave unset/false for plain-HTTP or lab URLs.
 - **`LOGIN_RATE_LIMIT_MAX`** — optional override for `POST /api/auth/login` throttling (defaults **60** in production per IP+login per 5 minutes).
+- **`PBM_MONGODB_URI`** — PBM user connection string for **Percona Backup for MongoDB** (required for `POST /api/system/backups/*` and schedulers that call `pbm`). Optional: **`PBM_BACKUP_WAIT_TIME`**, **`PBM_CLI_PATH`**.
 
 ## 5) How to run in production (short)
 

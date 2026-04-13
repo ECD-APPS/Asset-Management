@@ -2672,7 +2672,9 @@ router.get('/stats', protect, async (req, res) => {
     };
 
     const usageMap = { Installed: 0, Used: 0, Faulty: 0, Other: 0 };
-    usageBreakdownCounts.forEach(u => { if (u._id && usageMap.hasOwnProperty(u._id)) usageMap[u._id] = u.count; });
+    usageBreakdownCounts.forEach((u) => {
+      if (u._id && Object.prototype.hasOwnProperty.call(usageMap, u._id)) usageMap[u._id] = u.count;
+    });
     stats.usageBreakdown = {
       installed: usageMap.Installed,
       used: usageMap.Used,
@@ -2860,7 +2862,9 @@ router.post('/', protect, restrictViewer, async (req, res) => {
       if (!normProduct && model_number) {
         linkedProductName = await findProductNameByModelNumber(model_number, req.activeStore);
       }
-    } catch {}
+    } catch {
+      /* optional product name lookup */
+    }
     const finalProductName = normProduct || linkedProductName || '';
  
     const uniqueId = await generateUniqueId(name);
@@ -2987,7 +2991,9 @@ router.post('/bulk', protect, admin, async (req, res) => {
           serial_last_4: a.serial_last_4 || (a.serial_number ? String(a.serial_number).slice(-4) : '')
         });
         created.push(item);
-      } catch {}
+      } catch {
+        /* skip rows that fail validation or DB constraints */
+      }
     }
     await ActivityLog.create({
       user: req.user.name,
@@ -3209,7 +3215,7 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
     return res.status(400).json({ message: 'No file uploaded' });
   }
   try {
-    const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+    const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     const workbook = await readUploadedWorkbook(req.file);
     const worksheets = Array.isArray(workbook?.worksheets) ? workbook.worksheets : [];
     if (worksheets.length === 0) {
@@ -3620,7 +3626,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
   }
 
   try {
-    const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+    const importBatchId = `BATCH-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     const workbook = await readUploadedWorkbook(req.file);
     const worksheets = Array.isArray(workbook?.worksheets) ? workbook.worksheets : [];
     if (worksheets.length === 0) {
