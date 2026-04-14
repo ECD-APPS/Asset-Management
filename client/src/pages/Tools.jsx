@@ -444,6 +444,30 @@ const Tools = () => {
     }
   };
 
+  const renderToolActions = (tool, compact = false) => {
+    const cls = compact
+      ? 'rounded-md border px-2 py-1 text-xs font-medium'
+      : 'hover:underline';
+    return (
+      <div className={`flex flex-wrap ${compact ? 'gap-2' : 'gap-x-3 gap-y-1'}`}>
+        <button type="button" onClick={() => openHistory(tool)} className={compact ? `${cls} border-indigo-200 text-indigo-700` : `text-indigo-600 ${cls}`}>History</button>
+        {canWrite && (
+          <button type="button" onClick={() => onEditClick(tool, 'edit')} className={compact ? `${cls} border-amber-200 text-amber-700` : `text-amber-600 ${cls}`}>Edit</button>
+        )}
+        {canWrite && (
+          <button type="button" onClick={() => onEditClick(tool, 'modify')} className={compact ? `${cls} border-amber-300 text-amber-800` : `text-amber-800 ${cls}`}>Modify</button>
+        )}
+        {canAssign && tool.status === 'Available' && (
+          <button type="button" onClick={() => setAssignToolModal(tool)} className={compact ? `${cls} border-emerald-200 text-emerald-700` : `text-emerald-700 ${cls}`}>Assign</button>
+        )}
+        {canAssign && tool.status === 'Issued' && (
+          <button type="button" onClick={() => onAdminReturnTool(tool)} className={compact ? `${cls} border-slate-300 text-slate-700` : `text-slate-700 ${cls}`}>Return</button>
+        )}
+        {canWrite && <button type="button" onClick={() => onDelete(tool._id)} className={compact ? `${cls} border-rose-200 text-rose-700` : `text-red-600 ${cls}`}>Delete</button>}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Tools</h1>
@@ -463,13 +487,13 @@ const Tools = () => {
             <option value="Maintenance">Maintenance</option>
             <option value="Retired">Retired</option>
           </select>
-          <button type="button" onClick={() => loadTools({ q: debouncedSearch, s: status })} className="rounded-lg px-4 py-2 bg-slate-900 text-white hover:bg-black">Refresh</button>
+          <button type="button" onClick={() => loadTools({ q: debouncedSearch, s: status })} className="rounded-lg px-4 py-2 bg-slate-900 text-white hover:bg-black w-full md:w-auto">Refresh</button>
           <div className="flex flex-wrap gap-2 items-center">
             <button
               type="button"
               disabled={exportBusy}
               onClick={exportTools}
-              className="rounded-lg px-3 py-2 bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50 text-sm"
+              className="rounded-lg px-3 py-2 bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50 text-sm w-full sm:w-auto"
             >
               {exportBusy ? 'Export…' : 'Bulk export (.xlsx)'}
             </button>
@@ -478,11 +502,11 @@ const Tools = () => {
                 <button
                   type="button"
                   onClick={downloadImportTemplate}
-                  className="rounded-lg px-3 py-2 bg-slate-100 text-slate-800 hover:bg-slate-200 text-sm"
+                  className="rounded-lg px-3 py-2 bg-slate-100 text-slate-800 hover:bg-slate-200 text-sm w-full sm:w-auto"
                 >
                   Import template
                 </button>
-                <label className="rounded-lg px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 text-sm cursor-pointer disabled:opacity-50">
+                <label className="rounded-lg px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 text-sm cursor-pointer disabled:opacity-50 w-full sm:w-auto text-center">
                   <input type="file" accept=".xlsx,.xls" className="hidden" disabled={importBusy} onChange={onImportFile} />
                   {importBusy ? 'Import…' : 'Bulk import'}
                 </label>
@@ -591,7 +615,37 @@ const Tools = () => {
         </form>
       )}
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+      <div className="md:hidden space-y-3">
+        {loading ? (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 text-sm text-slate-500">Loading tools...</div>
+        ) : list.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 text-sm text-slate-500">No tools found.</div>
+        ) : (
+          list.map((tool) => (
+            <div key={tool._id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-slate-900">{tool.name || '-'}</h3>
+                  <p className="text-xs text-slate-500">{tool.type || '-'} · {tool.model || '-'}</p>
+                </div>
+                <span className="text-xs px-2 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-700">{tool.status || '-'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                <div><span className="text-slate-500">Serial</span><div className="font-medium text-slate-800">{tool.serial_number || '-'}</div></div>
+                <div><span className="text-slate-500">MAC</span><div className="font-medium text-slate-800">{tool.mac_address || '-'}</div></div>
+                <div><span className="text-slate-500">PO</span><div className="font-medium text-slate-800">{tool.po_number || '-'}</div></div>
+                <div><span className="text-slate-500">Vendor</span><div className="font-medium text-slate-800">{tool.vendor_name || '-'}</div></div>
+                <div className="col-span-2"><span className="text-slate-500">Location</span><div className="font-medium text-slate-800">{formatToolLocation(tool)}</div></div>
+                <div className="col-span-2"><span className="text-slate-500">Holder</span><div className="font-medium text-slate-800">{holderDisplay(tool)}</div></div>
+                <div className="col-span-2"><span className="text-slate-500">Comment</span><div className="font-medium text-slate-800">{tool.comment || '-'}</div></div>
+              </div>
+              {renderToolActions(tool, true)}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 border-b">
             <tr>
@@ -631,22 +685,7 @@ const Tools = () => {
                   <td className="px-3 py-2">{holderDisplay(tool)}</td>
                   <td className="px-3 py-2">{tool.comment || '-'}</td>
                   <td className="px-3 py-2">
-                    <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <button type="button" onClick={() => openHistory(tool)} className="text-indigo-600 hover:underline">History</button>
-                      {canWrite && (
-                        <button type="button" onClick={() => onEditClick(tool, 'edit')} className="text-amber-600 hover:underline">Edit</button>
-                      )}
-                      {canWrite && (
-                        <button type="button" onClick={() => onEditClick(tool, 'modify')} className="text-amber-800 hover:underline">Modify</button>
-                      )}
-                      {canAssign && tool.status === 'Available' && (
-                        <button type="button" onClick={() => setAssignToolModal(tool)} className="text-emerald-700 hover:underline">Assign</button>
-                      )}
-                      {canAssign && tool.status === 'Issued' && (
-                        <button type="button" onClick={() => onAdminReturnTool(tool)} className="text-slate-700 hover:underline">Return</button>
-                      )}
-                      {canWrite && <button type="button" onClick={() => onDelete(tool._id)} className="text-red-600 hover:underline">Delete</button>}
-                    </div>
+                    {renderToolActions(tool)}
                   </td>
                 </tr>
               ))

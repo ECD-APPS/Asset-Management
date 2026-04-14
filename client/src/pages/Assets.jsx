@@ -631,6 +631,7 @@ const Assets = () => {
   const [maintenanceVendorList, setMaintenanceVendorList] = useState(() => [...DEFAULT_MAINTENANCE_VENDORS]);
   const [showRecentUploads, setShowRecentUploads] = useState(false);
   const [prevVisibleColumns, setPrevVisibleColumns] = useState(null);
+  const [quickSearchTerm, setQuickSearchTerm] = useState('');
 
   const displayedAssets = useMemo(() => {
     const selectedSet = new Set(selectedIds);
@@ -1438,7 +1439,13 @@ const Assets = () => {
 
   const isConditionFaulty = (asset) => String(asset?.condition || '').trim().toLowerCase() === 'faulty';
   const cannotIssueToTechnician = (asset) => Boolean(asset?.reserved === true) || isConditionFaulty(asset);
-  const topAssignDisabled = selectedIds.length === 0;
+  const selectedAssignableAssets = useMemo(
+    () => selectedIds
+      .map((id) => assets.find((a) => String(a._id) === String(id)))
+      .filter(Boolean),
+    [assets, selectedIds]
+  );
+  const topAssignDisabled = selectedIds.length === 0 || selectedAssignableAssets.length === 0;
 
   const faultySelectionAsset = useMemo(() => {
     if (selectedIds.length !== 1) return null;
@@ -1463,8 +1470,13 @@ const Assets = () => {
 
   const handleTopAssign = () => {
     if (selectedIds.length === 0) return;
-    const asset = assets.find((a) => String(a._id) === String(selectedIds[0]));
-    if (asset) handleAssignClick(asset, selectedIds);
+    const idsInView = selectedAssignableAssets.map((a) => a._id).filter(Boolean);
+    const asset = selectedAssignableAssets[0];
+    if (!asset || idsInView.length === 0) {
+      showToast('Please reselect assets from the current list before bulk assign.', 'error');
+      return;
+    }
+    handleAssignClick(asset, idsInView);
   };
 
   const handleTopReserve = async () => {
@@ -1857,7 +1869,7 @@ const Assets = () => {
           page,
           limit,
           recent_upload: showRecentUploads,
-          q: searchTerm || undefined,
+          q: quickSearchTerm || searchTerm || undefined,
           derived_status: filterStatus || undefined,
           store: filterStoreId || undefined,
           location: filterLocation || undefined,
@@ -1902,6 +1914,7 @@ const Assets = () => {
     page,
     limit,
     showRecentUploads,
+    quickSearchTerm,
     searchTerm,
     filterStatus,
     filterStoreId,
@@ -2594,7 +2607,17 @@ const Assets = () => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
   const toggleSelectAll = () => {
-    setSelectedIds(prev => prev.length === assets.length ? [] : assets.map(a => a._id));
+    const visibleIds = displayedAssets.map((a) => a._id);
+    setSelectedIds((prev) => {
+      const prevSet = new Set(prev);
+      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => prevSet.has(id));
+      if (allVisibleSelected) {
+        return prev.filter((id) => !visibleIds.includes(id));
+      }
+      const merged = new Set(prev);
+      visibleIds.forEach((id) => merged.add(id));
+      return Array.from(merged);
+    });
   };
   const handleBulkEditSubmit = async () => {
     if (selectedIds.length === 0) return;
@@ -2712,6 +2735,7 @@ const Assets = () => {
     const t = setTimeout(() => {
       const hasAnyActiveFilter = Boolean(
         showRecentUploads ||
+        quickSearchTerm ||
         searchTerm ||
         filterLocation ||
         filterStatus ||
@@ -2744,7 +2768,7 @@ const Assets = () => {
     }, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showRecentUploads, searchTerm, filterLocation, filterStatus, filterCondition, filterManufacturer, filterMaintenanceVendor, filterReserved, filterDisposed, filterDuplicate, isScyStoreContext, filterModelNumber, filterSerialNumber, filterMacAddress, filterProductName, filterTicket, filterRfid, filterQr, filterDateFrom, filterDateTo]);
+  }, [showRecentUploads, quickSearchTerm, searchTerm, filterLocation, filterStatus, filterCondition, filterManufacturer, filterMaintenanceVendor, filterReserved, filterDisposed, filterDuplicate, isScyStoreContext, filterModelNumber, filterSerialNumber, filterMacAddress, filterProductName, filterTicket, filterRfid, filterQr, filterDateFrom, filterDateTo]);
 
   // Page/Limit change effect
   useEffect(() => {
@@ -3651,6 +3675,14 @@ const Assets = () => {
           />
           <input
             type="text"
+            placeholder="Quick search across all store assets"
+            title="Server-side quick search across all assets in your current store scope."
+            value={quickSearchTerm}
+            onChange={(e) => setQuickSearchTerm(e.target.value)}
+            className="h-10 px-3 border border-gray-300 rounded-lg bg-indigo-50/30 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+          />
+          <input
+            type="text"
             list="assets-location-options"
             placeholder="All Locations"
             value={filterLocation}
@@ -3788,6 +3820,7 @@ const Assets = () => {
             <button
               onClick={() => {
                 setSearchTerm(''); setFilterLocation(''); setFilterStatus(''); setFilterCondition('');
+                setQuickSearchTerm('');
                 setFilterStoreId('');
                 setFilterManufacturer(''); setFilterMaintenanceVendor(''); setFilterProductName('');
                 setFilterReserved('');
@@ -4007,7 +4040,12 @@ const Assets = () => {
             <tr className="border-b border-slate-200">
               {user?.role !== 'Viewer' && (
                 <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 md:px-4 md:py-3 text-center shadow-[inset_0_-1px_0_0_rgb(226,232,240)]">
-                  <input onClick={(e) => e.stopPropagation()} type="checkbox" checked={selectedIds.length === assets.length && assets.length > 0} onChange={toggleSelectAll} />
+                  <input
+                    onClick={(e) => e.stopPropagation()}
+                    type="checkbox"
+                    checked={displayedAssets.length > 0 && displayedAssets.every((asset) => selectedIds.includes(asset._id))}
+                    onChange={toggleSelectAll}
+                  />
                 </th>
               )}
               {orderedVisibleColumns.map((key) => (

@@ -3,6 +3,8 @@ import { X, Upload, FileSpreadsheet, Download } from 'lucide-react';
 import api from '../api/axios';
 import { downloadMultiSheetAoAXlsx } from '../utils/excelExport';
 
+const IMPORT_UPLOAD_TIMEOUT_MS = 15 * 60 * 1000;
+
 const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -118,7 +120,8 @@ const ImportAssetsModal = ({ isOpen, onClose, onSuccess, source }) => {
     setLoading(true);
     try {
       const res = await api.post('/assets/import', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: IMPORT_UPLOAD_TIMEOUT_MS
       });
       alert(res.data.message || 'Assets imported successfully');
       onSuccess && onSuccess();

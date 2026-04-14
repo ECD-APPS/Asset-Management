@@ -47,6 +47,18 @@ const IMPORT_PREVIEW_RESPONSE_CAP = Math.min(
   Math.max(5000, Number.parseInt(process.env.IMPORT_PREVIEW_MAX_ROWS || '20000', 10) || 20000),
   100000
 );
+/** Cap very large import response arrays to avoid huge JSON payloads/timeouts. */
+const IMPORT_RESULT_SAMPLE_CAP = Math.min(
+  Math.max(100, Number.parseInt(process.env.IMPORT_RESULT_SAMPLE_CAP || '500', 10) || 500),
+  5000
+);
+const DASHBOARD_STATS_CACHE_TTL_MS = Math.min(
+  Math.max(3000, Number.parseInt(process.env.DASHBOARD_STATS_CACHE_TTL_MS || '15000', 10) || 15000),
+  120000
+);
+const dashboardStatsCache = new Map();
+const dashboardStatsInflight = new Map();
+let dashboardStatsActiveRequests = 0;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -2245,6 +2257,11 @@ router.get('/search-serial', protect, async (req, res) => {
 // @route   GET /api/assets/stats
 // @access  Private
 router.get('/stats', protect, async (req, res) => {
+  const routeStartMs = Date.now();
+  dashboardStatsActiveRequests += 1;
+  let scopeKey = '';
+  let resolveInflight = null;
+  let rejectInflight = null;
   try {
     const LOW_STOCK_THRESHOLD = 5;
     const filter = { disposed: false };
@@ -2258,9 +2275,30 @@ router.get('/stats', protect, async (req, res) => {
       targetStoreId = req.user.assignedStore;
     }
 
+    let scopedStoreIds = null;
     if (targetStoreId) {
-      const storeIds = await getStoreIds(targetStoreId);
-      filter.store = { $in: storeIds };
+      const scopeStartMs = Date.now();
+      scopedStoreIds = await getStoreIds(targetStoreId);
+      filter.store = { $in: scopedStoreIds };
+      // #region agent log
+      fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+        body: JSON.stringify({
+          sessionId: '513919',
+          runId: 'dashboard-latency-pass2',
+          hypothesisId: 'H2_H4',
+          location: 'assets.js:stats:store-scope',
+          message: 'store scope resolved',
+          data: {
+            storeCount: Array.isArray(scopedStoreIds) ? scopedStoreIds.length : 0,
+            elapsedMs: Date.now() - scopeStartMs,
+            activeRequests: dashboardStatsActiveRequests
+          },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion
     }
 
     if (maintenanceVendor) {
@@ -2272,14 +2310,48 @@ router.get('/stats', protect, async (req, res) => {
         ];
       }
     }
-
+    scopeKey = [
+      String(targetStoreId || 'global'),
+      String(maintenanceVendor || 'All'),
+      String(req.user?.role || ''),
+      String(req.user?._id || '')
+    ].join('|');
+    const cachedEntry = dashboardStatsCache.get(scopeKey);
+    if (cachedEntry && Date.now() - cachedEntry.ts < DASHBOARD_STATS_CACHE_TTL_MS) {
+      return res.json(cachedEntry.data);
+    }
+    const existingInflight = dashboardStatsInflight.get(scopeKey);
+    if (existingInflight) {
+      const sharedStats = await existingInflight;
+      return res.json(sharedStats);
+    }
+    const inflightPromise = new Promise((resolve, reject) => {
+      resolveInflight = resolve;
+      rejectInflight = reject;
+    });
+    dashboardStatsInflight.set(scopeKey, inflightPromise);
+    // #region agent log
+    fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+      body: JSON.stringify({
+        sessionId: '513919',
+        runId: 'dashboard-latency-pass2',
+        hypothesisId: 'H1_H5',
+        location: 'assets.js:stats:start',
+        message: 'stats query started',
+        data: {
+          maintenanceVendor: maintenanceVendor || 'All',
+          hasStoreScope: Boolean(targetStoreId),
+          activeRequests: dashboardStatsActiveRequests
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
     const requestFilter = { status: 'Pending' };
-    if (targetStoreId) {
-       // Also apply hierarchy to requests? Maybe.
-       // Requests usually have a specific store.
-       // But if we are viewing parent store, we might want to see requests from children.
-       const storeIds = await getStoreIds(targetStoreId);
-       requestFilter.store = { $in: storeIds };
+    if (targetStoreId && Array.isArray(scopedStoreIds)) {
+       requestFilter.store = { $in: scopedStoreIds };
     }
 
     const quantityExpr = {
@@ -2747,10 +2819,57 @@ router.get('/stats', protect, async (req, res) => {
       value: item.count
     }));
 
+    // #region agent log
+    fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+      body: JSON.stringify({
+        sessionId: '513919',
+        runId: 'dashboard-latency-pass2',
+        hypothesisId: 'H1_H3',
+        location: 'assets.js:stats:success',
+        message: 'stats query completed',
+        data: {
+          maintenanceVendor: maintenanceVendor || 'All',
+          elapsedMs: Date.now() - routeStartMs,
+          activeRequests: dashboardStatsActiveRequests
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
+    dashboardStatsCache.set(scopeKey, { ts: Date.now(), data: stats });
+    if (resolveInflight) resolveInflight(stats);
     res.json(stats);
   } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+      body: JSON.stringify({
+        sessionId: '513919',
+        runId: 'dashboard-latency-pass2',
+        hypothesisId: 'H5',
+        location: 'assets.js:stats:error',
+        message: 'stats query failed',
+        data: {
+          maintenanceVendor: String(req.query?.maintenance_vendor || '').trim() || 'All',
+          elapsedMs: Date.now() - routeStartMs,
+          activeRequests: dashboardStatsActiveRequests,
+          errorMessage: String(error?.message || '').slice(0, 180)
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
+    if (rejectInflight) rejectInflight(error);
     console.error('Error in GET /stats:', error);
     res.status(500).json({ message: error.message });
+  } finally {
+    if (scopeKey) {
+      dashboardStatsInflight.delete(scopeKey);
+    }
+    dashboardStatsActiveRequests = Math.max(0, dashboardStatsActiveRequests - 1);
   }
 });
 
@@ -3731,6 +3850,7 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     }
 
     const duplicates = [];
+    let duplicateCount = 0;
     const createdCount = { v: 0 };
     const updatedCount = { v: 0 };
     const allowDuplicates = String(req.body?.allowDuplicates || '').toLowerCase() === 'true';
@@ -4061,7 +4181,9 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
 
     const docsToInsert = [];
     const warnings = [];
+    let warningsTotal = 0;
     const updatedRows = [];
+    let updatedRowsTotal = 0;
     const importUpdateEntries = [];
     const bulkUpdateOps = [];
     for (const row of parsedAssets) {
@@ -4075,11 +4197,13 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       }
 
       if (fileSeenSerials.has(pair)) {
-        duplicates.push({
-          serial: row.serialStr,
-          reason: 'Duplicate serial in uploaded file',
-          asset: row.assetData
-        });
+          duplicateCount += 1;
+          if (duplicates.length < IMPORT_RESULT_SAMPLE_CAP) {
+            duplicates.push({
+              serial: row.serialStr,
+              reason: 'Duplicate serial in uploaded file'
+            });
+          }
         continue;
       }
       fileSeenSerials.add(pair);
@@ -4087,13 +4211,15 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       if (existingPairSet.has(pair) && !(allowDuplicates && isAdminUser)) {
         const existingDoc = existingDocsByPair.get(pair);
         if (!existingDoc) {
-          duplicates.push({
-            serial: row.serialStr,
-            reason: isAdminUser
-              ? 'Duplicate serial exists in same store (enable Allow duplicates to force add)'
-              : 'Duplicate serial exists in same store (Admin permission required)',
-            asset: row.assetData
-          });
+          duplicateCount += 1;
+          if (duplicates.length < IMPORT_RESULT_SAMPLE_CAP) {
+            duplicates.push({
+              serial: row.serialStr,
+              reason: isAdminUser
+                ? 'Duplicate serial exists in same store (enable Allow duplicates to force add)'
+                : 'Duplicate serial exists in same store (Admin permission required)'
+            });
+          }
           continue;
         }
 
@@ -4121,10 +4247,13 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
             }
           });
           updatedCount.v += 1;
-          updatedRows.push({
-            serial: row.serialStr,
-            changed_fields: changedFields
-          });
+          updatedRowsTotal += 1;
+          if (updatedRows.length < IMPORT_RESULT_SAMPLE_CAP) {
+            updatedRows.push({
+              serial: row.serialStr,
+              changed_fields: changedFields
+            });
+          }
           importUpdateEntries.push({
             assetId: existingDoc._id,
             serial: row.serialStr,
@@ -4132,9 +4261,15 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
             previousValues,
             nextValues
           });
-          warnings.push(`Updated serial ${row.serialStr}: ${changedFields.join(', ')}`);
+          if (warnings.length < IMPORT_RESULT_SAMPLE_CAP) {
+            warnings.push(`Updated serial ${row.serialStr}: ${changedFields.join(', ')}`);
+          }
+          warningsTotal += 1;
         } else {
-          warnings.push(`No change for serial ${row.serialStr}`);
+          if (warnings.length < IMPORT_RESULT_SAMPLE_CAP) {
+            warnings.push(`No change for serial ${row.serialStr}`);
+          }
+          warningsTotal += 1;
         }
         continue;
       }
@@ -4150,22 +4285,29 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     }
 
     if (docsToInsert.length > 0) {
-      try {
-        const inserted = await Asset.insertMany(docsToInsert, { ordered: false });
-        createdCount.v += inserted.length;
-      } catch (e) {
-        const insertedCount = Number(e?.result?.nInserted || e?.insertedDocs?.length || 0);
-        createdCount.v += insertedCount;
-        if (Array.isArray(e?.writeErrors)) {
-          e.writeErrors.forEach((we) => {
-            duplicates.push({
-              serial: we?.err?.op?.serial_number || '',
-              reason: we?.errmsg || 'Insert error',
-              asset: we?.err?.op
+      const INSERT_CHUNK = 1000;
+      for (let i = 0; i < docsToInsert.length; i += INSERT_CHUNK) {
+        const slice = docsToInsert.slice(i, i + INSERT_CHUNK);
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const inserted = await Asset.insertMany(slice, { ordered: false });
+          createdCount.v += inserted.length;
+        } catch (e) {
+          const insertedCount = Number(e?.result?.nInserted || e?.insertedDocs?.length || 0);
+          createdCount.v += insertedCount;
+          if (Array.isArray(e?.writeErrors)) {
+            e.writeErrors.forEach((we) => {
+              duplicateCount += 1;
+              if (duplicates.length < IMPORT_RESULT_SAMPLE_CAP) {
+                duplicates.push({
+                  serial: we?.err?.op?.serial_number || '',
+                  reason: we?.errmsg || 'Insert error'
+                });
+              }
             });
-          });
-        } else {
-          throw e;
+          } else {
+            throw e;
+          }
         }
       }
     }
@@ -4200,20 +4342,36 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     const suffix = invalidRows.length
       ? `, ${invalidRows.length} row(s) skipped due to invalid formatting/capitalization`
       : '';
+    const warningsTruncated = warningsTotal > warnings.length;
+    const updatedRowsSample = updatedRows;
+    const updatedRowsTruncated = updatedRowsTotal > updatedRowsSample.length;
+    const duplicatesTruncated = duplicateCount > duplicates.length;
+    const invalidRowsSample = invalidRows.slice(0, IMPORT_RESULT_SAMPLE_CAP);
+    const invalidRowsTruncated = invalidRows.length > invalidRowsSample.length;
     res.json({
       message: `Processed ${createdCount.v + updatedCount.v} assets (created ${createdCount.v}, updated ${updatedCount.v})${suffix}`,
       totals: {
         records_created: createdCount.v,
         quantity_created: totalQuantityCreated,
         records_updated: updatedCount.v,
-        columns_updated: totalColumnsUpdated
+        columns_updated: totalColumnsUpdated,
+        duplicate_rows_skipped: duplicateCount,
+        invalid_rows_skipped: invalidRows.length
       },
       warnings,
-      updated_rows: updatedRows,
+      warnings_total: warningsTotal,
+      warnings_truncated: warningsTruncated,
+      updated_rows: updatedRowsSample,
+      updated_rows_total: updatedRowsTotal,
+      updated_rows_truncated: updatedRowsTruncated,
       import_update_batch_id: importUpdateBatchId,
       import_update_batch_created_at: importUpdateBatchCreatedAt,
       skipped_duplicates: duplicates,
-      invalid_rows: invalidRows
+      skipped_duplicates_total: duplicateCount,
+      skipped_duplicates_truncated: duplicatesTruncated,
+      invalid_rows: invalidRowsSample,
+      invalid_rows_total: invalidRows.length,
+      invalid_rows_truncated: invalidRowsTruncated
     });
 
   } catch (error) {

@@ -914,9 +914,17 @@ const startServer = async () => {
       });
     }
   });
+  const configuredRequestTimeoutMs = Number.parseInt(
+    process.env.HTTP_REQUEST_TIMEOUT_MS || process.env.BULK_IMPORT_REQUEST_TIMEOUT_MS || '1800000',
+    10
+  );
+  const requestTimeoutMs = Number.isFinite(configuredRequestTimeoutMs) && configuredRequestTimeoutMs > 0
+    ? Math.max(60000, configuredRequestTimeoutMs)
+    : 1800000;
   serverInstance.keepAliveTimeout = 65000;
-  serverInstance.headersTimeout = 66000;
-  serverInstance.requestTimeout = 60000;
+  serverInstance.requestTimeout = requestTimeoutMs;
+  // headersTimeout must be greater than requestTimeout to avoid premature socket close.
+  serverInstance.headersTimeout = requestTimeoutMs + 10000;
   serverInstance.on('error', (error) => {
     if (error?.code === 'EADDRINUSE') {
       console.error(`Port ${PORT} is already in use. Stop previous server instance before restarting.`);

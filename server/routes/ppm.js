@@ -354,12 +354,33 @@ const excludeProgramAssetsPendingManagerReview = async (storeScope, programAsset
     id instanceof mongoose.Types.ObjectId ? id : new mongoose.Types.ObjectId(String(id))
   );
   const [blockedOpenNotApproved, blockedTailRejection] = await Promise.all([
-    PpmTask.distinct('asset', {
-      store: storeScope,
-      asset: { $in: oidList },
-      status: { $in: ['Scheduled', 'In Progress', 'Overdue'] },
-      'manager_review.status': { $ne: 'Approved' }
-    }),
+    PpmTask.aggregate([
+      {
+        $match: {
+          store: storeScope,
+          asset: { $in: oidList },
+          status: { $in: ['Scheduled', 'In Progress', 'Overdue'] }
+        }
+      },
+      {
+        $group: {
+          _id: '$asset',
+          openCount: { $sum: 1 },
+          approvedOpenCount: {
+            $sum: {
+              $cond: [{ $eq: ['$manager_review.status', 'Approved'] }, 1, 0]
+            }
+          }
+        }
+      },
+      {
+        $match: {
+          openCount: { $gt: 0 },
+          approvedOpenCount: 0
+        }
+      },
+      { $project: { _id: 0, asset: '$_id' } }
+    ]),
     PpmTask.aggregate([
       { $match: { store: storeScope, asset: { $in: oidList } } },
       { $sort: { updatedAt: -1 } },
@@ -379,9 +400,10 @@ const excludeProgramAssetsPendingManagerReview = async (storeScope, programAsset
       { $project: { _id: 0, asset: '$_id' } }
     ])
   ]);
+  const openBlocked = (blockedOpenNotApproved || []).map((r) => r.asset).filter(Boolean);
   const fromAgg = (blockedTailRejection || []).map((r) => r.asset).filter(Boolean);
   const blockedSet = new Set(
-    [...blockedOpenNotApproved, ...fromAgg].map((id) => String(id))
+    [...openBlocked, ...fromAgg].map((id) => String(id))
   );
   return programAssetIds.filter((id) => !blockedSet.has(String(id)));
 };

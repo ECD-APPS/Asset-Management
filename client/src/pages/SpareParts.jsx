@@ -859,7 +859,7 @@ const SpareParts = () => {
               disabled={harvesting}
               className="rounded-lg px-4 py-2 bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-50 text-sm"
             >
-              {harvesting ? 'Recording…' : 'Record harvest'}
+              {harvesting ? 'Recording…' : 'Donate parts'}
             </button>
           </form>
         </div>
