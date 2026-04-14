@@ -534,7 +534,14 @@ function createFastUniqueIdGenerator() {
   };
 }
 
-async function notifyAssetEvent({ asset, recipientEmail, subject, lines = [], storeRecipientOptions } = {}) {
+async function notifyAssetEvent({
+  asset,
+  recipientEmail,
+  subject,
+  lines = [],
+  storeRecipientOptions,
+  storeListSubject
+} = {}) {
   const configuredRecipients = await getStoreNotificationRecipients(
     asset?.store || null,
     storeRecipientOptions && typeof storeRecipientOptions === 'object' ? storeRecipientOptions : undefined
@@ -555,23 +562,43 @@ async function notifyAssetEvent({ asset, recipientEmail, subject, lines = [], st
       .lean();
     adminRecipientsFromAccounts = adminUsers.map((u) => String(u.email || '').trim().toLowerCase()).filter(Boolean);
   }
-  const recipients = Array.from(
-    new Set([recipientEmail, ...configuredRecipients, ...adminRecipientsFromAccounts]
+  const directRecipient = String(recipientEmail || '').trim().toLowerCase();
+  const listRecipients = Array.from(
+    new Set([...configuredRecipients, ...adminRecipientsFromAccounts]
       .map((v) => String(v || '').trim().toLowerCase())
       .filter(Boolean))
-  );
-  if (recipients.length === 0) return;
+  ).filter((email) => email !== directRecipient);
+  const hasDirectRecipient = Boolean(directRecipient);
+  const hasListRecipients = listRecipients.length > 0;
+  if (!hasDirectRecipient && !hasListRecipients) return;
   try {
     const safeLines = lines.filter(Boolean).map((line) => String(line));
-    const scopedSubject = `${assetPrefix}: ${String(subject || 'Asset Update')}`;
-    await sendStoreEmail({
-      storeId: asset?.store || null,
-      to: recipients.join(','),
-      subject: scopedSubject,
-      text: safeLines.join('\n'),
-      html: `<div><p><strong>${assetPrefix}</strong></p>${safeLines.map((line) => `<p>${line}</p>`).join('')}</div>`,
-      context: 'expo-city-dubai-asset-notification'
-    });
+    const recipientSubjectSuffix = String(subject || 'Asset Update').trim();
+    const recipientScopedSubject = recipientSubjectSuffix ? `${assetPrefix}: ${recipientSubjectSuffix}` : assetPrefix;
+    if (hasDirectRecipient) {
+      await sendStoreEmail({
+        storeId: asset?.store || null,
+        to: directRecipient,
+        subject: recipientScopedSubject,
+        text: safeLines.join('\n'),
+        html: `<div><p><strong>${assetPrefix}</strong></p>${safeLines.map((line) => `<p>${line}</p>`).join('')}</div>`,
+        context: 'expo-city-dubai-asset-notification'
+      });
+    }
+    if (hasListRecipients) {
+      const listSubjectSuffix = typeof storeListSubject === 'string'
+        ? storeListSubject.trim()
+        : recipientSubjectSuffix;
+      const listScopedSubject = listSubjectSuffix ? `${assetPrefix}: ${listSubjectSuffix}` : assetPrefix;
+      await sendStoreEmail({
+        storeId: asset?.store || null,
+        to: listRecipients.join(','),
+        subject: listScopedSubject,
+        text: safeLines.join('\n'),
+        html: `<div><p><strong>${assetPrefix}</strong></p>${safeLines.map((line) => `<p>${line}</p>`).join('')}</div>`,
+        context: 'expo-city-dubai-asset-notification'
+      });
+    }
   } catch (error) {
     console.error('Asset notification email error:', error.message);
   }
@@ -5343,6 +5370,7 @@ router.post('/assign', protect, admin, async (req, res) => {
         asset: primaryAsset,
         recipientEmail: targetEmail,
         subject: 'Asset Assigned to You',
+        storeListSubject: '',
         storeRecipientOptions,
         lines: [
           `Asset assignment update for ${technician.name}.`,
@@ -5436,6 +5464,7 @@ router.post('/assign', protect, admin, async (req, res) => {
         asset: primaryAsset,
         recipientEmail: externalEmail,
         subject: 'Asset Assigned to You',
+        storeListSubject: '',
         storeRecipientOptions,
         lines: [
           `Asset assignment update for ${otherRecipient.name}.`,

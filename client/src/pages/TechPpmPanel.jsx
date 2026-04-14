@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Eye, Pencil, Wrench } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import api from '../api/axios';
@@ -162,7 +162,6 @@ const ppmSearchFields = (asset, row) => ([
 
 const TechPpmPanel = () => {
   const { user, activeStore } = useAuth();
-  const location = useLocation();
   const [searchParams] = useSearchParams();
   const roleLower = String(user?.role || '').toLowerCase();
   const managerLikeRole = roleLower.includes('manager');
@@ -189,6 +188,10 @@ const TechPpmPanel = () => {
   const [columnPreset, setColumnPreset] = useState('full');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [task, setTask] = useState(null);
+  const [ppmHistoryOpen, setPpmHistoryOpen] = useState(false);
+  const [ppmHistoryBusy, setPpmHistoryBusy] = useState(false);
+  const [ppmHistoryError, setPpmHistoryError] = useState('');
+  const [ppmHistoryData, setPpmHistoryData] = useState({ asset: null, tasks: [], spareRequests: [] });
   const [spareForm, setSpareForm] = useState({ item_name: '', quantity: 1, description: '' });
   const [spareSubmitting, setSpareSubmitting] = useState(false);
   /** Filters PPM program assets: all, or by latest task vs 180-day cycle (same idea as overview). */
@@ -233,11 +236,6 @@ const TechPpmPanel = () => {
   const assetsLoadGen = useRef(0);
   const toastTimerRef = useRef(null);
   const workOrderColSpan = canManagePpmInclusion ? 20 : 19;
-
-  const assetHistorySearch = useMemo(() => {
-    const back = encodeURIComponent(`${location.pathname}${location.search}`);
-    return `?from=ppm&back=${back}`;
-  }, [location.pathname, location.search]);
 
   const bulkNotifySessionKey = useMemo(() => {
     const id = activeStore?._id != null ? String(activeStore._id) : '';
@@ -594,7 +592,10 @@ const TechPpmPanel = () => {
     if (confirmRecentCompletion) {
       form.append('confirm_recent_cycle_completion', 'true');
     }
-    return api.post('/ppm/upload', form);
+    return api.post('/ppm/upload', form, {
+      // Large import files (e.g., 20k rows) need a longer request window.
+      timeout: 10 * 60 * 1000
+    });
   };
 
   const handlePpmBulkImportFile = async (e) => {
@@ -1048,6 +1049,27 @@ const TechPpmPanel = () => {
       alert(error.response?.data?.message || 'Failed to send spare parts request');
     } finally {
       setSpareSubmitting(false);
+    }
+  };
+
+  const openPpmAssetHistory = async (assetId) => {
+    const aid = String(assetId || '').trim();
+    if (!aid) return;
+    setPpmHistoryOpen(true);
+    setPpmHistoryBusy(true);
+    setPpmHistoryError('');
+    setPpmHistoryData({ asset: null, tasks: [], spareRequests: [] });
+    try {
+      const { data } = await api.get(`/ppm/assets/${aid}/history`);
+      setPpmHistoryData({
+        asset: data?.asset || null,
+        tasks: Array.isArray(data?.tasks) ? data.tasks : [],
+        spareRequests: Array.isArray(data?.spareRequests) ? data.spareRequests : []
+      });
+    } catch (error) {
+      setPpmHistoryError(error.response?.data?.message || 'Failed to load PPM asset history');
+    } finally {
+      setPpmHistoryBusy(false);
     }
   };
 
@@ -2016,13 +2038,14 @@ const TechPpmPanel = () => {
                       ) : null}
                       <td className="px-3 py-2 font-mono text-xs">
                         {a._id ? (
-                          <Link
-                            to={`/asset/${a._id}${assetHistorySearch}`}
+                          <button
+                            type="button"
+                            onClick={() => openPpmAssetHistory(a._id)}
                             className="text-indigo-700 hover:text-indigo-900 hover:underline font-medium"
-                            title="Open asset history"
+                            title="Open PPM asset history"
                           >
                             {a.uniqueId || '—'}
-                          </Link>
+                          </button>
                         ) : (
                           a.uniqueId || '—'
                         )}
@@ -2113,13 +2136,14 @@ const TechPpmPanel = () => {
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1">
                           {canOpenAssetHistory && a._id ? (
-                            <Link
-                              to={`/asset/${a._id}${assetHistorySearch}`}
+                            <button
+                              type="button"
+                              onClick={() => openPpmAssetHistory(a._id)}
                               className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 inline-flex"
-                              title="View asset"
+                              title="View PPM history"
                             >
                               <Eye size={16} />
-                            </Link>
+                            </button>
                           ) : null}
                           {canManagePpmInclusion && a._id ? (
                             <button
@@ -2386,6 +2410,98 @@ const TechPpmPanel = () => {
         </div>
         );
       })()}
+
+      {ppmHistoryOpen ? (
+        <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-4">
+          <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl flex flex-col">
+            <div className="px-4 py-3 border-b flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900">PPM Asset History</h2>
+              <button
+                type="button"
+                onClick={() => setPpmHistoryOpen(false)}
+                className="px-2 py-1 text-sm text-slate-500 hover:text-slate-800"
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-4">
+              {ppmHistoryBusy ? <p className="text-sm text-slate-500">Loading history…</p> : null}
+              {!ppmHistoryBusy && ppmHistoryError ? <p className="text-sm text-rose-600">{ppmHistoryError}</p> : null}
+              {!ppmHistoryBusy && !ppmHistoryError && ppmHistoryData.asset ? (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
+                    <div><span className="text-slate-500">UID:</span> {ppmHistoryData.asset.uniqueId || '—'}</div>
+                    <div><span className="text-slate-500">ABS:</span> {ppmHistoryData.asset.abs_code || '—'}</div>
+                    <div><span className="text-slate-500">Name:</span> {ppmHistoryData.asset.name || '—'}</div>
+                    <div><span className="text-slate-500">Model:</span> {ppmHistoryData.asset.model_number || '—'}</div>
+                    <div><span className="text-slate-500">Status:</span> {ppmHistoryData.asset.status || '—'}</div>
+                    <div><span className="text-slate-500">Ticket:</span> {ppmHistoryData.asset.ticket_number || '—'}</div>
+                  </div>
+                  <div className="border rounded-lg">
+                    <div className="px-3 py-2 border-b bg-slate-50 font-medium text-sm">Required spare parts for maintenance</div>
+                    <div className="max-h-52 overflow-auto">
+                      {ppmHistoryData.spareRequests.length === 0 ? (
+                        <p className="px-3 py-3 text-sm text-slate-500">No spare parts requests found.</p>
+                      ) : (
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-50 border-b">
+                            <tr>
+                              <th className="px-3 py-2 text-left">Date</th>
+                              <th className="px-3 py-2 text-left">Part</th>
+                              <th className="px-3 py-2 text-left">Qty</th>
+                              <th className="px-3 py-2 text-left">Status</th>
+                              <th className="px-3 py-2 text-left">Requested by</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ppmHistoryData.spareRequests.map((r) => (
+                              <tr key={r._id} className="border-t">
+                                <td className="px-3 py-2 whitespace-nowrap">{r.createdAt ? new Date(r.createdAt).toLocaleString() : '—'}</td>
+                                <td className="px-3 py-2">{r.item_name || '—'}</td>
+                                <td className="px-3 py-2">{r.quantity || 1}</td>
+                                <td className="px-3 py-2">{r.status || '—'}</td>
+                                <td className="px-3 py-2">{r.requester?.name || r.requester?.email || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                  <div className="border rounded-lg">
+                    <div className="px-3 py-2 border-b bg-slate-50 font-medium text-sm">PPM task history</div>
+                    <div className="max-h-72 overflow-auto space-y-3 p-3">
+                      {ppmHistoryData.tasks.length === 0 ? (
+                        <p className="text-sm text-slate-500">No PPM task history found.</p>
+                      ) : ppmHistoryData.tasks.map((t) => (
+                        <div key={t._id} className="rounded border border-slate-200 p-3">
+                          <p className="text-xs text-slate-500">
+                            Task {t._id} | {t.status} | {t.work_order_ticket || 'No ticket'}
+                          </p>
+                          <p className="text-xs text-slate-500 mt-1">
+                            Scheduled: {t.scheduled_for ? new Date(t.scheduled_for).toLocaleString() : '—'} | Due: {t.due_at ? new Date(t.due_at).toLocaleString() : '—'}
+                          </p>
+                          {Array.isArray(t.history) && t.history.length > 0 ? (
+                            <div className="mt-2 space-y-1">
+                              {[...t.history].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0)).map((h, idx) => (
+                                <p key={`${t._id}-${idx}`} className="text-sm text-slate-700">
+                                  {h.at ? new Date(h.at).toLocaleString() : '—'} - {h.action || 'Update'}{h.details ? `: ${h.details}` : ''}
+                                </p>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500 mt-2">No timeline entries for this task.</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {resetProgramOpen ? (
         <div

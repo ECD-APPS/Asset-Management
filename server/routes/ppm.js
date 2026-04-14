@@ -8,6 +8,7 @@ const PpmWorkflowTask = require('../models/PpmWorkflowTask');
 const PpmAssetTemp = require('../models/PpmAssetTemp');
 const PpmHistoryLog = require('../models/PpmHistoryLog');
 const Asset = require('../models/Asset');
+const Request = require('../models/Request');
 const ActivityLog = require('../models/ActivityLog');
 const User = require('../models/User');
 const Store = require('../models/Store');
@@ -101,6 +102,7 @@ const aggregateLatestPpmRowByAsset = async (storeScope, assetObjectIds) => {
 };
 
 const VMS_CHECKLIST_KEY = 'vms_online';
+const BULK_IMPORT_INSERT_CHUNK = 1000;
 
 const DEFAULT_CHECKLIST = [
   { key: 'camera_maintenance_checklist', label: 'Camera Maintenance Checklist', value: 'Good', notes: '' },
@@ -178,6 +180,11 @@ const vmsLabelFromCustomFields = (cf) => {
   return null;
 };
 
+const isBulkImportOpenTask = (task) => {
+  const notes = String(task?.manager_notes || '').trim().toLowerCase();
+  return notes.includes('ppm bulk import');
+};
+
 const syncVmsFromChecklistToAsset = async (assetId, checklist) => {
   if (!assetId || !mongoose.Types.ObjectId.isValid(assetId)) return;
   const vms = (checklist || []).find((i) => String(i?.key) === VMS_CHECKLIST_KEY);
@@ -192,6 +199,15 @@ const syncVmsFromChecklistToAsset = async (assetId, checklist) => {
       }
     }
   );
+};
+
+const chunkArray = (arr, size) => {
+  const out = [];
+  const safe = Math.max(1, Number(size) || 1);
+  for (let i = 0; i < arr.length; i += safe) {
+    out.push(arr.slice(i, i + safe));
+  }
+  return out;
 };
 
 const addTaskHistory = (task, req, action, details = '') => {
@@ -1338,7 +1354,7 @@ router.get('/self-service-assets', protect, allowPpmRead, async (req, res) => {
       const technicianAt = open?.updatedAt || techFb?.at || null;
       const fromTask = vmsLabelFromChecklist(open?.checklist);
       const fromCf = vmsLabelFromCustomFields(cf);
-      const vmsLabel = fromTask || fromCf || '—';
+      const vmsLabel = fromTask || (isBulkImportOpenTask(open) ? null : fromCf) || '—';
 
       const assignedToName = a.assigned_to?.name || '—';
       const { assigned_to: _omit, ...assetOut } = a;
@@ -1425,6 +1441,54 @@ router.get('/assets/:assetId/last-ticket', protect, allowPpmRead, async (req, re
     });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to load previous PPM ticket', error: error.message });
+  }
+});
+
+// @route   GET /api/ppm/assets/:assetId/history
+// @desc    PPM-only asset history + spare requests
+router.get('/assets/:assetId/history', protect, allowPpmRead, async (req, res) => {
+  try {
+    if (!canUsePpmRole(req.user?.role)) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+    const { assetId } = req.params || {};
+    if (!assetId || !mongoose.Types.ObjectId.isValid(assetId)) {
+      return res.status(400).json({ message: 'Valid asset ID is required' });
+    }
+    const asset = await Asset.findById(assetId)
+      .select('name model_number uniqueId abs_code serial_number status maintenance_vendor location ticket_number store')
+      .lean();
+    if (!asset) return res.status(404).json({ message: 'Asset not found' });
+    if (req.activeStore && String(asset.store || '') !== String(req.activeStore)) {
+      return res.status(403).json({ message: 'Asset is outside active store scope' });
+    }
+    const storeScope = applyStoreScope(req);
+    const tasks = await PpmTask.find({ ...storeScope, asset: asset._id })
+      .sort({ createdAt: -1 })
+      .limit(300)
+      .populate('assigned_to', 'name email')
+      .populate('created_by', 'name email')
+      .populate('completed_by', 'name email')
+      .populate('incomplete_by', 'name email')
+      .lean();
+    const taskIds = tasks.map((t) => t._id).filter(Boolean);
+    const spareReqFilter = {
+      ...storeScope,
+      request_type: { $regex: /^PPM Spare Parts$/i },
+      $or: [{ asset: asset._id }]
+    };
+    if (taskIds.length > 0) {
+      spareReqFilter.$or.push({ ppm_task: { $in: taskIds } });
+    }
+    const spareRequests = await Request.find(spareReqFilter)
+      .sort({ createdAt: -1 })
+      .limit(300)
+      .populate('requester', 'name email')
+      .select('item_name quantity description status admin_note createdAt updatedAt ppm_task')
+      .lean();
+    return res.json({ asset, tasks, spareRequests });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 });
 
@@ -3458,7 +3522,11 @@ router.post('/upload', protect, restrictViewer, upload.single('file'), async (re
         ...row
       };
     });
-    await PpmAssetTemp.insertMany(docs);
+    for (const part of chunkArray(docs, BULK_IMPORT_INSERT_CHUNK)) {
+      // Keep ordered=false so one bad row does not cancel large imports.
+      // eslint-disable-next-line no-await-in-loop
+      await PpmAssetTemp.insertMany(part, { ordered: false });
+    }
 
     const matchedAssetIds = [...matchedByAssetId.keys()].map((id) => new mongoose.Types.ObjectId(id));
     const openTasks = matchedAssetIds.length > 0
@@ -3517,20 +3585,9 @@ router.post('/upload', protect, restrictViewer, upload.single('file'), async (re
       );
     }
     if (createTaskDocs.length > 0) {
-      await PpmTask.insertMany(createTaskDocs, { ordered: false });
-      for (const doc of createTaskDocs) {
-        const payload = matchedByAssetId.get(String(doc.asset));
-        const row = payload?.row || {};
-        const ast = payload?.asset || {};
-        const wo = String(String(doc.work_order_ticket || '').trim() || String(ast.ticket_number || '').trim()).trim();
-        if (!wo) continue;
-        const q = { ppm_task_id: task._id, store: storeId };
-        const uid = String(row.unique_id || '').trim();
-        const abs = String(row.abs_code || '').trim();
-        if (uid) Object.assign(q, { unique_id: uid });
-        else if (abs) Object.assign(q, { abs_code: abs });
-        else continue;
-        await PpmAssetTemp.updateMany(q, { $set: { ticket: wo } });
+      for (const part of chunkArray(createTaskDocs, BULK_IMPORT_INSERT_CHUNK)) {
+        // eslint-disable-next-line no-await-in-loop
+        await PpmTask.insertMany(part, { ordered: false });
       }
       const importedAssetOids = createTaskDocs.map((d) => d.asset).filter(Boolean);
       if (batchTicket && importedAssetOids.length > 0) {
