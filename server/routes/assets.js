@@ -1306,27 +1306,56 @@ async function getBusyPpmAssetIdsExcludedFromMainInventory(req) {
   return distinctBusy(null);
 }
 
+/** Treat field as “not explicitly true” only for boolean false / missing / null (strict inventory boundary). */
+function mainInventoryBooleanNotTrue(field) {
+  return {
+    $or: [
+      { [field]: { $exists: false } },
+      { [field]: null },
+      { [field]: false }
+    ]
+  };
+}
+
 /**
- * Main "Assets" inventory (All Assets, stats, search, export) stays separate from the PPM module:
- * - ppm_import_only: rows created from PPM bulk import
- * - ppm_enabled: any asset enrolled in the PPM program
- * - assets with an open PPM work order (Scheduled / In Progress / Overdue) for the active store
- * PPM UIs use /api/ppm/* (e.g. self-service-assets). Escape hatch for GET /api/assets only:
- * ?include_ppm_program=true / ?include_ppm_import=true
+ * Main "Assets" inventory (All Assets, stats, search, export) is always isolated from the PPM module:
+ * - ppm_import_only: auto-created import stubs (PPM bulk import)
+ * - ppm_enabled: assets enrolled in the PPM program
+ * - assets with an open PPM work order (Scheduled / In Progress / Overdue) in the resolved store scope
+ * There is no query-flag bypass: PPM-only rows must use /api/ppm/* (e.g. self-service-assets), not GET /api/assets.
+ * Clauses live under filter.$and so they still apply when the query uses a top-level $or (substring search).
+ *
+ * Note: `{ field: { $ne: true } }` matches string/number truthy values; those must not appear in main inventory.
  */
 async function applyMainInventoryScope(filter, req) {
-  const q = req && req.query ? req.query : {};
-  const includePpmImportOnly = String(q.include_ppm_import || '').trim().toLowerCase() === 'true';
-  const includePpmProgram = String(q.include_ppm_program || '').trim().toLowerCase() === 'true';
-  // Import stubs are both flags; one opt-in shows them in GET /assets again without needing two params.
-  if (includePpmImportOnly) return;
-  filter.ppm_import_only = { $ne: true };
-  if (!includePpmProgram) {
-    filter.ppm_enabled = { $ne: true };
-    const nin = await getBusyPpmAssetIdsExcludedFromMainInventory(req);
-    if (nin.length > 0) {
-      filter.$and = [...(Array.isArray(filter.$and) ? filter.$and : []), { _id: { $nin: nin } }];
-    }
+  const ppmClauses = [
+    mainInventoryBooleanNotTrue('ppm_import_only'),
+    mainInventoryBooleanNotTrue('ppm_enabled')
+  ];
+  const nin = await getBusyPpmAssetIdsExcludedFromMainInventory(req);
+  if (nin.length > 0) ppmClauses.push({ _id: { $nin: nin } });
+  filter.$and = [...(Array.isArray(filter.$and) ? filter.$and : []), ...ppmClauses];
+}
+
+/** Single-asset reads from the inventory API must not leak PPM-scoped rows (same rules as list/export). */
+async function assertAssetInMainInventoryScope(asset) {
+  if (!asset) return;
+  if (asset.ppm_import_only === true || asset.ppm_enabled === true) {
+    const err = new Error('This asset is managed under PPM. Open it from PPM Management, not All Assets.');
+    err.statusCode = 404;
+    throw err;
+  }
+  const sid = asset.store?._id || asset.store;
+  if (!sid || !mongoose.Types.ObjectId.isValid(String(sid))) return;
+  const hasOpenPpm = await PpmTask.exists({
+    asset: asset._id,
+    store: matchPpmTaskStoreScope(String(sid)),
+    status: { $in: OPEN_PPM_TASK_STATUSES }
+  });
+  if (hasOpenPpm) {
+    const err = new Error('This asset has an open PPM task. Continue in PPM Management, not All Assets.');
+    err.statusCode = 404;
+    throw err;
   }
 }
 
@@ -2123,7 +2152,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/:id([0-9a-fA-F]{24})', protect, async (req, res) => {
   try {
     const asset = await Asset.findById(req.params.id)
-      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at device_group inbound_from outbound_to expo_tag abs_code product_number operating_system specification service_tag assign_to_department ip_address building state_comments remarks comments disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt')
+      .select('name model_number serial_number serial_last_4 mac_address manufacturer ticket_number po_number rfid qr_code uniqueId store location status previous_status condition product_name assigned_to assigned_to_external return_pending return_request reserved reserved_at reserved_by reservation_note source vendor_name delivered_by_name delivered_at device_group inbound_from outbound_to expo_tag abs_code product_number operating_system specification service_tag assign_to_department ip_address building state_comments remarks comments disposed disposed_at disposed_by disposal_reason quantity price customFields history createdAt updatedAt ppm_enabled ppm_import_only')
       .populate({
         path: 'store',
         select: 'name parentStore',
@@ -2149,6 +2178,15 @@ router.get('/:id([0-9a-fA-F]{24})', protect, async (req, res) => {
       if (!scopedSet.has(assetStoreId)) {
         return res.status(403).json({ message: 'Asset is outside your store scope' });
       }
+    }
+    try {
+      await assertAssetInMainInventoryScope(asset);
+    } catch (scopeErr) {
+      const code = Number(scopeErr?.statusCode);
+      if (code === 404) {
+        return res.status(404).json({ message: scopeErr.message || 'Asset not found' });
+      }
+      throw scopeErr;
     }
     await attachProductCategoriesToAssets([asset], req);
     res.json(asset);

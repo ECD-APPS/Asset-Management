@@ -232,12 +232,11 @@ const PpmManagerSection = () => {
     try {
       setBusyId(taskId);
       const qk = t.queueKind;
+      // Sequential PATCH avoids parallel SMTP / rate limits from N concurrent manager-review calls.
       if (qk === 'work_order_batch' && Array.isArray(t.batchMemberIds) && t.batchMemberIds.length) {
-        await Promise.all(
-          t.batchMemberIds.map((id) =>
-            api.patch(`/ppm/${id}/manager-review`, { decision: status, comment: c })
-          )
-        );
+        for (const id of t.batchMemberIds) {
+          await api.patch(`/ppm/${id}/manager-review`, { decision: status, comment: c });
+        }
       } else if (qk === 'work_order') {
         await api.patch(`/ppm/${taskId}/manager-review`, { decision: status, comment: c });
       } else {
@@ -250,7 +249,9 @@ const PpmManagerSection = () => {
       }
       await load();
     } catch (error) {
-      alert(error.response?.data?.message || 'Failed to submit manager action');
+      const d = error?.response?.data;
+      const parts = [d?.message, d?.error].filter(Boolean);
+      alert(parts.length ? parts.join('\n') : 'Failed to submit manager action');
     } finally {
       setBusyId('');
     }

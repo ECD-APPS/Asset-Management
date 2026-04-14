@@ -43,6 +43,7 @@ api.interceptors.response.use(
     apiLoadingOnSettled(config);
     const status = error?.response?.status;
     const method = String(config?.method || '').toLowerCase();
+    const isCanceled = error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError';
     const isIdempotent = method === 'get';
     const isTransient =
       !status ||
@@ -51,7 +52,7 @@ api.interceptors.response.use(
       error?.code === 'ECONNABORTED' ||
       error?.message === 'Network Error';
 
-    if (isIdempotent && isTransient && !config.__retryOnce) {
+    if (isIdempotent && isTransient && !isCanceled && !config.__retryOnce) {
       config.__retryOnce = true;
       return api.request(config);
     }

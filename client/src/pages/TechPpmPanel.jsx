@@ -581,6 +581,22 @@ const TechPpmPanel = () => {
     importFileInputRef.current?.click();
   };
 
+  const runPpmBulkImportUpload = async (file, { confirmRecentCompletion = false } = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('schedule_date', createForm.scheduled_for || new Date().toISOString());
+    form.append('comments', 'PPM bulk import from PPM section');
+    const bulkTicket = String(createForm.work_order_ticket || '').trim();
+    form.append('work_order_ticket', bulkTicket);
+    if (String(createForm.due_at || '').trim()) {
+      form.append('due_date', createForm.due_at);
+    }
+    if (confirmRecentCompletion) {
+      form.append('confirm_recent_cycle_completion', 'true');
+    }
+    return api.post('/ppm/upload', form);
+  };
+
   const handlePpmBulkImportFile = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -589,18 +605,7 @@ const TechPpmPanel = () => {
       alert('Enter the PPM work order ticket before bulk import (required for PPM assets, same as batch create).');
       return;
     }
-    try {
-      setImportBusy(true);
-      const form = new FormData();
-      form.append('file', file);
-      form.append('schedule_date', createForm.scheduled_for || new Date().toISOString());
-      form.append('comments', 'PPM bulk import from PPM section');
-      const bulkTicket = String(createForm.work_order_ticket || '').trim();
-      form.append('work_order_ticket', bulkTicket);
-      if (String(createForm.due_at || '').trim()) {
-        form.append('due_date', createForm.due_at);
-      }
-      const res = await api.post('/ppm/upload', form);
+    const finishBulkImportSuccess = async (res) => {
       const count = Number(res.data?.assets_included || 0);
       const taskId = String(res.data?.task_id || '');
       if (taskId) {
@@ -625,14 +630,50 @@ const TechPpmPanel = () => {
       const sourcePart = hasTaskStats
         ? ` Existing matched: ${matchedExistingAssets}. Auto-created from import: ${createdFromImport}.`
         : '';
+      const ack = res.data?.recent_completion_acknowledged ? ' (Confirmed: re-import after recent completion.)' : '';
       alert(
         count > 0
-          ? `PPM bulk import completed. ${count} row(s) saved${taskId ? ` (Task: ${taskId})` : ''}.${taskPart}${sourcePart}${skippedOpen > 0 ? ` ${skippedOpen} skipped because an open task already exists.` : ''}${unmatchedRows > 0 ? ` ${unmatchedRows} row(s) could not be processed.` : ''}${dbgLine}`
-          : `PPM bulk import completed.${dbgLine}`
+          ? `PPM bulk import completed. ${count} row(s) saved${taskId ? ` (Task: ${taskId})` : ''}.${taskPart}${sourcePart}${skippedOpen > 0 ? ` ${skippedOpen} skipped because an open task already exists.` : ''}${unmatchedRows > 0 ? ` ${unmatchedRows} row(s) could not be processed.` : ''}${dbgLine}${ack}`
+          : `PPM bulk import completed.${dbgLine}${ack}`
       );
       setAssetPage(1);
       if (canShowBulkManagerNotifyBanner) updatePendingBulkNotify(true);
       await load();
+    };
+
+    try {
+      setImportBusy(true);
+      try {
+        const res = await runPpmBulkImportUpload(file, {});
+        await finishBulkImportSuccess(res);
+      } catch (firstErr) {
+        const st = Number(firstErr?.response?.status);
+        const d = firstErr?.response?.data;
+        if (st === 409 && d?.requires_confirmation && Array.isArray(d.recently_completed) && d.recently_completed.length > 0) {
+          const list = d.recently_completed;
+          const cycle = Number(list[0]?.cycle_days) || 180;
+          const lines = list.slice(0, 12).map((r) => {
+            const label = String(r.unique_id || r.abs_code || r.asset_id || '').trim() || String(r.asset_id || '');
+            const days = Number(r.days_since_completion);
+            const dayLabel = Number.isFinite(days) ? `${days} day(s) ago` : 'recently';
+            return `• ${label} — last PPM completed ${dayLabel}`;
+          }).join('\n');
+          const more = list.length > 12 ? `\n… and ${list.length - 12} more asset(s).` : '';
+          const ok = window.confirm(
+            `${d.message || 'These assets had a PPM completed inside the current service window.'}\n\n`
+            + `${list.length} asset(s) still fall inside the usual ${cycle}-day window since their last completed PPM:\n\n`
+            + `${lines}${more}\n\n`
+            + 'Press OK to create new PPM tasks anyway, or Cancel to stop without importing.'
+          );
+          if (ok) {
+            const res2 = await runPpmBulkImportUpload(file, { confirmRecentCompletion: true });
+            await finishBulkImportSuccess(res2);
+            return;
+          }
+          return;
+        }
+        throw firstErr;
+      }
     } catch (error) {
       const d = error.response?.data;
       const hint = d?.hint ? `\n\n${d.hint}` : '';
@@ -1708,6 +1749,112 @@ const TechPpmPanel = () => {
         </div>
       ) : null}
 
+      {canManagePpmInclusion ? (
+        <div className="px-4 py-4 border-t border-slate-200 bg-slate-50/40">
+          {/* Export | import | reset */}
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+            <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+              <h3 className="text-sm font-semibold text-slate-800 tracking-tight">Exports, imports &amp; program reset</h3>
+              <p className="text-xs text-slate-600 mt-0.5 max-w-3xl">
+                Work left to right: download data → use the sample file → upload import. Reset is only when you need to clear this store&apos;s whole PPM program.
+              </p>
+            </div>
+            <div
+              className={`grid grid-cols-1 lg:divide-x lg:divide-slate-200 ${
+                adminLikeRole || user?.role === 'Super Admin' ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
+              }`}
+            >
+              <section className="p-3 sm:p-4 flex flex-col gap-2.5 bg-white">
+                <div>
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[rgb(var(--accent-color))] text-[rgb(var(--accent-contrast))] text-[10px] font-bold">
+                    1
+                  </span>
+                  <h4 className="mt-1.5 text-sm font-semibold text-slate-900">Export</h4>
+                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">Task history report, or a sheet in bulk-import layout.</p>
+                </div>
+                <div className="mt-auto flex flex-col gap-1.5">
+                  <button
+                    type="button"
+                    disabled={exportBusy}
+                    onClick={downloadPpmExcel}
+                    className="btn-app-primary-md w-full justify-center text-center whitespace-normal leading-snug py-2 px-3 text-[13px] font-semibold"
+                    title="Each export uses a new file name (date and time) so downloads are not overwritten."
+                  >
+                    {exportBusy ? 'Preparing…' : 'Download PPM task report (.xlsx)'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={exportBusy}
+                    onClick={downloadPpmBulkExportSheet}
+                    className="btn-app-outline-md w-full justify-center text-center whitespace-normal leading-snug py-2 px-3 text-[13px] font-semibold"
+                    title="Export current PPM program assets in the same columns used by Bulk Import."
+                  >
+                    {exportBusy ? 'Preparing…' : 'Export program list (import format)'}
+                  </button>
+                </div>
+              </section>
+              <section className="p-3 sm:p-4 flex flex-col gap-2.5 bg-slate-50/40">
+                <div>
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[rgb(var(--accent-color))] text-[rgb(var(--accent-contrast))] text-[10px] font-bold">
+                    2
+                  </span>
+                  <h4 className="mt-1.5 text-sm font-semibold text-slate-900">Import</h4>
+                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                    Fill the template, then set scheduled date, optional due date, and the PPM WO ticket in the New PPM work order section before upload—that ticket is applied to every imported row, tasks, assets, and the manager workflow (same rules as checkbox batch create).
+                  </p>
+                </div>
+                <div className="mt-auto flex flex-col gap-1.5">
+                  <a
+                    href="/ppm_bulk_import_sample.xlsx"
+                    download="ppm_bulk_import_sample.xlsx"
+                    className="btn-app-outline-md w-full justify-center no-underline whitespace-normal text-center py-2 px-3 text-[13px] font-semibold"
+                    title="Download sample Excel with correct import columns and example rows."
+                  >
+                    Download import template (.xlsx)
+                  </a>
+                  <button
+                    type="button"
+                    onClick={openPpmBulkImportPicker}
+                    disabled={importBusy}
+                    className="btn-app-primary-md w-full justify-center text-center whitespace-normal leading-snug py-2 px-3 text-[13px] font-semibold"
+                    title="Upload Excel into isolated PPM section (does not add to inventory assets)."
+                  >
+                    {importBusy ? 'Importing…' : 'Upload bulk import file'}
+                  </button>
+                </div>
+              </section>
+              {adminLikeRole || user?.role === 'Super Admin' ? (
+                <section className="p-3 sm:p-4 flex flex-col gap-2.5 bg-white lg:bg-amber-50/20">
+                  <div>
+                    <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-slate-700 text-white text-[10px] font-bold">
+                      3
+                    </span>
+                    <h4 className="mt-1.5 text-sm font-semibold text-slate-900">Program reset</h4>
+                    <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                      Removes all PPM work orders, import batches, staging rows, and PPM history for this store; clears
+                      PPM flags on assets. Admin or Super Admin only. Password required.
+                    </p>
+                  </div>
+                  <div className="mt-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetProgramPassword('');
+                        setResetProgramOpen(true);
+                      }}
+                      className="btn-app-outline-md w-full justify-center !border-slate-600 text-slate-800 hover:bg-slate-100 font-semibold py-2 px-3 text-[13px]"
+                      title="Removes all PPM data for this store (tasks, import workflows, temp rows, history) and clears PPM flags on assets. Admin or Super Admin only. Requires your password."
+                    >
+                      Reset entire PPM program…
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="px-4 py-4 border-b border-slate-200 space-y-4">
           <input
@@ -1784,110 +1931,6 @@ const TechPpmPanel = () => {
               </div>
             </div>
           </div>
-
-          {/* Row 2: single strip — export | import | maintenance (equal columns, high-contrast actions) */}
-          {canManagePpmInclusion ? (
-            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-                <h3 className="text-sm font-semibold text-slate-800 tracking-tight">Exports, imports &amp; program reset</h3>
-                <p className="text-xs text-slate-600 mt-0.5 max-w-3xl">
-                  Work left to right: download data → use the sample file → upload import. Reset is only when you need to clear this store&apos;s whole PPM program.
-                </p>
-              </div>
-              <div
-                className={`grid grid-cols-1 lg:divide-x lg:divide-slate-200 ${
-                  adminLikeRole || user?.role === 'Super Admin' ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
-                }`}
-              >
-                <section className="p-3 sm:p-4 flex flex-col gap-2.5 bg-white">
-                  <div>
-                    <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[rgb(var(--accent-color))] text-[rgb(var(--accent-contrast))] text-[10px] font-bold">
-                      1
-                    </span>
-                    <h4 className="mt-1.5 text-sm font-semibold text-slate-900">Export</h4>
-                    <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">Task history report, or a sheet in bulk-import layout.</p>
-                  </div>
-                  <div className="mt-auto flex flex-col gap-1.5">
-                    <button
-                      type="button"
-                      disabled={exportBusy}
-                      onClick={downloadPpmExcel}
-                      className="btn-app-primary-md w-full justify-center text-center whitespace-normal leading-snug py-2 px-3 text-[13px] font-semibold"
-                      title="Each export uses a new file name (date and time) so downloads are not overwritten."
-                    >
-                      {exportBusy ? 'Preparing…' : 'Download PPM task report (.xlsx)'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={exportBusy}
-                      onClick={downloadPpmBulkExportSheet}
-                      className="btn-app-outline-md w-full justify-center text-center whitespace-normal leading-snug py-2 px-3 text-[13px] font-semibold"
-                      title="Export current PPM program assets in the same columns used by Bulk Import."
-                    >
-                      {exportBusy ? 'Preparing…' : 'Export program list (import format)'}
-                    </button>
-                  </div>
-                </section>
-                <section className="p-3 sm:p-4 flex flex-col gap-2.5 bg-slate-50/40">
-                  <div>
-                    <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[rgb(var(--accent-color))] text-[rgb(var(--accent-contrast))] text-[10px] font-bold">
-                      2
-                    </span>
-                    <h4 className="mt-1.5 text-sm font-semibold text-slate-900">Import</h4>
-                    <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                      Fill the template, then set scheduled date, optional due date, and the PPM WO ticket above before upload—that ticket is applied to every imported row, tasks, assets, and the manager workflow (same rules as checkbox batch create).
-                    </p>
-                  </div>
-                  <div className="mt-auto flex flex-col gap-1.5">
-                    <a
-                      href="/ppm_bulk_import_sample.xlsx"
-                      download="ppm_bulk_import_sample.xlsx"
-                      className="btn-app-outline-md w-full justify-center no-underline whitespace-normal text-center py-2 px-3 text-[13px] font-semibold"
-                      title="Download sample Excel with correct import columns and example rows."
-                    >
-                      Download import template (.xlsx)
-                    </a>
-                    <button
-                      type="button"
-                      onClick={openPpmBulkImportPicker}
-                      disabled={importBusy}
-                      className="btn-app-primary-md w-full justify-center text-center whitespace-normal leading-snug py-2 px-3 text-[13px] font-semibold"
-                      title="Upload Excel into isolated PPM section (does not add to inventory assets)."
-                    >
-                      {importBusy ? 'Importing…' : 'Upload bulk import file'}
-                    </button>
-                  </div>
-                </section>
-                {adminLikeRole || user?.role === 'Super Admin' ? (
-                  <section className="p-3 sm:p-4 flex flex-col gap-2.5 bg-white lg:bg-amber-50/20">
-                    <div>
-                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-slate-700 text-white text-[10px] font-bold">
-                        3
-                      </span>
-                      <h4 className="mt-1.5 text-sm font-semibold text-slate-900">Program reset</h4>
-                      <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                        Removes all PPM work orders, import batches, staging rows, and PPM history for this store; clears
-                        PPM flags on assets. Admin or Super Admin only. Password required.
-                      </p>
-                    </div>
-                    <div className="mt-auto">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setResetProgramPassword('');
-                          setResetProgramOpen(true);
-                        }}
-                        className="btn-app-outline-md w-full justify-center !border-slate-600 text-slate-800 hover:bg-slate-100 font-semibold py-2 px-3 text-[13px]"
-                        title="Removes all PPM data for this store (tasks, import workflows, temp rows, history) and clears PPM flags on assets. Admin or Super Admin only. Requires your password."
-                      >
-                        Reset entire PPM program…
-                      </button>
-                    </div>
-                  </section>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
         </div>
         <div className="overflow-x-auto max-h-[min(70vh,40rem)] overflow-y-auto custom-scrollbar">
           <>
