@@ -337,7 +337,7 @@ const Portal = () => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (mongorestoreAvailable !== true) {
+    if (mongorestoreAvailable === false) {
       alert('mongorestore is not available on the server. Install MongoDB Database Tools and restart the API.');
       return;
     }
@@ -852,9 +852,7 @@ const Portal = () => {
                           const form = new FormData();
                           form.append('logo', file);
                           try {
-                            const res = await api.post('/system/logo', form, {
-                              headers: { 'Content-Type': 'multipart/form-data' }
-                            });
+                            const res = await api.post('/system/logo', form);
                             await refreshBranding();
                             const stamp = Date.now();
                             if (res.data?.logoUrl) {
@@ -902,9 +900,7 @@ const Portal = () => {
                           const form = new FormData();
                           form.append('logo', file);
                           try {
-                            const res = await api.post('/system/gatepass-logo', form, {
-                              headers: { 'Content-Type': 'multipart/form-data' }
-                            });
+                            const res = await api.post('/system/gatepass-logo', form);
                             const stamp = Date.now();
                             setGatePassLogoUrl(res.data?.gatePassLogoUrl ? `${res.data.gatePassLogoUrl}?v=${stamp}` : '/gatepass-logo.svg');
                             alert('Gate pass logo updated successfully.');
@@ -1195,7 +1191,7 @@ const Portal = () => {
                       <input
                         ref={restoreArchiveInputRef}
                         type="file"
-                        accept=".gz,.archive.gz,application/gzip"
+                        accept=".archive,.archive.gz,.gz,application/gzip,application/x-gzip,application/octet-stream"
                         className="hidden"
                         onChange={handleRestoreArchiveFileChange}
                       />
@@ -1207,14 +1203,14 @@ const Portal = () => {
                       <button
                         type="button"
                         onClick={() => restoreArchiveInputRef.current?.click()}
-                        disabled={restoreUploading || backupsLoading || mongorestoreAvailable !== true}
+                        disabled={restoreUploading || backupsLoading || mongorestoreAvailable === false}
                         className={`inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-sm font-medium shadow-sm transition-colors border border-emerald-300 ${
-                          restoreUploading || backupsLoading || mongorestoreAvailable !== true
+                          restoreUploading || backupsLoading || mongorestoreAvailable === false
                             ? 'bg-slate-100 text-slate-500 cursor-not-allowed border-slate-200'
                             : 'bg-white text-emerald-900 hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2'
                         }`}
                       >
-                        {restoreUploading ? 'Restoring from file…' : 'Choose backup file to restore (.archive.gz)'}
+                        {restoreUploading ? 'Restoring from file…' : 'Choose backup file to restore (.archive/.archive.gz)'}
                       </button>
                     </div>
                   </div>
