@@ -8,16 +8,19 @@ FROM node:20-bookworm-slim
 ENV NODE_ENV=production
 ENV PORT=5000
 WORKDIR /app/server
-# Percona Backup for MongoDB CLI (pbm) — used by backupRecovery.js / backup_db.js (PBM_MONGODB_URI at runtime)
+# Percona Backup for MongoDB CLI (pbm) + MongoDB Database Tools (mongodump/mongorestore)
+# used by backupRecovery.js / backup_db.js and local USB backup/restore routes.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 lsb-release \
+  && apt-get install -y --no-install-recommends ca-certificates wget gnupg2 lsb-release curl \
+  && curl -fsSL https://pgp.mongodb.com/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg \
+  && echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" > /etc/apt/sources.list.d/mongodb-org-8.0.list \
   && wget -qO /tmp/percona-release.deb https://repo.percona.com/apt/percona-release_latest.generic_all.deb \
   && dpkg -i /tmp/percona-release.deb \
   && rm -f /tmp/percona-release.deb \
   && percona-release enable pbm release \
   && apt-get update \
-  && apt-get install -y --no-install-recommends percona-backup-mongodb \
-  && apt-get purge -y wget \
+  && apt-get install -y --no-install-recommends percona-backup-mongodb mongodb-database-tools \
+  && apt-get purge -y wget curl \
   && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 appuser \
