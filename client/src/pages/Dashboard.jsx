@@ -153,6 +153,9 @@ const Dashboard = () => {
   const statsRef = useRef(null);
   /** Map cacheKey -> { data, ts } for normalized stats (stale-while-revalidate). */
   const statsCacheRef = useRef(new Map());
+  /** Map cacheKey -> Promise resolving to normalized stats (dedupe concurrent calls). */
+  const statsInflightRef = useRef(new Map());
+  const vendorPrefetchRef = useRef({ storeKey: '', running: false, done: false });
 
   useEffect(() => {
     statsRef.current = stats;
@@ -160,6 +163,8 @@ const Dashboard = () => {
 
   useEffect(() => {
     statsCacheRef.current.clear();
+    statsInflightRef.current.clear();
+    vendorPrefetchRef.current = { storeKey: '', running: false, done: false };
   }, [activeStoreCacheKey]);
 
   const analyticsSectionOptions = useMemo(
@@ -219,31 +224,44 @@ const Dashboard = () => {
     [activeStoreCacheKey, isScyDashboard]
   );
 
-  const prefetchVendorStatsCaches = useCallback(() => {
+  const warmVendorCachesAfterAll = useCallback(() => {
     if (!isScyDashboard) return;
-    const storePart = String(activeStoreCacheKey ?? 'none');
-    const run = () => {
-      DASHBOARD_PREFETCH_VENDORS.forEach((vendor) => {
-        const key = `${storePart}:${vendor}`;
-        const ent = statsCacheRef.current.get(key);
-        if (ent && Date.now() - ent.ts < DASHBOARD_STATS_CACHE_TTL_MS) return;
-        api
-          .get('/assets/stats', { params: { maintenance_vendor: vendor }, ...DASHBOARD_API })
-          .then((res) => {
-            statsCacheRef.current.set(key, { data: normalizeStats(res.data), ts: Date.now() });
-          })
-          .catch(() => {
-            /* ignore prefetch errors */
-          });
-      });
-    };
-    const ric = typeof window !== 'undefined' && window.requestIdleCallback;
-    if (ric) {
-      ric(() => run(), { timeout: 2500 });
-    } else {
-      setTimeout(run, 400);
+    const storeKey = String(activeStoreCacheKey ?? 'none');
+    if (vendorPrefetchRef.current.storeKey !== storeKey) {
+      vendorPrefetchRef.current = { storeKey, running: false, done: false };
     }
-  }, [activeStoreCacheKey, isScyDashboard]);
+    if (vendorPrefetchRef.current.running || vendorPrefetchRef.current.done) return;
+    vendorPrefetchRef.current.running = true;
+
+    const run = async () => {
+      for (const vendor of DASHBOARD_PREFETCH_VENDORS) {
+        const key = buildStatsCacheKey(vendor);
+        const ent = statsCacheRef.current.get(key);
+        if (ent && Date.now() - ent.ts < DASHBOARD_STATS_CACHE_TTL_MS) continue;
+        try {
+          const res = await api.get('/assets/stats', { params: { maintenance_vendor: vendor }, ...DASHBOARD_API });
+          statsCacheRef.current.set(key, { data: normalizeStats(res.data), ts: Date.now() });
+        } catch {
+          // Best effort warm-up only.
+        }
+      }
+      vendorPrefetchRef.current.running = false;
+      vendorPrefetchRef.current.done = true;
+    };
+
+    const ric = typeof window !== 'undefined' ? window.requestIdleCallback : null;
+    if (typeof ric === 'function') {
+      ric(() => {
+        run().catch(() => {
+          vendorPrefetchRef.current.running = false;
+        });
+      }, { timeout: 2000 });
+      return;
+    }
+    run().catch(() => {
+      vendorPrefetchRef.current.running = false;
+    });
+  }, [activeStoreCacheKey, buildStatsCacheKey, isScyDashboard]);
 
   useEffect(() => {
     // Per-user dashboard layout persistence (local-only for now).
@@ -353,11 +371,31 @@ const Dashboard = () => {
     let cancelled = false;
     const ac = new AbortController();
     const fetchSeq = ++fetchSeqRef.current;
+    const effectStartMs = Date.now();
     const isStale = () => cancelled || fetchSeq !== fetchSeqRef.current;
     const withSignal = { ...DASHBOARD_API, signal: ac.signal };
     const statsCacheKey = buildStatsCacheKey(dashboardVendor);
 
     const fetchStats = async () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+        body: JSON.stringify({
+          sessionId: '513919',
+          runId: 'dashboard-latency-pass2',
+          hypothesisId: 'H1_H3',
+          location: 'Dashboard.jsx:fetchStats:start',
+          message: 'dashboard fetch started',
+          data: {
+            dashboardVendor,
+            hasExistingStats: Boolean(statsRef.current),
+            isScyDashboard
+          },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion
       const maxAttempts = 3;
       let lastError = null;
       const hadStats = Boolean(statsRef.current);
@@ -371,13 +409,17 @@ const Dashboard = () => {
         if (cacheFresh && cached?.data) {
           setStats(cached.data);
           setLastUpdated(new Date(cached.ts));
-          if (hadStats) setRefreshing(true);
+          if (hadStats) setRefreshing(false);
           else setLoading(false);
         } else if (hadStats) {
           setRefreshing(true);
         } else {
           setLoading(true);
         }
+      }
+      if (cacheFresh && cached?.data) {
+        if (dashboardVendor === 'All') warmVendorCachesAfterAll();
+        return;
       }
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
@@ -390,29 +432,53 @@ const Dashboard = () => {
           if (!isStale()) setRecentLoading(true);
           const recentP = api.get('/assets', { params: recentParams, ...withSignal });
 
-          const [statsSettled] = await Promise.allSettled([
-            api.get('/assets/stats', { params: statsParams, ...withSignal })
-          ]);
+          const inflightKey = statsCacheKey;
+          const existingInflight = statsInflightRef.current.get(inflightKey);
+          const statsPromise = existingInflight || api
+            .get('/assets/stats', { params: statsParams, ...DASHBOARD_API })
+            .then((res) => normalizeStats(res.data))
+            .finally(() => {
+              statsInflightRef.current.delete(inflightKey);
+            });
+          if (!existingInflight) {
+            statsInflightRef.current.set(inflightKey, statsPromise);
+          }
+          const [statsSettled] = await Promise.allSettled([statsPromise]);
           if (isStale()) return;
 
           if (statsSettled.status === 'rejected') {
             throw statsSettled.reason;
           }
 
-          const normalized = normalizeStats(statsSettled.value.data);
+          const normalized = statsSettled.value;
           statsCacheRef.current.set(statsCacheKey, { data: normalized, ts: Date.now() });
           setStats(normalized);
           setLastUpdated(new Date());
+          // #region agent log
+          fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+            body: JSON.stringify({
+              sessionId: '513919',
+              runId: 'dashboard-latency-pass2',
+              hypothesisId: 'H1_H3',
+              location: 'Dashboard.jsx:fetchStats:success',
+              message: 'dashboard stats applied',
+              data: {
+                dashboardVendor,
+                elapsedMs: Date.now() - effectStartMs
+              },
+              timestamp: Date.now()
+            })
+          }).catch(() => {});
+          // #endregion
 
           // One paint: KPI row + charts (recent table may still stream).
           if (!isStale()) {
             setLoading(false);
             setRefreshing(false);
           }
-
-          if (isScyDashboard && dashboardVendor === 'All') {
-            prefetchVendorStatsCaches();
-          }
+          if (dashboardVendor === 'All') warmVendorCachesAfterAll();
 
           recentP
             .then((recentResponse) => {
@@ -450,6 +516,26 @@ const Dashboard = () => {
       if (lastError) {
         if (isStale()) return;
         console.error('Error fetching stats:', lastError);
+        // #region agent log
+        fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
+          body: JSON.stringify({
+            sessionId: '513919',
+            runId: 'dashboard-latency-pass2',
+            hypothesisId: 'H5',
+            location: 'Dashboard.jsx:fetchStats:error',
+            message: 'dashboard stats failed',
+            data: {
+              dashboardVendor,
+              elapsedMs: Date.now() - effectStartMs,
+              status: Number(lastError?.response?.status || 0),
+              code: String(lastError?.code || '')
+            },
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+        // #endregion
         setRecentLoading(false);
         if (!statsRef.current) {
           const scopeLabel = isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : '';
@@ -467,7 +553,7 @@ const Dashboard = () => {
       cancelled = true;
       ac.abort();
     };
-  }, [dashboardVendor, isScyDashboard, activeStoreCacheKey, buildStatsCacheKey, prefetchVendorStatsCaches]);
+  }, [dashboardVendor, isScyDashboard, activeStoreCacheKey, buildStatsCacheKey, warmVendorCachesAfterAll]);
 
   useEffect(() => {
     let cancelled = false;
