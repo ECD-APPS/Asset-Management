@@ -8,13 +8,13 @@ const EXPORT_ROOT = path.join(__dirname, '../storage/local-mongodumps');
 
 /**
  * Local logical backup (single .gz archive) — no cloud; copy file to USB manually.
- * Defaults: enabled when NODE_ENV is not production; override with ENABLE_LOCAL_MONGODUMP.
+ * Defaults: enabled unless explicitly disabled; override with ENABLE_LOCAL_MONGODUMP.
  */
 const isLocalMongodumpEnabled = () => {
   const raw = String(process.env.ENABLE_LOCAL_MONGODUMP || '').trim().toLowerCase();
   if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
   if (['0', 'false', 'no', 'off'].includes(raw)) return false;
-  return process.env.NODE_ENV !== 'production';
+  return true;
 };
 
 const getMongoUri = () =>

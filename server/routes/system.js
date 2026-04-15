@@ -300,6 +300,15 @@ const normalizePublicAssetUrl = (value, fallback) => {
   }
 };
 
+const normalizeBrandingApiUrl = (value, fallback) => {
+  const normalized = normalizePublicAssetUrl(value, fallback);
+  const stripped = String(normalized || '').split('?')[0];
+  if (!stripped.startsWith('/uploads/branding/')) return normalized;
+  const baseName = path.basename(stripped);
+  if (!baseName) return fallback;
+  return `/api/system/branding/${encodeURIComponent(baseName)}`;
+};
+
 const parseUploadedBackupPayload = async (file) => {
   if (!file?.path) throw new Error('Uploaded backup file path is missing');
   const content = await fs.promises.readFile(file.path, 'utf8');
@@ -823,13 +832,33 @@ router.get('/public-config', async (req, res) => {
       Setting.findOne({ key: 'theme' }).lean(),
       requestedStoreId ? Store.findById(requestedStoreId).select('appTheme').lean() : Promise.resolve(null)
     ]);
-    const logoUrl = normalizePublicAssetUrl(logoSetting?.value, '/logo.svg');
-    const gatePassLogoUrl = normalizePublicAssetUrl(gatePassLogoSetting?.value, logoUrl);
+    const logoUrl = normalizeBrandingApiUrl(logoSetting?.value, '/logo.svg');
+    const gatePassLogoUrl = normalizeBrandingApiUrl(gatePassLogoSetting?.value, logoUrl);
     const fallbackTheme = typeof themeSetting?.value === 'string' ? themeSetting.value : 'default';
     const theme = storeThemeDoc?.appTheme || fallbackTheme;
     res.json({ logoUrl, gatePassLogoUrl, theme });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// @desc    Public branding file proxy (3-tier safe)
+// @route   GET /api/system/branding/:fileName
+// @access  Public
+router.get('/branding/:fileName', async (req, res) => {
+  try {
+    const unsafeName = String(req.params.fileName || '');
+    const fileName = path.basename(unsafeName);
+    if (!fileName || fileName !== unsafeName) {
+      return res.status(400).json({ message: 'Invalid branding file name' });
+    }
+    const absPath = path.join(brandingDir, fileName);
+    if (!fs.existsSync(absPath)) {
+      return res.status(404).json({ message: 'Branding file not found' });
+    }
+    return res.sendFile(absPath);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to load branding file' });
   }
 });
 
@@ -861,7 +890,7 @@ router.post('/logo', protect, superAdmin, brandingUpload.single('logo'), async (
       { $set: { value: relativeUrl, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ message: 'Logo updated', logoUrl: relativeUrl });
+    res.json({ message: 'Logo updated', logoUrl: normalizeBrandingApiUrl(relativeUrl, '/logo.svg') });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -893,7 +922,7 @@ router.post('/gatepass-logo', protect, superAdmin, gatePassLogoUpload.single('lo
       { $set: { value: relativeUrl, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ message: 'Gate pass logo updated', gatePassLogoUrl: relativeUrl });
+    res.json({ message: 'Gate pass logo updated', gatePassLogoUrl: normalizeBrandingApiUrl(relativeUrl, '/gatepass-logo.svg') });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
