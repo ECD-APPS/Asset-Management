@@ -832,8 +832,8 @@ router.get('/public-config', async (req, res) => {
       Setting.findOne({ key: 'theme' }).lean(),
       requestedStoreId ? Store.findById(requestedStoreId).select('appTheme').lean() : Promise.resolve(null)
     ]);
-    const logoUrl = normalizeBrandingApiUrl(logoSetting?.value, '/logo.svg');
-    const gatePassLogoUrl = normalizeBrandingApiUrl(gatePassLogoSetting?.value, logoUrl);
+    const logoUrl = normalizeBrandingApiUrl(logoSetting?.value, '');
+    const gatePassLogoUrl = normalizeBrandingApiUrl(gatePassLogoSetting?.value, '');
     const fallbackTheme = typeof themeSetting?.value === 'string' ? themeSetting.value : 'default';
     const theme = storeThemeDoc?.appTheme || fallbackTheme;
     res.json({ logoUrl, gatePassLogoUrl, theme });
@@ -890,7 +890,7 @@ router.post('/logo', protect, superAdmin, brandingUpload.single('logo'), async (
       { $set: { value: relativeUrl, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ message: 'Logo updated', logoUrl: normalizeBrandingApiUrl(relativeUrl, '/logo.svg') });
+    res.json({ message: 'Logo updated', logoUrl: normalizeBrandingApiUrl(relativeUrl, '') });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -922,7 +922,7 @@ router.post('/gatepass-logo', protect, superAdmin, gatePassLogoUpload.single('lo
       { $set: { value: relativeUrl, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ message: 'Gate pass logo updated', gatePassLogoUrl: normalizeBrandingApiUrl(relativeUrl, '/gatepass-logo.svg') });
+    res.json({ message: 'Gate pass logo updated', gatePassLogoUrl: normalizeBrandingApiUrl(relativeUrl, '') });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -1116,9 +1116,6 @@ router.get('/backups', protect, superAdmin, async (req, res) => {
 // @access  Private/SuperAdmin
 router.post('/backups/local-mongodump', protect, superAdmin, heavyOpsLimiter, async (req, res) => {
   try {
-    if (!isBackupV3Enabled()) {
-      return res.status(503).json({ message: 'Backup flow is disabled (BACKUP_V3_ENABLED=false).' });
-    }
     if (!isLocalMongodumpEnabled()) {
       return res.status(403).json({
         message:
@@ -1259,9 +1256,6 @@ router.post('/backups/upload-restore', protect, superAdmin, heavyOpsLimiter, han
   }
   let lockAcquired = false;
   try {
-    if (!isBackupV3Enabled()) {
-      return res.status(503).json({ message: 'Backup flow is disabled (BACKUP_V3_ENABLED=false).' });
-    }
     if (!isLocalMongodumpEnabled()) {
       return res.status(403).json({
         message:

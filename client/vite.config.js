@@ -33,6 +33,12 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/socket.io': {
+        target: `http://${apiHost}:${apiPort}`,
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
     },
   },
   build: {

@@ -4,7 +4,8 @@ import DashboardCharts from '../components/DashboardCharts';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams, useLocation } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import {
   AlertCircle,
   Bell,
@@ -26,6 +27,9 @@ const DASHBOARD_API = { headers: { 'X-Skip-Global-Loading': '1' } };
 /** Vendor scope switches re-hit a heavy /assets/stats pipeline; cache + prefetch keeps Siemens/G42 snappy. */
 const DASHBOARD_STATS_CACHE_TTL_MS = 2 * 60 * 1000;
 const DASHBOARD_PREFETCH_VENDORS = ['Siemens', 'G42'];
+
+const dashboardSocketEnabled =
+  typeof import.meta !== 'undefined' && import.meta.env?.VITE_ENABLE_DASHBOARD_SOCKET !== 'false';
 
 function isAbortLike(error) {
   const c = error?.code;
@@ -132,6 +136,7 @@ const normalizeStats = (raw) => {
 
 const Dashboard = () => {
   const { user, activeStore } = useAuth();
+  const location = useLocation();
   const activeStoreCacheKey = activeStore?._id ?? activeStore ?? null;
   const [searchParams] = useSearchParams();
   const [stats, setStats] = useState(null);
@@ -156,6 +161,7 @@ const Dashboard = () => {
   /** Map cacheKey -> Promise resolving to normalized stats (dedupe concurrent calls). */
   const statsInflightRef = useRef(new Map());
   const vendorPrefetchRef = useRef({ storeKey: '', running: false, done: false });
+  const [wsRefreshNonce, setWsRefreshNonce] = useState(0);
 
   useEffect(() => {
     statsRef.current = stats;
@@ -224,6 +230,34 @@ const Dashboard = () => {
     [activeStoreCacheKey, isScyDashboard]
   );
 
+  useEffect(() => {
+    if (!dashboardSocketEnabled) return;
+    if (location.pathname !== '/') return;
+    if (!user?._id) return;
+
+    const socket = io(window.location.origin, {
+      path: '/socket.io',
+      withCredentials: true,
+      transports: ['websocket', 'polling'],
+      autoConnect: true
+    });
+
+    const onRefresh = () => {
+      statsCacheRef.current.clear();
+      statsInflightRef.current.clear();
+      vendorPrefetchRef.current = { storeKey: String(activeStoreCacheKey ?? 'none'), running: false, done: false };
+      setWsRefreshNonce((n) => n + 1);
+    };
+
+    socket.on('dashboard:refresh', onRefresh);
+
+    return () => {
+      socket.off('dashboard:refresh', onRefresh);
+      socket.disconnect();
+    };
+  }, [location.pathname, user?._id, activeStoreCacheKey]);
+
+  /** Preload /assets/stats for All + Siemens + G42 in parallel so vendor toggles hit cache (SCY dashboard only). */
   const warmVendorCachesAfterAll = useCallback(() => {
     if (!isScyDashboard) return;
     const storeKey = String(activeStoreCacheKey ?? 'none');
@@ -234,33 +268,33 @@ const Dashboard = () => {
     vendorPrefetchRef.current.running = true;
 
     const run = async () => {
-      for (const vendor of DASHBOARD_PREFETCH_VENDORS) {
-        const key = buildStatsCacheKey(vendor);
+      const prefetchOne = async (vendorLabel) => {
+        const key = buildStatsCacheKey(vendorLabel);
         const ent = statsCacheRef.current.get(key);
-        if (ent && Date.now() - ent.ts < DASHBOARD_STATS_CACHE_TTL_MS) continue;
+        if (ent && Date.now() - ent.ts < DASHBOARD_STATS_CACHE_TTL_MS) return;
+        const params = vendorLabel === 'All' ? {} : { maintenance_vendor: vendorLabel };
         try {
-          const res = await api.get('/assets/stats', { params: { maintenance_vendor: vendor }, ...DASHBOARD_API });
+          const res = await api.get('/assets/stats', { params, ...DASHBOARD_API });
           statsCacheRef.current.set(key, { data: normalizeStats(res.data), ts: Date.now() });
         } catch {
-          // Best effort warm-up only.
+          /* best-effort warm-up only */
         }
-      }
+      };
+
+      await Promise.all([
+        prefetchOne('All'),
+        ...DASHBOARD_PREFETCH_VENDORS.map((v) => prefetchOne(v))
+      ]);
       vendorPrefetchRef.current.running = false;
       vendorPrefetchRef.current.done = true;
     };
 
-    const ric = typeof window !== 'undefined' ? window.requestIdleCallback : null;
-    if (typeof ric === 'function') {
-      ric(() => {
-        run().catch(() => {
-          vendorPrefetchRef.current.running = false;
-        });
-      }, { timeout: 2000 });
-      return;
-    }
-    run().catch(() => {
-      vendorPrefetchRef.current.running = false;
-    });
+    // Start ASAP (avoid requestIdleCallback + serial fetches — both slowed Siemens/G42 toggles).
+    window.setTimeout(() => {
+      run().catch(() => {
+        vendorPrefetchRef.current.running = false;
+      });
+    }, 0);
   }, [activeStoreCacheKey, buildStatsCacheKey, isScyDashboard]);
 
   useEffect(() => {
@@ -371,31 +405,11 @@ const Dashboard = () => {
     let cancelled = false;
     const ac = new AbortController();
     const fetchSeq = ++fetchSeqRef.current;
-    const effectStartMs = Date.now();
     const isStale = () => cancelled || fetchSeq !== fetchSeqRef.current;
     const withSignal = { ...DASHBOARD_API, signal: ac.signal };
     const statsCacheKey = buildStatsCacheKey(dashboardVendor);
 
     const fetchStats = async () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
-        body: JSON.stringify({
-          sessionId: '513919',
-          runId: 'dashboard-latency-pass2',
-          hypothesisId: 'H1_H3',
-          location: 'Dashboard.jsx:fetchStats:start',
-          message: 'dashboard fetch started',
-          data: {
-            dashboardVendor,
-            hasExistingStats: Boolean(statsRef.current),
-            isScyDashboard
-          },
-          timestamp: Date.now()
-        })
-      }).catch(() => {});
-      // #endregion
       const maxAttempts = 3;
       let lastError = null;
       const hadStats = Boolean(statsRef.current);
@@ -418,7 +432,7 @@ const Dashboard = () => {
         }
       }
       if (cacheFresh && cached?.data) {
-        if (dashboardVendor === 'All') warmVendorCachesAfterAll();
+        if (isScyDashboard) warmVendorCachesAfterAll();
         return;
       }
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -435,7 +449,7 @@ const Dashboard = () => {
           const inflightKey = statsCacheKey;
           const existingInflight = statsInflightRef.current.get(inflightKey);
           const statsPromise = existingInflight || api
-            .get('/assets/stats', { params: statsParams, ...DASHBOARD_API })
+            .get('/assets/stats', { params: statsParams, ...withSignal })
             .then((res) => normalizeStats(res.data))
             .finally(() => {
               statsInflightRef.current.delete(inflightKey);
@@ -454,31 +468,13 @@ const Dashboard = () => {
           statsCacheRef.current.set(statsCacheKey, { data: normalized, ts: Date.now() });
           setStats(normalized);
           setLastUpdated(new Date());
-          // #region agent log
-          fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
-            body: JSON.stringify({
-              sessionId: '513919',
-              runId: 'dashboard-latency-pass2',
-              hypothesisId: 'H1_H3',
-              location: 'Dashboard.jsx:fetchStats:success',
-              message: 'dashboard stats applied',
-              data: {
-                dashboardVendor,
-                elapsedMs: Date.now() - effectStartMs
-              },
-              timestamp: Date.now()
-            })
-          }).catch(() => {});
-          // #endregion
 
           // One paint: KPI row + charts (recent table may still stream).
           if (!isStale()) {
             setLoading(false);
             setRefreshing(false);
           }
-          if (dashboardVendor === 'All') warmVendorCachesAfterAll();
+          if (isScyDashboard) warmVendorCachesAfterAll();
 
           recentP
             .then((recentResponse) => {
@@ -516,26 +512,6 @@ const Dashboard = () => {
       if (lastError) {
         if (isStale()) return;
         console.error('Error fetching stats:', lastError);
-        // #region agent log
-        fetch('http://127.0.0.1:7852/ingest/e6725959-23a4-41d9-9ec9-16fd1ac382c3', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '513919' },
-          body: JSON.stringify({
-            sessionId: '513919',
-            runId: 'dashboard-latency-pass2',
-            hypothesisId: 'H5',
-            location: 'Dashboard.jsx:fetchStats:error',
-            message: 'dashboard stats failed',
-            data: {
-              dashboardVendor,
-              elapsedMs: Date.now() - effectStartMs,
-              status: Number(lastError?.response?.status || 0),
-              code: String(lastError?.code || '')
-            },
-            timestamp: Date.now()
-          })
-        }).catch(() => {});
-        // #endregion
         setRecentLoading(false);
         if (!statsRef.current) {
           const scopeLabel = isScyDashboard && dashboardVendor !== 'All' ? `${dashboardVendor} ` : '';
@@ -553,7 +529,7 @@ const Dashboard = () => {
       cancelled = true;
       ac.abort();
     };
-  }, [dashboardVendor, isScyDashboard, activeStoreCacheKey, buildStatsCacheKey, warmVendorCachesAfterAll]);
+  }, [dashboardVendor, isScyDashboard, activeStoreCacheKey, buildStatsCacheKey, warmVendorCachesAfterAll, wsRefreshNonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -599,7 +575,7 @@ const Dashboard = () => {
       cancelled = true;
       ac.abort();
     };
-  }, [activeStore?._id]);
+  }, [activeStore?._id, wsRefreshNonce]);
 
   useEffect(() => {
     const onDocClick = (event) => {

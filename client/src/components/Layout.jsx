@@ -453,6 +453,7 @@ const Layout = () => {
     dashboardVendorPressed != null ? dashboardVendorPressed === vendor : headerDashboardVendor === vendor;
 
   const setHeaderDashboardVendor = (vendor) => {
+    if (vendor === headerDashboardVendor) return;
     setDashboardVendorPressed(vendor);
     setSearchParams(
       (prev) => {
@@ -729,9 +730,10 @@ const Layout = () => {
                       Open Portal
                     </Link>
                     <button
-                      onClick={async () => {
-                        await logout();
-                        navigate('/login');
+                      type="button"
+                      onClick={() => {
+                        setProfileOpen(false);
+                        logout();
                       }}
                       className="block w-full rounded-lg px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
                     >

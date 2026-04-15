@@ -1,10 +1,26 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 
+const CHUNK_RELOAD_FLAG = 'chunk_reload_once_v1';
+
+const isLikelyChunkLoadError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('failed loading dynamically imported module') ||
+    message.includes('failed to fetch dynamically imported module') ||
+    message.includes('importing a module script failed')
+  );
+};
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null, errorInfo: null };
+  }
+
+  componentDidMount() {
+    // Normal successful app boot: clear one-time chunk-reload marker.
+    sessionStorage.removeItem(CHUNK_RELOAD_FLAG);
   }
 
   static getDerivedStateFromError(error) {
@@ -15,6 +31,19 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, errorInfo) {
     // You can also log the error to an error reporting service
     console.error("Uncaught error:", error, errorInfo);
+
+    // Vite dev/prod deploy edge case: stale dynamic-import chunk URL after rebuild.
+    // Auto-reload once so users do not get stuck on the error card.
+    if (isLikelyChunkLoadError(error)) {
+      const alreadyRetried = sessionStorage.getItem(CHUNK_RELOAD_FLAG) === '1';
+      if (!alreadyRetried) {
+        sessionStorage.setItem(CHUNK_RELOAD_FLAG, '1');
+        window.location.reload();
+        return;
+      }
+    } else {
+      sessionStorage.removeItem(CHUNK_RELOAD_FLAG);
+    }
     this.setState({ error, errorInfo });
   }
 

@@ -65,7 +65,7 @@ const Login = () => {
               src={branding.logoUrl}
               alt="Application logo"
               className="h-40 md:h-48 w-auto object-contain drop-shadow-sm animate-spin"
-              style={{ animationDuration: '10s' }}
+              style={{ animationDuration: '20s' }}
             />
           </div>
         ) : null}

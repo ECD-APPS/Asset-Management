@@ -1564,7 +1564,7 @@ const TechPpmPanel = () => {
           </div>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm min-h-[220px]">
-          <div className="text-xs font-semibold uppercase text-slate-500">System health</div>
+          <div className="text-xs font-semibold uppercase text-slate-500">PPM task health</div>
           <div className="relative min-h-[170px] mt-2">
             <ResponsiveContainer width="100%" height={160}>
               <PieChart>

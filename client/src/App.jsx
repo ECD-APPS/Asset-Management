@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import LoadingLogo from './components/LoadingLogo';
 import ApiLoadingOverlay from './components/ApiLoadingOverlay';
 import PwaInstallPrompt from './components/PwaInstallPrompt';
+import AlertOverride from './components/AlertOverride';
 import PropTypes from 'prop-types';
 // Eager-load home route: repeated refresh can abort lazy chunk fetches (Vite dynamic import errors).
 import Dashboard from './pages/Dashboard';
@@ -115,6 +116,7 @@ function App() {
     <AuthProvider>
       <ThemeProvider>
         <ErrorBoundary>
+          <AlertOverride />
           <ApiLoadingOverlay />
           <PwaInstallPrompt />
           <Suspense fallback={

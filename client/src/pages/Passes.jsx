@@ -247,12 +247,14 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
             boxSizing: 'border-box'
           }}
         >
-          <img
-            src={gatePassLogoUrl || '/gatepass-logo.svg'}
-            alt=""
-            className="absolute pointer-events-none select-none"
-            style={{ width: '105mm', opacity: 0.05, top: '50%', left: '50%', transform: 'translate(-50%, -45%)' }}
-          />
+          {gatePassLogoUrl ? (
+            <img
+              src={gatePassLogoUrl}
+              alt=""
+              className="absolute pointer-events-none select-none"
+              style={{ width: '105mm', opacity: 0.05, top: '50%', left: '50%', transform: 'translate(-50%, -45%)' }}
+            />
+          ) : null}
           {/* Header */}
           <div className="grid grid-cols-3 items-center mb-3 pb-3 border-b-2 border-slate-200">
             <div className="flex items-center gap-2">
@@ -266,11 +268,13 @@ const PassTemplate = ({ pass, refInstance, gatePassLogoUrl }) => {
                 className="pass-header-logo-wrap flex shrink-0 items-center justify-center"
                 style={{ width: GATE_PASS_HEADER_BOX_PX, height: GATE_PASS_HEADER_BOX_PX }}
               >
-                <img
-                  src={gatePassLogoUrl || '/gatepass-logo.svg'}
-                  alt=""
-                  className="pass-header-emblem max-h-full max-w-full object-contain"
-                />
+                {gatePassLogoUrl ? (
+                  <img
+                    src={gatePassLogoUrl}
+                    alt=""
+                    className="pass-header-emblem max-h-full max-w-full object-contain"
+                  />
+                ) : null}
               </div>
             </div>
           </div>
@@ -505,12 +509,14 @@ const ViewModal = ({
               ref={previewRef}
               className="pass-preview-a4-landscape bg-white p-6 sm:p-8 shadow-md border-2 border-slate-800 relative overflow-visible pass-print-sheet text-[11px] leading-snug mx-auto"
             >
-             <img
-               src={gatePassLogoUrl || '/gatepass-logo.svg'}
-               alt=""
-               className="absolute pointer-events-none select-none"
-               style={{ width: '78mm', opacity: 0.05, top: '50%', left: '50%', transform: 'translate(-50%, -45%)' }}
-             />
+             {gatePassLogoUrl ? (
+               <img
+                 src={gatePassLogoUrl}
+                 alt=""
+                 className="absolute pointer-events-none select-none"
+                 style={{ width: '78mm', opacity: 0.05, top: '50%', left: '50%', transform: 'translate(-50%, -45%)' }}
+               />
+             ) : null}
              {/* Header */}
              <div className="grid grid-cols-3 items-center mb-4 pb-3 border-b-2 border-slate-200">
                 <div className="flex items-center gap-2">
@@ -524,11 +530,13 @@ const ViewModal = ({
                     className="pass-header-logo-wrap flex shrink-0 items-center justify-center"
                     style={{ width: GATE_PASS_HEADER_BOX_PX, height: GATE_PASS_HEADER_BOX_PX }}
                   >
-                    <img
-                      src={gatePassLogoUrl || '/gatepass-logo.svg'}
-                      alt=""
-                      className="pass-header-emblem max-h-full max-w-full object-contain"
-                    />
+                    {gatePassLogoUrl ? (
+                      <img
+                        src={gatePassLogoUrl}
+                        alt=""
+                        className="pass-header-emblem max-h-full max-w-full object-contain"
+                      />
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -704,7 +712,7 @@ const Passes = () => {
     passId: null,
     passData: null
   });
-  const [gatePassLogoUrl, setGatePassLogoUrl] = useState('/gatepass-logo.svg');
+  const [gatePassLogoUrl, setGatePassLogoUrl] = useState('');
   const [approveLoadingId, setApproveLoadingId] = useState(null);
   const [passSearch, setPassSearch] = useState('');
 
@@ -839,9 +847,9 @@ const Passes = () => {
     const loadGatePassLogo = async () => {
       try {
         const { data } = await api.get('/system/public-config');
-        setGatePassLogoUrl(data?.gatePassLogoUrl || '/gatepass-logo.svg');
+        setGatePassLogoUrl(String(data?.gatePassLogoUrl || '').trim());
       } catch {
-        setGatePassLogoUrl('/gatepass-logo.svg');
+        setGatePassLogoUrl('');
       }
     };
     loadGatePassLogo();

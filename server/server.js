@@ -1,4 +1,5 @@
 const express = require('express');
+const http = require('http');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
@@ -879,6 +880,12 @@ const shutdown = async () => {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  try {
+    const { closeDashboardSocket } = require('./utils/dashboardSocket');
+    closeDashboardSocket();
+  } catch {
+    /* ignore */
+  }
   await writeRuntimeState({ cleanShutdown: true, shutdownAt: new Date().toISOString() });
   try {
     await mongoose.connection.close();
@@ -904,7 +911,9 @@ const startServer = async () => {
   await connectDBWithRetry();
   const PORT = process.env.PORT || 5000;
   const syncBootstrap = String(process.env.SYNC_DB_BOOTSTRAP || '').trim().toLowerCase() === 'true';
-  serverInstance = app.listen(PORT, () => {
+  const httpServer = http.createServer(app);
+  serverInstance = httpServer;
+  httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     if (!syncBootstrap) {
       setImmediate(() => {
@@ -914,6 +923,12 @@ const startServer = async () => {
       });
     }
   });
+  try {
+    const { initDashboardSocket } = require('./utils/dashboardSocket');
+    initDashboardSocket(httpServer, { allowedOrigins });
+  } catch (e) {
+    console.error('[dashboard-socket] failed to initialize:', e?.message || e);
+  }
   const configuredRequestTimeoutMs = Number.parseInt(
     process.env.HTTP_REQUEST_TIMEOUT_MS || process.env.BULK_IMPORT_REQUEST_TIMEOUT_MS || '1800000',
     10

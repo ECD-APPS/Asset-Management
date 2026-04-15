@@ -14,7 +14,7 @@ export default function LoadingLogo({
   return (
     <div className={`flex flex-col items-center justify-center gap-3 ${className}`}>
       <div
-        className={`${sizeClass} shrink-0 motion-reduce:animate-none animate-[spin_1.15s_linear_infinite]`}
+        className={`${sizeClass} shrink-0 motion-reduce:animate-none animate-[spin_2.3s_linear_infinite]`}
         aria-hidden
       >
         <img

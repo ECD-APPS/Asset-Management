@@ -168,16 +168,38 @@ router.post('/login',
   }
 });
 
-// @desc    Logout user
-// @route   POST /api/auth/logout
-// @access  Public
-router.post('/logout', (req, res) => {
+/** Same-origin path only (used by GET logout redirect; blocks protocol-relative and off-site URLs). */
+const isSafeLogoutRedirectPath = (raw) => {
+  const s = String(raw || '').trim();
+  if (!s.startsWith('/') || s.startsWith('//')) return false;
+  return /^\/[\w\-./?#=&%]*$/.test(s);
+};
+
+const clearSessionAndRespond = (req, res, { redirect } = {}) => {
   const sid = req.cookies?.sid;
   if (sid) {
     Session.deleteOne({ sid }).catch(() => {});
   }
   res.clearCookie('sid', sidClearOptions(req));
-  res.status(200).json({ message: 'Logged out' });
+  if (redirect && isSafeLogoutRedirectPath(redirect)) {
+    return res.redirect(302, redirect);
+  }
+  return res.status(200).json({ message: 'Logged out' });
+};
+
+// @desc    Logout user (POST — for API clients)
+// @route   POST /api/auth/logout
+// @access  Public
+router.post('/logout', (req, res) => {
+  return clearSessionAndRespond(req, res, {});
+});
+
+// @desc    Logout user (GET — full browser navigation; avoids CSRF on POST and proxy quirks in split-tier setups)
+// @route   GET /api/auth/logout?redirect=/login
+// @access  Public
+router.get('/logout', (req, res) => {
+  const redirect = String(req.query.redirect || '').trim();
+  return clearSessionAndRespond(req, res, redirect ? { redirect } : {});
 });
 
 // @desc    Get current user

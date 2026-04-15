@@ -37,6 +37,70 @@ const formatArtifactSize = (bytes) => {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 };
 
+/** CSRF cookie is readable (not HttpOnly); needed for long multipart `fetch` that bypasses axios. */
+const readXsrfTokenFromCookie = () => {
+  if (typeof document === 'undefined' || !document.cookie) return '';
+  const parts = document.cookie.split(';');
+  for (const raw of parts) {
+    const part = raw.trim();
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (name === 'XSRF-TOKEN') return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return '';
+};
+
+const apiAbsoluteUrl = (apiPath) => {
+  const p = String(apiPath || '').startsWith('/') ? apiPath : `/${apiPath}`;
+  return `${window.location.origin}/api${p}`;
+};
+
+const resolvePortalAssetUrl = (rawUrl, fallback = '') => {
+  const input = String(rawUrl || '').trim();
+  if (!input) return fallback;
+  if (/^(data:|blob:|https?:\/\/)/i.test(input)) return input;
+  if (input.startsWith('//')) return `${window.location.protocol}${input}`;
+  return input.startsWith('/') ? `${window.location.origin}${input}` : `${window.location.origin}/${input.replace(/^\.?\//, '')}`;
+};
+
+const extractRequestErrorMessage = (error, fallback = 'Request failed') => {
+  return String(error?.response?.data?.message || error?.message || fallback);
+};
+
+/** Same-origin API JSON (or text) with credentials and CSRF header — better for large backup/restore through proxies. */
+const apiFetchJson = async (apiPath, { method = 'GET', body, timeoutMs } = {}) => {
+  const maxMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15000;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), maxMs);
+  try {
+    const xsrf = readXsrfTokenFromCookie();
+    const headers = {};
+    if (xsrf) headers['X-XSRF-TOKEN'] = xsrf;
+    const res = await fetch(apiAbsoluteUrl(apiPath), {
+      method,
+      credentials: 'include',
+      signal: controller.signal,
+      headers,
+      body: body ?? undefined
+    });
+    const ct = res.headers.get('content-type') || '';
+    const data = ct.includes('application/json') ? await res.json() : { message: await res.text() };
+    if (!res.ok) {
+      const msg = data?.message || data?.error || res.statusText || 'Request failed';
+      throw new Error(typeof msg === 'string' ? msg : 'Request failed');
+    }
+    return data;
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error('The operation took too long or was interrupted.');
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
 const isPbmArtifact = (b) => String(b?.metadata?.backupTool || '') === 'pbm' || Boolean(b?.metadata?.pbmBackupName);
 import AddMembers from './AddMembers';
 import ChangePasswordModal from '../components/ChangePasswordModal';
@@ -113,7 +177,7 @@ const Portal = () => {
   const [emailSaving, setEmailSaving] = useState(false);
   const [testEmail, setTestEmail] = useState('');
   const [testingEmail, setTestingEmail] = useState(false);
-  const [gatePassLogoUrl, setGatePassLogoUrl] = useState('/gatepass-logo.svg');
+  const [gatePassLogoUrl, setGatePassLogoUrl] = useState('');
   const [appLogoPreviewUrl, setAppLogoPreviewUrl] = useState('');
 
   const fetchPortalStores = useCallback(async () => {
@@ -164,12 +228,14 @@ const Portal = () => {
     if (user?.role !== 'Super Admin') return;
     const loadGatePassLogo = async () => {
       try {
-        const res = await api.get('/system/public-config');
+        const data = await apiFetchJson('/system/public-config', { method: 'GET', timeoutMs: 20000 });
         const stamp = Date.now();
-        setGatePassLogoUrl(res.data?.gatePassLogoUrl ? `${res.data.gatePassLogoUrl}?v=${stamp}` : '/gatepass-logo.svg');
-        setAppLogoPreviewUrl(res.data?.logoUrl ? `${res.data.logoUrl}?v=${stamp}` : '');
+        const gatePassUrl = resolvePortalAssetUrl(data?.gatePassLogoUrl, '');
+        const appLogoUrl = resolvePortalAssetUrl(data?.logoUrl, '');
+        setGatePassLogoUrl(gatePassUrl ? `${gatePassUrl}?v=${stamp}` : '');
+        setAppLogoPreviewUrl(appLogoUrl ? `${appLogoUrl}?v=${stamp}` : '');
       } catch {
-        setGatePassLogoUrl('/gatepass-logo.svg');
+        setGatePassLogoUrl('');
         setAppLogoPreviewUrl('');
       }
     };
@@ -353,10 +419,12 @@ const Portal = () => {
     formData.append('backup', file);
     try {
       setRestoreUploading(true);
-      const res = await api.post('/system/backups/upload-restore', formData, {
-        timeout: 4 * 60 * 60 * 1000
+      const data = await apiFetchJson('/system/backups/upload-restore', {
+        method: 'POST',
+        body: formData,
+        timeoutMs: 4 * 60 * 60 * 1000
       });
-      alert(res.data?.message || 'Restore completed.');
+      alert(data?.message || 'Restore completed.');
       await fetchBackupArtifacts();
     } catch (error) {
       alert('Restore failed: ' + (error.response?.data?.message || error.message));
@@ -376,8 +444,11 @@ const Portal = () => {
     if (!window.confirm('Create a full logical backup file on this server? Large databases can take several minutes.')) return;
     try {
       setLocalDumpLoading(true);
-      const res = await api.post('/system/backups/local-mongodump', {}, { timeout: 2 * 60 * 60 * 1000 });
-      alert(res.data?.message || 'Local backup created.');
+      const data = await apiFetchJson('/system/backups/local-mongodump', {
+        method: 'POST',
+        timeoutMs: 2 * 60 * 60 * 1000
+      });
+      alert(data?.message || 'Local backup created.');
       await fetchBackupArtifacts();
     } catch (error) {
       alert('Local backup failed: ' + (error.response?.data?.message || error.message));
@@ -400,7 +471,7 @@ const Portal = () => {
     // Use a real navigation-style download so the browser sends cookies and we avoid axios
     // default 15s timeout + blob buffering issues through the Vite dev proxy ("Network Error").
     const a = document.createElement('a');
-    a.href = `/api/system/backups/${id}/download`;
+    a.href = apiAbsoluteUrl(`/system/backups/${id}/download`);
     a.setAttribute('download', fileName);
     a.rel = 'noopener noreferrer';
     document.body.appendChild(a);
@@ -605,7 +676,9 @@ const Portal = () => {
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50 transition-all duration-300">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 md:h-20 flex items-center justify-between">
           <div className="flex items-center gap-3 md:gap-4">
-             <img src={(branding?.logoUrl) || '/logo.svg'} alt="Expo City Dubai" className="h-10 md:h-14 w-auto" />
+             {branding?.logoUrl ? (
+               <img src={branding.logoUrl} alt="Expo City Dubai" className="h-10 md:h-14 w-auto" />
+             ) : null}
              <div>
                <h1 className="text-lg md:text-xl font-bold tracking-tight text-slate-900 uppercase drop-shadow-sm leading-tight">Expo City Dubai</h1>
                <div className="flex items-center gap-2">
@@ -641,12 +714,7 @@ const Portal = () => {
             )}
 
             <button
-              onClick={async () => {
-                if (window.confirm('Are you sure you want to logout?')) {
-                  await logout();
-                  navigate('/login');
-                }
-              }}
+              onClick={() => logout()}
               className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-red-50 border border-red-100 flex items-center justify-center text-red-600 hover:bg-red-100 hover:text-red-700 transition-all cursor-pointer shadow-sm"
               title="Logout"
             >
@@ -835,7 +903,9 @@ const Portal = () => {
                   <h3 className="text-base md:text-lg font-bold text-slate-900 mb-1">Customize Application Logo</h3>
                   <p className="text-slate-500 text-xs md:text-sm mb-3">Upload PNG, JPG, or SVG. Max 2 MB.</p>
                   <div className="flex items-center gap-4">
-                    <img src={appLogoPreviewUrl || branding?.logoUrl || '/logo.svg'} alt="Current Logo" className="h-10 w-auto rounded border border-slate-200 p-1 bg-white" />
+                    {appLogoPreviewUrl || branding?.logoUrl ? (
+                      <img src={appLogoPreviewUrl || branding?.logoUrl} alt="Current Logo" className="h-10 w-auto rounded border border-slate-200 p-1 bg-white" />
+                    ) : null}
                     <label className="inline-flex items-center px-3 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 cursor-pointer text-sm font-medium border border-slate-200">
                       <input
                         type="file"
@@ -852,15 +922,20 @@ const Portal = () => {
                           const form = new FormData();
                           form.append('logo', file);
                           try {
-                            const res = await api.post('/system/logo', form);
+                            const data = await apiFetchJson('/system/logo', {
+                              method: 'POST',
+                              body: form,
+                              timeoutMs: 120000
+                            });
                             await refreshBranding();
                             const stamp = Date.now();
-                            if (res.data?.logoUrl) {
-                              setAppLogoPreviewUrl(`${res.data.logoUrl}?v=${stamp}`);
+                            if (data?.logoUrl) {
+                              const nextUrl = resolvePortalAssetUrl(data.logoUrl, '');
+                              setAppLogoPreviewUrl(nextUrl ? `${nextUrl}?v=${stamp}` : '');
                             }
                             alert('Logo updated successfully.');
                           } catch (err) {
-                            alert(err.response?.data?.message || 'Upload failed');
+                            alert(extractRequestErrorMessage(err, 'Upload failed'));
                           } finally {
                             e.target.value = '';
                           }
@@ -883,7 +958,9 @@ const Portal = () => {
                   <h3 className="text-base md:text-lg font-bold text-slate-900 mb-1">Customize Gate Pass Logo</h3>
                   <p className="text-slate-500 text-xs md:text-sm mb-3">Used on gate pass preview, print/PDF, and gate pass emails. PNG, JPG, or SVG. Max 2 MB.</p>
                   <div className="flex items-center gap-4">
-                    <img src={gatePassLogoUrl || '/gatepass-logo.svg'} alt="Current Gate Pass Logo" className="h-10 w-auto rounded border border-slate-200 p-1 bg-white" />
+                    {gatePassLogoUrl ? (
+                      <img src={gatePassLogoUrl} alt="Current Gate Pass Logo" className="h-10 w-auto rounded border border-slate-200 p-1 bg-white" />
+                    ) : null}
                     <label className="inline-flex items-center px-3 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 cursor-pointer text-sm font-medium border border-slate-200">
                       <input
                         type="file"
@@ -900,12 +977,17 @@ const Portal = () => {
                           const form = new FormData();
                           form.append('logo', file);
                           try {
-                            const res = await api.post('/system/gatepass-logo', form);
+                            const data = await apiFetchJson('/system/gatepass-logo', {
+                              method: 'POST',
+                              body: form,
+                              timeoutMs: 120000
+                            });
                             const stamp = Date.now();
-                            setGatePassLogoUrl(res.data?.gatePassLogoUrl ? `${res.data.gatePassLogoUrl}?v=${stamp}` : '/gatepass-logo.svg');
+                            const nextUrl = resolvePortalAssetUrl(data?.gatePassLogoUrl, '');
+                            setGatePassLogoUrl(nextUrl ? `${nextUrl}?v=${stamp}` : '');
                             alert('Gate pass logo updated successfully.');
                           } catch (err) {
-                            alert(err.response?.data?.message || 'Upload failed');
+                            alert(extractRequestErrorMessage(err, 'Upload failed'));
                           } finally {
                             e.target.value = '';
                           }
@@ -1127,7 +1209,10 @@ const Portal = () => {
                     Backup &amp; restore
                   </h2>
                   <p className="text-sm text-slate-600 mt-0.5">
-                    Local full backup files (copy to USB) and restore from an archive; optional data reset below
+                    Local full backup files (copy to USB) and restore from an archive; optional data reset below.
+                    In a split web/API/DB deployment, keep <code className="text-[11px] font-mono bg-slate-100 px-1 rounded border border-slate-200">/api</code> proxied to the API tier with a large enough upload limit for restores, or run{' '}
+                    <code className="text-[11px] font-mono bg-slate-100 px-1 rounded border border-slate-200">mongodump</code> /{' '}
+                    <code className="text-[11px] font-mono bg-slate-100 px-1 rounded border border-slate-200">mongorestore</code> on the database host using the same <code className="text-[11px] font-mono bg-slate-100 px-1 rounded border border-slate-200">MONGO_URI</code> as the API.
                   </p>
                 </div>
               </div>

@@ -113,16 +113,6 @@ async function resolveGatePassLogoBuffer(overrideUrl) {
       /* try defaults */
     }
   }
-  for (const rel of ['../../client/public/gatepass-logo.svg', '../../client/public/logo.svg']) {
-    try {
-      const fp = path.join(__dirname, rel);
-      const b = await fs.readFile(fp);
-      const n = await normalizeLogoForPdf(b);
-      if (n) return n;
-    } catch {
-      /* next */
-    }
-  }
   return null;
 }
 

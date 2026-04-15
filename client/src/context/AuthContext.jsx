@@ -14,7 +14,7 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [activeStore, setActiveStore] = useState(null);
   const [globalLoading, setGlobalLoading] = useState(false);
-  const [branding, setBranding] = useState({ logoUrl: '/logo.svg', theme: 'default' });
+  const [branding, setBranding] = useState({ logoUrl: '', theme: 'default' });
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const normalizeStoreSelection = useCallback((value) => {
     if (!value) return null;
@@ -34,7 +34,7 @@ export const AuthProvider = ({ children }) => {
     return '';
   }, [activeStore, user]);
 
-  const resolvePublicAssetUrl = useCallback((rawUrl, fallback = '/logo.svg') => {
+  const resolvePublicAssetUrl = useCallback((rawUrl, fallback = '') => {
     const input = String(rawUrl || '').trim();
     if (!input) return fallback;
     if (/^(data:|blob:|https?:\/\/)/i.test(input)) return input;
@@ -77,15 +77,13 @@ export const AuthProvider = ({ children }) => {
       );
       const params = storeId ? { storeId } : undefined;
       const res = await api.get('/system/public-config', { params });
-      const logoUrl = resolvePublicAssetUrl(res.data?.logoUrl, '/logo.svg');
+      const logoUrl = resolvePublicAssetUrl(res.data?.logoUrl, '');
       const theme = res.data?.theme || 'default';
       setBranding({ logoUrl, theme });
-      setFavicon(logoUrl);
+      if (logoUrl) setFavicon(logoUrl);
       document.documentElement.dataset.theme = theme;
     } catch {
-      const fallbackLogoUrl = resolvePublicAssetUrl('/logo.svg', '/logo.svg');
-      setBranding({ logoUrl: fallbackLogoUrl, theme: 'default' });
-      setFavicon(fallbackLogoUrl);
+      setBranding({ logoUrl: '', theme: 'default' });
       document.documentElement.dataset.theme = 'default';
     }
   }, [activeStore, resolvePublicAssetUrl, resolveStoreIdForBranding, user]);
@@ -231,18 +229,19 @@ export const AuthProvider = ({ children }) => {
     }
   }, [normalizeStoreSelection]);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(() => {
     setGlobalLoading(true);
     try {
-      await api.post('/auth/logout');
-    } catch (error) {
-      console.error('Logout failed:', error);
+      localStorage.removeItem('user');
+      localStorage.removeItem('activeStore');
+    } catch {
+      /* ignore */
     }
-    localStorage.removeItem('user');
-    localStorage.removeItem('activeStore');
-    setUser(null);
-    setActiveStore(null);
-    setGlobalLoading(false);
+    // Full navigation: clears the HttpOnly session cookie reliably behind reverse proxies and
+    // avoids POST + CSRF edge cases common in split web/API/database deployments.
+    const redirect = encodeURIComponent('/login');
+    window.location.replace(`${window.location.origin}/api/auth/logout?redirect=${redirect}`);
+    return Promise.resolve();
   }, []);
 
   const selectStore = useCallback((store) => {

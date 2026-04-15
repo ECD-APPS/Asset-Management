@@ -438,9 +438,8 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
     {
       name: 'Logout',
       icon: <LogOut size={16} strokeWidth={1.8} />,
-      action: async () => {
-        await logout();
-        navigate('/login');
+      action: () => {
+        logout();
       }
     }
   ].filter((action) => Boolean(action.path || action.action));
@@ -465,11 +464,13 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
         {!isCollapsed ? (
           <div className="mt-5 flex flex-col items-center text-center">
             <div className="inline-flex items-center justify-center rounded-2xl border border-app-sidebar bg-white/10 p-3 shadow-lg">
-              <img
-                src={branding?.logoUrl || '/logo.svg'}
-                alt="SCY Asset"
-                className="h-16 w-16 rounded-xl object-contain"
-              />
+              {branding?.logoUrl ? (
+                <img
+                  src={branding.logoUrl}
+                  alt="SCY Asset"
+                  className="h-16 w-16 rounded-xl object-contain"
+                />
+              ) : null}
             </div>
             <p className="mt-3 text-base font-semibold tracking-wide text-app-sidebar">SCY Asset</p>
             <p className="mt-1 rounded-full border border-app-sidebar px-2.5 py-0.5 text-[11px] text-app-sidebar">
@@ -492,11 +493,13 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
                 />
               )}
               <div className="inline-flex items-center justify-center rounded-xl border border-app-sidebar bg-white/10 p-2 shadow">
-                <img
-                  src={branding?.logoUrl || '/logo.svg'}
-                  alt="SCY Asset"
-                  className="h-9 w-9 rounded-lg object-contain"
-                />
+                {branding?.logoUrl ? (
+                  <img
+                    src={branding.logoUrl}
+                    alt="SCY Asset"
+                    className="h-9 w-9 rounded-lg object-contain"
+                  />
+                ) : null}
               </div>
 
               {isOceanTheme && (
@@ -638,9 +641,9 @@ const Sidebar = ({ onClose, isCollapsed, toggleCollapse }) => {
         </button>
 
         <button
-          onClick={async () => {
-            await logout();
-            navigate('/login');
+          type="button"
+          onClick={() => {
+            logout();
           }}
           className={`flex w-full items-center rounded-xl px-3 py-2.5 text-sm ${selectedTheme === 'ocean' ? 'text-white font-bold hover:bg-white/16' : 'text-rose-600 hover:bg-rose-50'} ${isCollapsed ? 'justify-center' : 'gap-3'}`}
           title="Logout"
