@@ -3,6 +3,9 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const PpmTask = require('../models/PpmTask');
 const PpmWorkflowTask = require('../models/PpmWorkflowTask');
 const PpmAssetTemp = require('../models/PpmAssetTemp');
@@ -20,7 +23,33 @@ const {
 const { protect, restrictViewer, resolveAssignedStoreId } = require('../middleware/authMiddleware');
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const ppmUploadTempDir = path.join(os.tmpdir(), 'expo-ppm-upload');
+try {
+  fs.mkdirSync(ppmUploadTempDir, { recursive: true });
+} catch {
+  /* best effort; multer will report if unwritable */
+}
+const MAX_PPM_UPLOAD_BYTES = Math.min(
+  2 * 1024 * 1024 * 1024,
+  Math.max(10 * 1024 * 1024, (Number.parseInt(process.env.MAX_PPM_UPLOAD_MB || '1024', 10) || 1024) * 1024 * 1024)
+);
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, ppmUploadTempDir),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(String(file?.originalname || '')).toLowerCase();
+      const safeExt = ext && ext.length <= 8 ? ext : '.xlsx';
+      cb(null, `ppm-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${safeExt}`);
+    }
+  }),
+  limits: { fileSize: MAX_PPM_UPLOAD_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const name = String(file?.originalname || '').toLowerCase();
+    const ok = name.endsWith('.xlsx') || name.endsWith('.xlsm');
+    if (!ok) return cb(new Error('Invalid file type. Please upload an .xlsx file.'));
+    cb(null, true);
+  }
+});
 
 /** PPM cycle length (default due / next-service horizon) — 180 days */
 const PPM_CYCLE_MS = 180 * 24 * 60 * 60 * 1000;
@@ -103,6 +132,10 @@ const aggregateLatestPpmRowByAsset = async (storeScope, assetObjectIds) => {
 
 const VMS_CHECKLIST_KEY = 'vms_online';
 const BULK_IMPORT_INSERT_CHUNK = 1000;
+const MAX_PPM_IMPORT_ROWS = Math.min(
+  1048575,
+  Math.max(1000, Number.parseInt(process.env.MAX_PPM_IMPORT_ROWS || '1048575', 10) || 1048575)
+);
 
 const DEFAULT_CHECKLIST = [
   { key: 'camera_maintenance_checklist', label: 'Camera Maintenance Checklist', value: 'Good', notes: '' },
@@ -1698,7 +1731,7 @@ router.post('/', protect, restrictViewer, async (req, res) => {
 
     await Asset.updateOne(
       { _id: asset._id, disposed: { $ne: true } },
-      { $set: { ticket_number: workOrderTicket } }
+      { $set: { ticket_number: workOrderTicket, ppm_enabled: true } }
     );
 
     await ActivityLog.create({
@@ -1907,7 +1940,7 @@ router.post('/batch', protect, restrictViewer, async (req, res) => {
         if (storeScopeOid) {
           assetTicketFilter.store = matchPpmStoreScope(storeScopeOid);
         }
-        await Asset.updateMany(assetTicketFilter, { $set: { ticket_number: workOrderTicket } });
+        await Asset.updateMany(assetTicketFilter, { $set: { ticket_number: workOrderTicket, ppm_enabled: true } });
       }
     }
 
@@ -3016,7 +3049,7 @@ const scorePpmHeaderRow = (vals) => {
 };
 
 const extractPpmRowsFromWorksheet = (ws) => {
-  const maxRow = Math.min(ws.rowCount || 0, 8000);
+  const maxRow = Math.min(ws.rowCount || 0, MAX_PPM_IMPORT_ROWS + 1);
   if (maxRow < 2) return [];
   let bestIdx = 1;
   let bestScore = 0;
@@ -3077,9 +3110,15 @@ const ppmMapRow = (rowObj = {}) => {
 };
 
 const parsePpmExcelRows = async (file) => {
-  if (!file?.buffer) return [];
+  if (!file) return [];
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(file.buffer);
+  if (file.buffer) {
+    await wb.xlsx.load(file.buffer);
+  } else if (file.path) {
+    await wb.xlsx.readFile(file.path);
+  } else {
+    return [];
+  }
   const sheets = wb.worksheets || [];
   for (const ws of sheets) {
     const rows = extractPpmRowsFromWorksheet(ws);
@@ -3278,6 +3317,11 @@ router.post('/upload', protect, restrictViewer, upload.single('file'), async (re
     const manualAssets = Array.isArray(req.body?.assets) ? req.body.assets : [];
     const excelRows = await parsePpmExcelRows(req.file);
     const combined = [...excelRows, ...manualAssets.map((r) => ppmMapRow(r))].filter((r) => Object.values(r).some((v) => String(v || '').trim() !== ''));
+    if (combined.length > MAX_PPM_IMPORT_ROWS) {
+      return res.status(400).json({
+        message: `Too many rows in one upload (${combined.length.toLocaleString()}). Maximum per sheet import is ${MAX_PPM_IMPORT_ROWS.toLocaleString()} rows.`,
+      });
+    }
     if (combined.length === 0) {
       return res.status(400).json({
         message: 'No assets found in upload/manual payload',
@@ -3655,6 +3699,10 @@ router.post('/upload', protect, restrictViewer, upload.single('file'), async (re
         ? 'Duplicate Unique ID (or another unique field): that value already exists on another asset. Change Unique ID in the sheet or remove the duplicate row.'
         : undefined
     });
+  } finally {
+    if (req.file?.path) {
+      fs.promises.unlink(req.file.path).catch(() => {});
+    }
   }
 });
 

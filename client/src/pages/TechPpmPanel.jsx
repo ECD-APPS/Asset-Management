@@ -593,8 +593,8 @@ const TechPpmPanel = () => {
       form.append('confirm_recent_cycle_completion', 'true');
     }
     return api.post('/ppm/upload', form, {
-      // Large import files (e.g., 20k rows) need a longer request window.
-      timeout: 10 * 60 * 1000
+      // Very large single-sheet imports can run much longer than default axios timeout.
+      timeout: 2 * 60 * 60 * 1000
     });
   };
 
