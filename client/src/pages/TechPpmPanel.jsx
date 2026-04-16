@@ -971,7 +971,10 @@ const TechPpmPanel = () => {
       setBusy(true);
       await api.patch(`/ppm/${taskId}/cancel`, { reason: 'Cancelled from PPM work orders' });
       if (assetId) {
-        await api.patch(`/ppm/assets/${assetId}/ppm-enabled`, { enabled: false });
+        await api.patch(`/ppm/assets/${assetId}/ppm-enabled`, {
+          enabled: false,
+          isolate_from_inventory: true,
+        });
       }
       void load();
     } catch (error) {

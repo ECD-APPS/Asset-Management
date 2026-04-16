@@ -2460,13 +2460,21 @@ router.patch('/assets/:assetId/ppm-enabled', protect, restrictViewer, async (req
       return res.status(400).json({ message: 'Invalid asset id' });
     }
     const enabled = Boolean(req.body?.enabled);
-    const asset = await Asset.findById(assetId).select('store');
+    const isolateFromInventory = Boolean(req.body?.isolate_from_inventory);
+    const asset = await Asset.findById(assetId).select('store ppm_import_only');
     if (!asset) return res.status(404).json({ message: 'Asset not found' });
     if (!req.activeStore || String(asset.store || '') !== String(req.activeStore)) {
       return res.status(403).json({ message: 'Asset is outside active store scope' });
     }
-    await Asset.updateOne({ _id: asset._id }, { $set: { ppm_enabled: enabled } });
-    return res.json({ _id: asset._id, ppm_enabled: enabled });
+    const patch = { ppm_enabled: enabled };
+    // "Remove from PPM list" should not leak rows into main inventory for PPM-owned assets.
+    if (!enabled && isolateFromInventory) {
+      patch.ppm_import_only = true;
+    } else if (enabled && asset.ppm_import_only === true) {
+      patch.ppm_import_only = false;
+    }
+    await Asset.updateOne({ _id: asset._id }, { $set: patch });
+    return res.json({ _id: asset._id, ppm_enabled: enabled, ppm_import_only: patch.ppm_import_only });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to update PPM inclusion', error: error.message });
   }

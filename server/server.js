@@ -14,6 +14,7 @@ const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const cookieParser = require('cookie-parser');
 const { shouldUseSecureCookie, resolveSameSite } = require('./utils/sessionCookie');
+const { isPbmConfigured } = require('./utils/pbmClient');
 const cron = require('node-cron');
 const auditLogger = require('./utils/logger');
 const { metricsEnabledForProcess } = require('./utils/opsHealth');
@@ -650,8 +651,13 @@ const runDeferredDatabaseBootstrap = async () => {
     backupJobStarted = true;
     const oneDayMs = 24 * 60 * 60 * 1000;
     let backupRunning = false;
+    const pbmConfigured = isPbmConfigured();
+    if (!pbmConfigured) {
+      console.log('Automatic daily PBM backup disabled: PBM_MONGODB_URI is not configured.');
+    }
 
     const runBackup = async () => {
+      if (!pbmConfigured) return;
       if (backupRunning) return;
       backupRunning = true;
       try {
