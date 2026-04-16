@@ -1,11 +1,23 @@
-import { defineConfig } from 'vite'
+import { createLogger, defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Default 127.0.0.1 avoids IPv6 (::1) vs IPv4 listen mismatches that show up as ECONNREFUSED on some Linux setups.
 const apiHost = (globalThis.process && globalThis.process.env && globalThis.process.env.VITE_API_HOST) || '127.0.0.1'
 const apiPort = (globalThis.process && globalThis.process.env && globalThis.process.env.VITE_API_PORT) || '5000'
 
+const viteLogger = createLogger()
+const viteLoggerError = viteLogger.error
+viteLogger.error = (msg, options) => {
+  const text = String(msg || '')
+  // Keep dev terminal readable: backend socket reconnects can emit repeated ECONNRESET proxy noise.
+  if (text.includes('ws proxy socket error') || text.includes('Error: read ECONNRESET')) {
+    return
+  }
+  viteLoggerError(msg, options)
+}
+
 export default defineConfig({
+  customLogger: viteLogger,
   plugins: [react()],
   server: {
     host: true,
