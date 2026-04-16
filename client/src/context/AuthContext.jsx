@@ -13,10 +13,12 @@ export const useAuth = () => useContext(AuthContext);
 const IDLE_AUTH_PATHS = new Set(['/login', '/forgot-password', '/reset-password']);
 const parseIdleLogoutMs = () => {
   const raw = String(import.meta.env.VITE_IDLE_LOGOUT_MS || '').trim();
+  // Default OFF unless explicitly configured (prevents unexpected forced logout on deployed environments).
+  if (!raw) return 0;
   if (raw === '0') return 0;
   const n = Number.parseInt(raw, 10);
   if (Number.isFinite(n) && n > 0) return n;
-  return 15 * 60 * 1000;
+  return 0;
 };
 
 export const AuthProvider = ({ children }) => {
@@ -272,7 +274,12 @@ export const AuthProvider = ({ children }) => {
 
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click', 'wheel', 'visibilitychange'];
     const onActivity = () => {
-      if (document.visibilityState === 'hidden') return;
+      // Do not count background-tab time as idle time for forced logout.
+      if (document.visibilityState === 'hidden') {
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+        return;
+      }
       bumpIdle();
     };
 

@@ -1311,6 +1311,13 @@ function matchPpmTaskStoreScopeForStores(storeOidList) {
 }
 
 const OPEN_PPM_TASK_STATUSES = ['Scheduled', 'In Progress', 'Overdue'];
+/**
+ * Legacy behavior hid assets from main inventory when they had open PPM tasks.
+ * This makes dashboard counts jump when admins create/cancel PPM tasks for normal inventory assets.
+ * Default is now OFF for stable inventory totals; enable only if explicitly required.
+ */
+const excludeOpenPpmTasksFromMainInventory =
+  String(process.env.EXCLUDE_OPEN_PPM_TASKS_FROM_MAIN_INVENTORY || 'false').toLowerCase() === 'true';
 
 /**
  * Asset ids that carry an open PPM work order and must be hidden from main inventory.
@@ -1318,6 +1325,7 @@ const OPEN_PPM_TASK_STATUSES = ['Scheduled', 'In Progress', 'Overdue'];
  * distinct; Admins without req.activeStore still resolve assignedStore like RBAC does.
  */
 async function getBusyPpmAssetIdsExcludedFromMainInventory(req) {
+  if (!excludeOpenPpmTasksFromMainInventory) return [];
   const base = { status: { $in: OPEN_PPM_TASK_STATUSES } };
   const distinctBusy = async (storeClause) => {
     const query = storeClause ? { ...base, store: storeClause } : base;
@@ -1389,6 +1397,7 @@ async function assertAssetInMainInventoryScope(asset) {
     err.statusCode = 404;
     throw err;
   }
+  if (!excludeOpenPpmTasksFromMainInventory) return;
   const sid = asset.store?._id || asset.store;
   if (!sid || !mongoose.Types.ObjectId.isValid(String(sid))) return;
   const hasOpenPpm = await PpmTask.exists({

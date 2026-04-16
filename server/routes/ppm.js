@@ -1731,7 +1731,7 @@ router.post('/', protect, restrictViewer, async (req, res) => {
 
     await Asset.updateOne(
       { _id: asset._id, disposed: { $ne: true } },
-      { $set: { ticket_number: workOrderTicket, ppm_enabled: true } }
+      { $set: { ticket_number: workOrderTicket } }
     );
 
     await ActivityLog.create({
@@ -1940,7 +1940,7 @@ router.post('/batch', protect, restrictViewer, async (req, res) => {
         if (storeScopeOid) {
           assetTicketFilter.store = matchPpmStoreScope(storeScopeOid);
         }
-        await Asset.updateMany(assetTicketFilter, { $set: { ticket_number: workOrderTicket, ppm_enabled: true } });
+        await Asset.updateMany(assetTicketFilter, { $set: { ticket_number: workOrderTicket } });
       }
     }
 
@@ -3630,12 +3630,8 @@ router.post('/upload', protect, restrictViewer, upload.single('file'), async (re
       });
     }
 
-    if (matchedAssetIds.length > 0) {
-      await Asset.updateMany(
-        { _id: { $in: matchedAssetIds }, disposed: { $ne: true } },
-        { $set: { ppm_enabled: true } }
-      );
-    }
+    // Keep existing inventory assets untouched so dashboard inventory totals stay stable.
+    // Auto-created import-only assets are already isolated by ppm_import_only=true.
     if (createTaskDocs.length > 0) {
       for (const part of chunkArray(createTaskDocs, BULK_IMPORT_INSERT_CHUNK)) {
         // eslint-disable-next-line no-await-in-loop

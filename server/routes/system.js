@@ -598,12 +598,27 @@ const shouldFallbackToInlineLogo = (err) => {
   return code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
 };
 
+/**
+ * Branding storage mode:
+ * - inline (default): store data URL in DB, never depends on local disk permissions
+ * - disk: try writing under uploads/branding, fallback to inline on permission errors
+ */
+const brandingStorageMode = String(process.env.BRANDING_STORAGE_MODE || 'inline').trim().toLowerCase();
+const useInlineBrandingFirst = brandingStorageMode !== 'disk';
+
 const persistBrandingUpload = async ({ file, prefix }) => {
   if (!file || !file.buffer) throw new Error('Logo file content is missing');
   const ts = Date.now();
   const extByName = path.extname(String(file.originalname || '')).toLowerCase();
   const ext = extByName || mimeToExt(file.mimetype) || '.png';
   const fileName = `${prefix}-${ts}${ext}`;
+  const mime = String(file.mimetype || '').toLowerCase() || 'image/png';
+  const inlineDataUrl = `data:${mime};base64,${Buffer.from(file.buffer).toString('base64')}`;
+
+  // Default stable mode for laptop deployments: DB-only branding (no filesystem dependency).
+  if (useInlineBrandingFirst) {
+    return { relativeUrl: '', inlineDataUrl };
+  }
   try {
     ensureBrandingDirSync();
     const absPath = path.join(brandingDir, fileName);
@@ -611,9 +626,7 @@ const persistBrandingUpload = async ({ file, prefix }) => {
     return { relativeUrl: `/uploads/branding/${fileName}`, inlineDataUrl: '' };
   } catch (err) {
     if (!shouldFallbackToInlineLogo(err)) throw err;
-    const mime = String(file.mimetype || '').toLowerCase() || 'image/png';
-    const dataUri = `data:${mime};base64,${Buffer.from(file.buffer).toString('base64')}`;
-    return { relativeUrl: '', inlineDataUrl: dataUri };
+    return { relativeUrl: '', inlineDataUrl };
   }
 };
 
