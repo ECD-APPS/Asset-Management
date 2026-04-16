@@ -287,6 +287,7 @@ const isPitrEnabled = () => String(process.env.PITR_ENABLED || 'true').toLowerCa
 const normalizePublicAssetUrl = (value, fallback) => {
   const raw = String(value || '').trim();
   if (!raw) return fallback;
+  if (raw.startsWith('data:') || raw.startsWith('blob:')) return raw;
   if (raw.startsWith('/')) return raw;
   try {
     const parsed = new URL(raw);
@@ -302,6 +303,7 @@ const normalizePublicAssetUrl = (value, fallback) => {
 
 const normalizeBrandingApiUrl = (value, fallback) => {
   const normalized = normalizePublicAssetUrl(value, fallback);
+  if (String(normalized || '').startsWith('data:')) return normalized;
   const stripped = String(normalized || '').split('?')[0];
   if (!stripped.startsWith('/uploads/branding/')) return normalized;
   const baseName = path.basename(stripped);
@@ -564,25 +566,9 @@ const allowedMime = new Set([
   'image/svg+xml',
   'image/webp'
 ]);
-const createBrandingUpload = (prefix) => {
-  const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      try {
-        ensureBrandingDirSync();
-        cb(null, brandingDir);
-      } catch (err) {
-        cb(err);
-      }
-    },
-    filename: (req, file, cb) => {
-      const ts = Date.now();
-      const extMatch = file.originalname.match(/\.[a-zA-Z0-9]+$/);
-      const ext = extMatch ? extMatch[0].toLowerCase() : '';
-      cb(null, `${prefix}-${ts}${ext}`);
-    }
-  });
+const createBrandingUpload = () => {
   return multer({
-    storage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
     fileFilter: (req, file, cb) => {
       const mime = String(file.mimetype || '').toLowerCase();
@@ -595,8 +581,41 @@ const createBrandingUpload = (prefix) => {
     }
   });
 };
-const brandingUpload = createBrandingUpload('app-logo');
-const gatePassLogoUpload = createBrandingUpload('gatepass-logo');
+const brandingUpload = createBrandingUpload();
+const gatePassLogoUpload = createBrandingUpload();
+
+const mimeToExt = (mime = '') => {
+  const m = String(mime || '').toLowerCase();
+  if (m === 'image/png') return '.png';
+  if (m === 'image/jpeg' || m === 'image/jpg') return '.jpg';
+  if (m === 'image/svg+xml') return '.svg';
+  if (m === 'image/webp') return '.webp';
+  return '';
+};
+
+const shouldFallbackToInlineLogo = (err) => {
+  const code = String(err?.code || '').toUpperCase();
+  return code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
+};
+
+const persistBrandingUpload = async ({ file, prefix }) => {
+  if (!file || !file.buffer) throw new Error('Logo file content is missing');
+  const ts = Date.now();
+  const extByName = path.extname(String(file.originalname || '')).toLowerCase();
+  const ext = extByName || mimeToExt(file.mimetype) || '.png';
+  const fileName = `${prefix}-${ts}${ext}`;
+  try {
+    ensureBrandingDirSync();
+    const absPath = path.join(brandingDir, fileName);
+    await fs.promises.writeFile(absPath, file.buffer);
+    return { relativeUrl: `/uploads/branding/${fileName}`, inlineDataUrl: '' };
+  } catch (err) {
+    if (!shouldFallbackToInlineLogo(err)) throw err;
+    const mime = String(file.mimetype || '').toLowerCase() || 'image/png';
+    const dataUri = `data:${mime};base64,${Buffer.from(file.buffer).toString('base64')}`;
+    return { relativeUrl: '', inlineDataUrl: dataUri };
+  }
+};
 
 // Simple in-process lock to prevent concurrent resets
 let RESET_LOCK = false;
@@ -870,27 +889,29 @@ router.post('/logo', protect, superAdmin, brandingUpload.single('logo'), async (
     if (!req.file) {
       return res.status(400).json({ message: 'Logo file is required' });
     }
+    const { relativeUrl, inlineDataUrl } = await persistBrandingUpload({ file: req.file, prefix: 'app-logo' });
+    const storedValue = relativeUrl || inlineDataUrl;
     // Optionally, remove very old logos to save space (keep latest 5)
-    try {
-      const files = fs.readdirSync(brandingDir).filter(f => f.startsWith('app-logo-'));
-      files.sort(); // oldest first by name since includes timestamp
-      while (files.length > 5) {
-        const toDelete = files.shift();
-        if (toDelete) {
-          fs.unlinkSync(path.join(brandingDir, toDelete));
+    if (relativeUrl) {
+      try {
+        const files = fs.readdirSync(brandingDir).filter(f => f.startsWith('app-logo-'));
+        files.sort(); // oldest first by name since includes timestamp
+        while (files.length > 5) {
+          const toDelete = files.shift();
+          if (toDelete) {
+            fs.unlinkSync(path.join(brandingDir, toDelete));
+          }
         }
+      } catch {
+        /* best-effort cleanup of old logos */
       }
-    } catch {
-      /* best-effort cleanup of old logos */
     }
-
-    const relativeUrl = `/uploads/branding/${req.file.filename}`;
     await Setting.updateOne(
       { key: 'logoUrl' },
-      { $set: { value: relativeUrl, updatedAt: new Date() } },
+      { $set: { value: storedValue, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ message: 'Logo updated', logoUrl: normalizeBrandingApiUrl(relativeUrl, '') });
+    res.json({ message: 'Logo updated', logoUrl: normalizeBrandingApiUrl(storedValue, '') });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -904,25 +925,27 @@ router.post('/gatepass-logo', protect, superAdmin, gatePassLogoUpload.single('lo
     if (!req.file) {
       return res.status(400).json({ message: 'Logo file is required' });
     }
+    const { relativeUrl, inlineDataUrl } = await persistBrandingUpload({ file: req.file, prefix: 'gatepass-logo' });
+    const storedValue = relativeUrl || inlineDataUrl;
     // Keep latest gate pass logos only
-    try {
-      const files = fs.readdirSync(brandingDir).filter((f) => f.startsWith('gatepass-logo-'));
-      files.sort();
-      while (files.length > 5) {
-        const toDelete = files.shift();
-        if (toDelete) fs.unlinkSync(path.join(brandingDir, toDelete));
+    if (relativeUrl) {
+      try {
+        const files = fs.readdirSync(brandingDir).filter((f) => f.startsWith('gatepass-logo-'));
+        files.sort();
+        while (files.length > 5) {
+          const toDelete = files.shift();
+          if (toDelete) fs.unlinkSync(path.join(brandingDir, toDelete));
+        }
+      } catch {
+        /* best-effort cleanup of old gate pass logos */
       }
-    } catch {
-      /* best-effort cleanup of old gate pass logos */
     }
-
-    const relativeUrl = `/uploads/branding/${req.file.filename}`;
     await Setting.updateOne(
       { key: 'gatePassLogoUrl' },
-      { $set: { value: relativeUrl, updatedAt: new Date() } },
+      { $set: { value: storedValue, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ message: 'Gate pass logo updated', gatePassLogoUrl: normalizeBrandingApiUrl(relativeUrl, '') });
+    res.json({ message: 'Gate pass logo updated', gatePassLogoUrl: normalizeBrandingApiUrl(storedValue, '') });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
