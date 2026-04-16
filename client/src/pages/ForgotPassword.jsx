@@ -3,12 +3,27 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
 
+const RESET_ORIGIN_STORAGE_KEY = 'expo.passwordResetAppOrigin';
+
+const isLoopbackHostname = () => {
+  if (typeof window === 'undefined') return false;
+  const h = String(window.location.hostname || '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+};
+
 const ForgotPassword = () => {
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [devResetLink, setDevResetLink] = useState('');
   const [loading, setLoading] = useState(false);
+  const [linkBaseOverride, setLinkBaseOverride] = useState(() => {
+    try {
+      return sessionStorage.getItem(RESET_ORIGIN_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
   const { user, loading: authLoading, branding } = useAuth();
   const navigate = useNavigate();
 
@@ -25,9 +40,19 @@ const ForgotPassword = () => {
     setInfo('');
     setDevResetLink('');
     try {
+      const trimmedOverride = linkBaseOverride.trim();
+      const viteBase = String(import.meta.env.VITE_PUBLIC_APP_URL || '').trim();
+      const publicAppOrigin =
+        trimmedOverride || viteBase || (typeof window !== 'undefined' ? window.location.origin : '');
+      try {
+        if (trimmedOverride) sessionStorage.setItem(RESET_ORIGIN_STORAGE_KEY, trimmedOverride);
+        else sessionStorage.removeItem(RESET_ORIGIN_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
       const { data } = await api.post('/auth/forgot-password', {
         email: email.trim(),
-        publicAppOrigin: typeof window !== 'undefined' ? window.location.origin : ''
+        publicAppOrigin
       });
       setInfo(data?.message || 'Check your email for the next steps.');
       if (data?.dev_reset_link) {
@@ -53,7 +78,8 @@ const ForgotPassword = () => {
             <img
               src={branding.logoUrl}
               alt="Application logo"
-              className="h-28 md:h-32 w-auto object-contain drop-shadow-sm"
+              className="h-28 md:h-32 w-auto object-contain drop-shadow-sm animate-spin"
+              style={{ animationDuration: '20s' }}
             />
           </div>
         ) : null}
@@ -103,6 +129,30 @@ const ForgotPassword = () => {
           ) : null}
 
           <form onSubmit={handleSubmit} className="space-y-5">
+            {isLoopbackHostname() ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-950">
+                <p className="font-semibold text-amber-950 mb-1">Open reset link on another device?</p>
+                <p className="text-amber-900/90 mb-2">
+                  Email links cannot use <span className="font-mono">localhost</span>. Use this PC’s LAN URL
+                  (same port as here), or set <span className="font-mono">VITE_PUBLIC_APP_URL</span> in{' '}
+                  <span className="font-mono">client/.env.local</span>.
+                </p>
+                <label className="block text-amber-950/90 text-xs font-semibold mb-1" htmlFor="reset-link-base">
+                  App base URL for the email link (optional)
+                </label>
+                <input
+                  id="reset-link-base"
+                  type="url"
+                  inputMode="url"
+                  value={linkBaseOverride}
+                  onChange={(e) => setLinkBaseOverride(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                  placeholder="e.g. http://192.168.0.12:5173"
+                  autoComplete="off"
+                />
+              </div>
+            ) : null}
+
             <div>
               <label className="block text-slate-700 text-sm font-semibold mb-2 ml-1" htmlFor="forgot-email">
                 Email

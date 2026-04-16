@@ -9,6 +9,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
+    // Long CPU-heavy API work (bulk import) can delay HMR pings; avoid spurious ws proxy resets in dev.
+    hmr: {
+      timeout: 120000,
+    },
     proxy: {
       '/api': {
         target: `http://${apiHost}:${apiPort}`,
@@ -22,6 +26,8 @@ export default defineConfig({
         target: `http://${apiHost}:${apiPort}`,
         changeOrigin: true,
         secure: false,
+        timeout: 4 * 60 * 60 * 1000,
+        proxyTimeout: 4 * 60 * 60 * 1000,
       },
       '/healthz': {
         target: `http://${apiHost}:${apiPort}`,
@@ -38,6 +44,8 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         ws: true,
+        timeout: 4 * 60 * 60 * 1000,
+        proxyTimeout: 4 * 60 * 60 * 1000,
       },
     },
   },

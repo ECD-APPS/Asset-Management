@@ -45,15 +45,34 @@ const isPrivateOrLocalHost = (hostname) => {
   return false;
 };
 
+/** True when the origin host is only loopback (reset emails must not use this for links opened on phones). */
+const isLoopbackOriginBase = (base) => {
+  if (!base) return false;
+  try {
+    const h = new URL(base).hostname.toLowerCase();
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Prefer the browser origin sent by the client so reset links work when the app is opened via LAN IP
  * (e.g. http://192.168.1.10:5173). Validates against CORS_ORIGIN / PUBLIC_APP_URL, or private LAN in non-production.
  */
 const pickPasswordResetAppBase = (req) => {
   const requested = parseOriginToBase(req.body?.publicAppOrigin);
-  if (!requested) return resolvePublicAppUrl();
-
   const fromEnv = resolvePublicAppUrl();
+  const resetPublicBridge = parseOriginToBase(String(process.env.PASSWORD_RESET_PUBLIC_URL || '').trim());
+
+  // Reset links in email cannot use localhost — other devices (e.g. phones) cannot open them.
+  if (requested && isLoopbackOriginBase(requested)) {
+    if (resetPublicBridge && !isLoopbackOriginBase(resetPublicBridge)) return resetPublicBridge;
+    if (fromEnv && !isLoopbackOriginBase(fromEnv)) return fromEnv;
+  }
+
+  if (!requested) return fromEnv;
+
   if (requested === fromEnv) return requested;
 
   const corsBases = String(process.env.CORS_ORIGIN || '')

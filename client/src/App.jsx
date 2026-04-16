@@ -11,13 +11,15 @@ import AlertOverride from './components/AlertOverride';
 import PropTypes from 'prop-types';
 // Eager-load home route: repeated refresh can abort lazy chunk fetches (Vite dynamic import errors).
 import Dashboard from './pages/Dashboard';
+// Eager-load Assets: app route is `/assets` while Vite emits lazy chunks under `/assets/*.js`; lazy + refresh/HMR
+// can surface as failed chunk loads or a 404 fallback after heavy operations (e.g. bulk import).
+import Assets from './pages/Assets';
 
 const Login = lazy(() => import('./pages/Login'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Portal = lazy(() => import('./pages/Portal'));
 const SystemHealth = lazy(() => import('./pages/SystemHealth'));
-const Assets = lazy(() => import('./pages/Assets'));
 const TechScanner = lazy(() => import('./pages/TechScanner'));
 const Technicians = lazy(() => import('./pages/Technicians'));
 const Stores = lazy(() => import('./pages/Stores'));

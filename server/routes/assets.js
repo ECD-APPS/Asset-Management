@@ -65,7 +65,12 @@ const upload = multer({
   limits: { fileSize: MAX_IMPORT_UPLOAD_BYTES }
 });
 
- 
+const yieldEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+/** Yield during huge XLSX parses so the Node event loop can flush sockets (Vite HMR / dashboard WS / import HTTP). */
+const IMPORT_PARSE_YIELD_EVERY = Math.min(
+  10000,
+  Math.max(500, Number.parseInt(process.env.IMPORT_PARSE_YIELD_EVERY || '2000', 10) || 2000)
+);
 
 function capitalizeWords(s) {
   if (!s) return s;
@@ -3472,7 +3477,12 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
       const s = String(val || '').trim();
       return s === '' || s.toUpperCase() === 'N/A' || s === '-';
     };
-    for (const item of rows) {
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
+      const item = rows[rowIdx];
+      if (rowIdx > 0 && rowIdx % IMPORT_PARSE_YIELD_EVERY === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldEventLoop();
+      }
       const norm = {};
       Object.keys(item).forEach(k => { norm[String(k).trim().toLowerCase()] = item[k]; });
       let productName = reqProductName || norm['product name'] || norm['product'] || norm['product type'] || norm['category'] || '-';
@@ -3713,7 +3723,12 @@ router.post('/import/preview', protect, restrictViewer, upload.single('file'), a
     const updateDiffSamples = [];
     let existingDbMatchRows = 0;
     let rowsWithIncomingChanges = 0;
-    for (const row of staged) {
+    for (let si = 0; si < staged.length; si += 1) {
+      const row = staged[si];
+      if (si > 0 && si % IMPORT_PARSE_YIELD_EVERY === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldEventLoop();
+      }
       const { assetData, serialKey, storeId, fileDuplicateReason } = row;
       let duplicateReason = fileDuplicateReason;
       if (!duplicateReason && serialKey && storeId) {
@@ -3954,7 +3969,12 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
       return s;
     };
 
-    for (const item of data) {
+    for (let dataIdx = 0; dataIdx < data.length; dataIdx += 1) {
+      const item = data[dataIdx];
+      if (dataIdx > 0 && dataIdx % IMPORT_PARSE_YIELD_EVERY === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldEventLoop();
+      }
       const norm = {};
       Object.keys(item).forEach(k => { norm[String(k).trim().toLowerCase()] = item[k]; });
       
@@ -4312,7 +4332,10 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     }
 
     if (docsToInsert.length > 0) {
-      const INSERT_CHUNK = 1000;
+      const INSERT_CHUNK = Math.min(
+        5000,
+        Math.max(500, Number.parseInt(process.env.ASSET_IMPORT_INSERT_CHUNK || '2000', 10) || 2000)
+      );
       for (let i = 0; i < docsToInsert.length; i += INSERT_CHUNK) {
         const slice = docsToInsert.slice(i, i + INSERT_CHUNK);
         try {
@@ -4347,16 +4370,24 @@ router.post('/import', protect, restrictViewer, upload.single('file'), async (re
     let importUpdateBatchId = null;
     let importUpdateBatchCreatedAt = null;
     if (importUpdateEntries.length > 0) {
-      const batchDoc = await AssetImportUpdateBatch.create({
-        importBatchId,
-        createdBy: req.user?._id,
-        store: req.activeStore || null,
-        updates: importUpdateEntries,
-        totalRowsUpdated: importUpdateEntries.length,
-        totalColumnsUpdated
-      });
-      importUpdateBatchId = String(batchDoc._id);
-      importUpdateBatchCreatedAt = batchDoc.createdAt || new Date();
+      try {
+        const batchDoc = await AssetImportUpdateBatch.create({
+          importBatchId,
+          createdBy: req.user?._id,
+          store: req.activeStore || null,
+          updates: importUpdateEntries,
+          totalRowsUpdated: importUpdateEntries.length,
+          totalColumnsUpdated
+        });
+        importUpdateBatchId = String(batchDoc._id);
+        importUpdateBatchCreatedAt = batchDoc.createdAt || new Date();
+      } catch (batchErr) {
+        console.error('[assets/import] Failed to persist import update batch (often Mongo 16MB doc limit):', batchErr?.message || batchErr);
+        if (warnings.length < IMPORT_RESULT_SAMPLE_CAP) {
+          warnings.push('Import finished but the reversible update log was not saved (too many changed rows for one record). Revert-last may not cover this run.');
+        }
+        warningsTotal += 1;
+      }
     }
     await ActivityLog.create({
       user: req.user.name,
@@ -4479,96 +4510,174 @@ router.post('/import/revert-last', protect, admin, async (req, res) => {
 // @route   GET /api/assets/export
 // @access  Private/Admin
 router.get('/export', protect, admin, async (req, res) => {
+  const exportFilter = {};
+  await applyMainInventoryScope(exportFilter, req);
+
+  const headerMain = BULK_ASSET_EXCEL_HEADERS;
+  const buildExportMainRow = (a) => {
+    const maintenanceVendor = a?.customFields?.maintenance_vendor || '';
+    const assignedName =
+      a.assigned_to && typeof a.assigned_to === 'object' && a.assigned_to.name
+        ? a.assigned_to.name
+        : '';
+    return [
+      '',
+      '',
+      a.product_name || '',
+      a.uniqueId || '',
+      a.abs_code || '',
+      a.expo_tag || '',
+      a.model_number || '',
+      a.quantity ?? '',
+      a.serial_number || '',
+      a.mac_address || '',
+      a.ip_address || '',
+      a.manufacturer || '',
+      a.ticket_number || '',
+      assignedName,
+      a.inbound_from || '',
+      a.outbound_to || '',
+      a.po_number || '',
+      a.vendor_name || '',
+      typeof a.price === 'number' ? a.price : '',
+      a.rfid || '',
+      a.qr_code || '',
+      a.store ? a.store.name : '',
+      a.status || '',
+      a.condition || '',
+      maintenanceVendor,
+      a.device_group || '',
+      a.location || '',
+      a.product_number || '',
+      a.operating_system || '',
+      a.specification || '',
+      a.service_tag || '',
+      a.assign_to_department || '',
+      a.building || '',
+      a.state_comments || '',
+      a.remarks || '',
+      a.comments || '',
+      a.delivered_by_name || '',
+      a.delivered_at || ''
+    ];
+  };
+
+  const lastColMain = excelColumnLetterFromIndex1Based(headerMain.length);
+  const exportYieldEvery = Math.min(
+    5000,
+    Math.max(100, Number.parseInt(process.env.ASSET_EXPORT_YIELD_EVERY || '500', 10) || 500)
+  );
+  const historyPerAssetCap = Math.min(
+    5000,
+    Math.max(50, Number.parseInt(process.env.ASSET_EXPORT_HISTORY_MAX_PER_ASSET || '200', 10) || 200)
+  );
+
+  const mainSelect =
+    'product_name uniqueId abs_code expo_tag model_number quantity serial_number mac_address ip_address manufacturer ticket_number inbound_from outbound_to po_number vendor_name price rfid qr_code status condition device_group location product_number operating_system specification service_tag assign_to_department building state_comments remarks comments delivered_by_name delivered_at customFields store assigned_to';
+
   try {
-    const exportFilter = {};
-    await applyMainInventoryScope(exportFilter, req);
-    const assets = await Asset.find(exportFilter).populate('store').populate('assigned_to');
-
-    // Export columns aligned with the bulk import Excel headers
-    // so re-importing the exported file doesn't cause field mismatches.
-    const headerMain = BULK_ASSET_EXCEL_HEADERS;
-
-    const rowsMain = assets.map((a) => {
-      const maintenanceVendor = a?.customFields?.maintenance_vendor || '';
-      const assignedName =
-        a.assigned_to && typeof a.assigned_to === 'object' && a.assigned_to.name
-          ? a.assigned_to.name
-          : '';
-      return ([
-        '',
-        '',
-        a.product_name || '',
-        a.uniqueId || '',
-        a.abs_code || '',
-        a.expo_tag || '',
-        a.model_number || '',
-        a.quantity ?? '',
-        a.serial_number || '',
-        a.mac_address || '',
-        a.ip_address || '',
-        a.manufacturer || '',
-        a.ticket_number || '',
-        assignedName,
-        a.inbound_from || '',
-        a.outbound_to || '',
-        a.po_number || '',
-        a.vendor_name || '',
-        typeof a.price === 'number' ? a.price : '',
-        a.rfid || '',
-        a.qr_code || '',
-        a.store ? a.store.name : '',
-        a.status || '',
-        a.condition || '',
-        maintenanceVendor,
-        a.device_group || '',
-        a.location || '',
-        a.product_number || '',
-        a.operating_system || '',
-        a.specification || '',
-        a.service_tag || '',
-        a.assign_to_department || '',
-        a.building || '',
-        a.state_comments || '',
-        a.remarks || '',
-        a.comments || '',
-        a.delivered_by_name || '',
-        a.delivered_at || ''
-      ]);
-    });
-
-    const headerHistory = ['UNIQUE ID','NAME','ACTION','TICKET/DETAILS','USER','DATE'];
-    const rowsHistory = [];
-    assets.forEach(a => {
-      const hist = Array.isArray(a.history) ? [...a.history].sort((x,y) => new Date(y.date) - new Date(x.date)) : [];
-      if (hist.length === 0) {
-        rowsHistory.push([a.uniqueId || '', a.name || '', 'NO HISTORY', '', '', '']);
-      } else {
-        hist.forEach(h => {
-          rowsHistory.push([a.uniqueId || '', a.name || '', h.action || '', h.ticket_number || '', h.user || '', h.date || '']);
-        });
-      }
-    });
-
-    const wb = new ExcelJS.Workbook();
-    const wsMain = wb.addWorksheet('ASSETS');
-    wsMain.addRows([headerMain, ...rowsMain]);
-    wsMain.columns = headerMain.map((_, idx) => ({ width: idx < 3 ? 18 : 16 }));
-    const lastCol = excelColumnLetterFromIndex1Based(headerMain.length);
-    wsMain.autoFilter = `A1:${lastCol}1`;
-
-    const wsHist = wb.addWorksheet('HISTORY');
-    wsHist.addRows([headerHistory, ...rowsHistory]);
-    wsHist.columns = [{ width: 14 },{ width: 22 },{ width: 24 },{ width: 22 },{ width: 16 },{ width: 22 }];
-    wsHist.autoFilter = 'A1:F1';
-
-    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-
     res.setHeader('Content-Disposition', 'attachment; filename=ASSETS_EXPORT.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(buffer);
+    res.setHeader('X-No-Compression', '1');
 
+    const WorkbookWriter = ExcelJS.stream.xlsx.WorkbookWriter;
+    const workbook = new WorkbookWriter({
+      stream: res,
+      useSharedStrings: false,
+      useStyles: false,
+    });
+
+    const wsMain = workbook.addWorksheet('ASSETS', {
+      autoFilter: `A1:${lastColMain}1`,
+    });
+    wsMain.columns = headerMain.map((_, idx) => ({ width: idx < 3 ? 18 : 16 }));
+    wsMain.addRow(headerMain).commit();
+
+    const finishStreamingWorksheet = (ws) =>
+      new Promise((resolve, reject) => {
+        ws.stream.once('error', reject);
+        ws.stream.once('zipped', resolve);
+        ws.commit();
+      });
+
+    let mainWritten = 0;
+    const cursorMain = Asset.find(exportFilter)
+      .select(mainSelect)
+      .populate('store', 'name')
+      .populate('assigned_to', 'name')
+      .lean()
+      .cursor({ batchSize: 200 });
+    // eslint-disable-next-line no-restricted-syntax
+    for await (const a of cursorMain) {
+      wsMain.addRow(buildExportMainRow(a)).commit();
+      mainWritten += 1;
+      if (mainWritten % exportYieldEvery === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldEventLoop();
+      }
+    }
+
+    await finishStreamingWorksheet(wsMain);
+
+    const headerHistory = ['UNIQUE ID', 'NAME', 'ACTION', 'TICKET/DETAILS', 'USER', 'DATE'];
+    const wsHist = workbook.addWorksheet('HISTORY', {
+      autoFilter: 'A1:F1',
+    });
+    wsHist.columns = [
+      { width: 14 },
+      { width: 22 },
+      { width: 24 },
+      { width: 22 },
+      { width: 16 },
+      { width: 22 }
+    ];
+    wsHist.addRow(headerHistory).commit();
+
+    let histDocs = 0;
+    const histCursor = Asset.find(exportFilter)
+      .select('uniqueId name history')
+      .lean()
+      .cursor({ batchSize: 100 });
+    // eslint-disable-next-line no-restricted-syntax
+    for await (const a of histCursor) {
+      const hist = Array.isArray(a.history)
+        ? [...a.history].sort((x, y) => new Date(y.date) - new Date(x.date))
+        : [];
+      const slice = hist.slice(0, historyPerAssetCap);
+      if (slice.length === 0) {
+        wsHist.addRow([a.uniqueId || '', a.name || '', 'NO HISTORY', '', '', '']).commit();
+      } else {
+        for (const h of slice) {
+          wsHist.addRow([
+            a.uniqueId || '',
+            a.name || '',
+            h.action || '',
+            h.ticket_number || '',
+            h.user || '',
+            h.date || ''
+          ]).commit();
+        }
+      }
+      histDocs += 1;
+      if (histDocs % exportYieldEvery === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldEventLoop();
+      }
+    }
+
+    await finishStreamingWorksheet(wsHist);
+    await workbook.commit();
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Asset export error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ message: error.message || 'Export failed' });
+    } else {
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 });
 

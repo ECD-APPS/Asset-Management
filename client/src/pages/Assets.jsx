@@ -2050,15 +2050,32 @@ const Assets = () => {
 
   const handleExport = async () => {
     try {
-      const response = await api.get('/assets/export', { responseType: 'blob' });
+      const response = await api.get('/assets/export', {
+        responseType: 'blob',
+        timeout: IMPORT_UPLOAD_TIMEOUT_MS,
+      });
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', 'assets.xlsx');
       document.body.appendChild(link);
       link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error(error);
+      let msg = error?.response?.data?.message || error?.message || 'Export failed.';
+      const data = error?.response?.data;
+      if (data instanceof Blob) {
+        try {
+          const text = await data.text();
+          const parsed = JSON.parse(text);
+          if (parsed?.message) msg = parsed.message;
+        } catch {
+          /* ignore */
+        }
+      }
+      alert(msg);
     }
   };
 

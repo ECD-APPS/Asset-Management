@@ -67,7 +67,8 @@ const ResetPassword = () => {
             <img
               src={branding.logoUrl}
               alt="Application logo"
-              className="h-28 md:h-32 w-auto object-contain drop-shadow-sm"
+              className="h-28 md:h-32 w-auto object-contain drop-shadow-sm animate-spin"
+              style={{ animationDuration: '20s' }}
             />
           </div>
         ) : null}

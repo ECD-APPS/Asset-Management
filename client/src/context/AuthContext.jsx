@@ -1,4 +1,5 @@
-import { createContext, useState, useEffect, useContext, useCallback, useMemo } from 'react';
+import { createContext, useState, useEffect, useContext, useCallback, useMemo, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import api from '../api/axios';
 import PropTypes from 'prop-types';
 import LoadingLogo from '../components/LoadingLogo';
@@ -9,12 +10,24 @@ const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
 
+const IDLE_AUTH_PATHS = new Set(['/login', '/forgot-password', '/reset-password']);
+const parseIdleLogoutMs = () => {
+  const raw = String(import.meta.env.VITE_IDLE_LOGOUT_MS || '').trim();
+  if (raw === '0') return 0;
+  const n = Number.parseInt(raw, 10);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 15 * 60 * 1000;
+};
+
 export const AuthProvider = ({ children }) => {
+  const location = useLocation();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeStore, setActiveStore] = useState(null);
   const [globalLoading, setGlobalLoading] = useState(false);
   const [branding, setBranding] = useState({ logoUrl: '', theme: 'default' });
+  const idleLogoutMs = useMemo(() => parseIdleLogoutMs(), []);
+  const idleTimerRef = useRef(null);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const normalizeStoreSelection = useCallback((value) => {
     if (!value) return null;
@@ -243,6 +256,35 @@ export const AuthProvider = ({ children }) => {
     window.location.replace(`${window.location.origin}/api/auth/logout?redirect=${redirect}`);
     return Promise.resolve();
   }, []);
+
+  useEffect(() => {
+    if (idleLogoutMs <= 0) return undefined;
+    if (loading || !user) return undefined;
+    if (IDLE_AUTH_PATHS.has(location.pathname)) return undefined;
+
+    const bumpIdle = () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(() => {
+        idleTimerRef.current = null;
+        logout();
+      }, idleLogoutMs);
+    };
+
+    const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click', 'wheel', 'visibilitychange'];
+    const onActivity = () => {
+      if (document.visibilityState === 'hidden') return;
+      bumpIdle();
+    };
+
+    events.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
+    bumpIdle();
+
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+      events.forEach((ev) => window.removeEventListener(ev, onActivity));
+    };
+  }, [user, loading, location.pathname, logout, idleLogoutMs]);
 
   const selectStore = useCallback((store) => {
     const normalizedStore = normalizeStoreSelection(store);
