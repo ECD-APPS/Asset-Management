@@ -84,7 +84,7 @@ Deny:
 
 Management VLAN policy:
 - Only admin workstation access is allowed.
-- No application traffic is allowed into management subnet.
+- No application traffic is allowed into the management subnet.
 
 ## ACI Contracts (Recommended)
 
@@ -140,10 +140,6 @@ Important: `CORS_ORIGIN` must exactly match the URL users open in browser.
 
 When `SEED_DEFAULTS=true` (recommended only for first bootstrap), backend startup ensures these users exist with these credentials:
 
-- `superadmin@expo.com` / `superadmin123`
-- `scy@expo.com` / `admin123`
-- `it@expo.com` / `admin123`
-- `noc@expo.com` / `admin123`
 
 This is idempotent and safe across restarts, as long as MongoDB data persists. After first bootstrap, set `SEED_DEFAULTS=false` for production operation.
 
@@ -218,12 +214,6 @@ Credential verification checklist:
 # On App VM
 curl -sS http://127.0.0.1:5000/api/healthz
 ```
-
-- Login test in browser for:
-  - `superadmin@expo.com` / `superadmin123`
-  - `scy@expo.com` / `admin123`
-  - `it@expo.com` / `admin123`
-  - `noc@expo.com` / `admin123`
 
 Restart persistence test:
 
