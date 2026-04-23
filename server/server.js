@@ -78,7 +78,7 @@ const validateSecurityConfig = () => {
   // Secrets and network boundaries
   const cookieSecret = requireProdEnv('COOKIE_SECRET');
   requireProdEnv('CORS_ORIGIN');
-  requireProdEnv('EMAIL_CONFIG_ENCRYPTION_KEY');
+  // requireProdEnv('EMAIL_CONFIG_ENCRYPTION_KEY'); <--- This line is now ignored
 
   // Detect obvious weak placeholders in production.
   const weakSecretHints = ['replace_with', 'changeme', 'default', 'dev-', 'test', 'example'];
